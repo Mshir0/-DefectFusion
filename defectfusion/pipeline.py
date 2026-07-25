@@ -29,8 +29,8 @@ class DefectFusion:
         patch_batches = []
         for path in image_paths:
             image = Image.open(path)
-            patches, grid = self.extractor.extract(image)
-            patch_batches.append(patches)
+            patches, grid, foreground = self.extractor.extract(image, return_mask=True)
+            patch_batches.append(patches[foreground])
             self.reference_shape = grid
         if not patch_batches:
             raise ValueError("No normal images were provided")
@@ -41,15 +41,16 @@ class DefectFusion:
 
     def add_prototype(self, label: str, image_path):
         image = Image.open(image_path)
-        patches, _ = self.extractor.extract(image)
-        self.prototype_bank.add(label, self._anomaly_descriptor(patches))
+        patches, _, foreground = self.extractor.extract(image, return_mask=True)
+        self.prototype_bank.add(label, self._anomaly_descriptor(patches, foreground))
         return self
 
-    def _anomaly_descriptor(self, patches):
-        scores = self.subspace.score(patches)
+    def _anomaly_descriptor(self, patches, foreground=None):
+        selected = patches if foreground is None else patches[foreground]
+        scores = self.subspace.score(selected)
         keep = max(1, int(np.ceil(len(scores) * self.top_k_ratio)))
         indices = np.argpartition(scores, -keep)[-keep:]
-        return patches[indices].mean(axis=0)
+        return selected[indices].mean(axis=0)
 
     def _aggregate_image_score(self, scores):
         scores = np.asarray(scores, dtype=np.float64)
@@ -64,13 +65,14 @@ class DefectFusion:
 
     def predict(self, image_path):
         image = Image.open(image_path)
-        patches, grid = self.extractor.extract(image)
+        patches, grid, foreground = self.extractor.extract(image, return_mask=True)
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
         anomaly_scores = self.subspace.score(patches)
+        anomaly_scores[~foreground] = 0.0
         anomaly_map = anomaly_scores.reshape(grid).tolist()
-        fused_score = self._aggregate_image_score(anomaly_scores)
-        label, label_score = self.prototype_bank.predict(self._anomaly_descriptor(patches))
+        fused_score = self._aggregate_image_score(anomaly_scores[foreground])
+        label, label_score = self.prototype_bank.predict(self._anomaly_descriptor(patches, foreground))
         return {
             "image": str(image_path),
             "grid": list(grid),
@@ -79,6 +81,7 @@ class DefectFusion:
             "defect_type": label,
             "defect_type_score": float(label_score),
             "fused_score": fused_score * self.alpha + float(label_score) * (1.0 - self.alpha),
+            "foreground_ratio": float(np.mean(foreground)),
         }
 
     def save(self, path):
