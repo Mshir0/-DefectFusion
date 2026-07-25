@@ -10,12 +10,15 @@ from .model import NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.1):
         self.extractor = extractor
         self.alpha = alpha
         self.subspace = NormalSubspace()
         self.prototype_bank = PrototypeBank()
         self.prototype_bank.unknown_threshold = unknown_threshold
+        if not 0 < top_k_ratio <= 1:
+            raise ValueError("top_k_ratio must be in (0, 1]")
+        self.top_k_ratio = top_k_ratio
         self.reference_grid = None
         self.reference_shape = None
 
@@ -36,8 +39,14 @@ class DefectFusion:
     def add_prototype(self, label: str, image_path):
         image = Image.open(image_path)
         patches, _ = self.extractor.extract(image)
-        self.prototype_bank.add(label, patches.mean(axis=0))
+        self.prototype_bank.add(label, self._anomaly_descriptor(patches))
         return self
+
+    def _anomaly_descriptor(self, patches):
+        scores = self.subspace.score(patches)
+        keep = max(1, int(np.ceil(len(scores) * self.top_k_ratio)))
+        indices = np.argpartition(scores, -keep)[-keep:]
+        return patches[indices].mean(axis=0)
 
     def predict(self, image_path):
         image = Image.open(image_path)
@@ -47,7 +56,7 @@ class DefectFusion:
         anomaly_scores = self.subspace.score(patches)
         anomaly_map = anomaly_scores.reshape(grid).tolist()
         fused_score = float(np.mean(anomaly_scores))
-        label, label_score = self.prototype_bank.predict(patches.mean(axis=0))
+        label, label_score = self.prototype_bank.predict(self._anomaly_descriptor(patches))
         return {
             "image": str(image_path),
             "grid": list(grid),
@@ -64,6 +73,7 @@ class DefectFusion:
             "subspace": self.subspace.to_dict(),
             "prototype_bank": self.prototype_bank.to_dict(),
             "unknown_threshold": self.prototype_bank.unknown_threshold,
+            "top_k_ratio": self.top_k_ratio,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
@@ -75,7 +85,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.1))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
         obj.reference_grid = state.get("reference_grid")

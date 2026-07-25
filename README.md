@@ -63,3 +63,7 @@ python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --few-shot 1 --seed 42 --debias --svd-components 20 \
   --output outputs/mvtec-all-debiased.jsonl
 ```
+
+Defect typing uses the highest PCA-reconstruction-residual patches instead of
+the whole-image mean. Control their fraction with `--top-k-ratio` (default
+`0.1`); use `1.0` to reproduce whole-image prototype classification.
