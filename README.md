@@ -120,6 +120,8 @@ python -m defectfusion.cli evaluate-mvtec \
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch` | Type Accuracy, Macro-F1 |
 | Anomaly detector | `--anomaly-method` | `pca` | `pca, knn, pca_knn` | Image/Pixel AUROC |
 | kNN fusion weight | `--knn-weight` | `0.5` | `0.25, 0.5, 0.75` | Active with `pca_knn` |
+| PCA-kNN fusion | `--fusion-mode` | `fixed` | `fixed, gated` | Image/Pixel AUROC |
+| Gate temperature | `--gate-temperature` | `1.0` | `0.5, 1.0, 2.0` | Active with gated fusion |
 | Normal patch memory | `--memory-max-patches` | `50000` | `10000, 25000, 50000, 0` | kNN accuracy, memory, runtime |
 | kNN query chunk | `--knn-chunk-size` | `256` | `64, 128, 256` | Runtime/memory only |
 | kNN backend | `--knn-backend` | `auto` | `auto, torch, numpy` | Runtime only |
@@ -127,7 +129,6 @@ python -m defectfusion.cli evaluate-mvtec \
 | Feature layers | `--feature-layers` | `-1,-2,-3,-4` | `-1`, `-1,-2`, `-1,-2,-3,-4`, `-1,-3,-5` | All metrics |
 | Feature layer preset | `--feature-layer-preset` | `last4` | `last4, middle7` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
-| PCA layer fusion | `--layer-fusion` | `feature` | `feature, score_mean, score_max` | Image/Pixel AUROC |
 | Map post-process | `--map-postprocess` | `none` | `none, gaussian, crf` | Pixel AUROC |
 | Gaussian sigma | `--gaussian-sigma` | `1.0` | `0.5, 1.0, 2.0` | Pixel AUROC |
 | Positional debiasing | `--debias` | off | off/on | All metrics |
@@ -139,11 +140,6 @@ Negative feature-layer values must use the equals form, such as
 `--feature-layers=-1,-2,-3,-4`, so that `argparse` does not interpret them as
 new options. `concat` multiplies the PCA feature dimension by the number of
 selected layers and therefore uses substantially more memory than `mean`.
-`--layer-fusion feature` preserves the existing pipeline: aggregate features
-first and fit one PCA. `score_mean` and `score_max` fit one PCA per selected
-layer, calibrate each layer on its normal residual distribution, and then fuse
-the patch anomaly maps. Score-level fusion is intentionally incompatible with
-`--debias`; branch-specific INSID3 debiasing remains a separate TODO.
 Input images are explicitly resized to `--image-size` without center cropping;
 the value is passed to the Hugging Face processor rather than relying on its
 checkpoint default. Higher resolutions increase patch count quadratically.
@@ -164,8 +160,11 @@ reduced macro pixel AUROC; it remains available only for explicit experiments.
 
 `--anomaly-method knn` uses the AnomalyDINO normal-patch memory score: cosine
 distance to the closest normalized normal patch. `pca_knn` combines it with
-the PCA reconstruction residual after each score is robustly calibrated on
-normal training patches. `--knn-weight` controls the calibrated kNN fraction.
+the PCA reconstruction residual. `--fusion-mode fixed` reproduces robust
+z-score calibration with the global `--knn-weight`. `gated` maps both raw
+scores to empirical normal-tail evidence and assigns a soft kNN weight to
+every patch. `--gate-temperature` controls how decisively the gate selects
+the stronger expert; lower values approach hard selection.
 The default remains `pca`, so existing baselines do not change. kNN queries
 are chunked; lower `--knn-chunk-size` if inference runs out of memory. A
 positive `--memory-max-patches` deterministically subsamples the normal bank;
@@ -192,6 +191,20 @@ done
 
 Saved fitted kNN models use `<model-state>.normal-memory.npz` alongside the
 JSON state. Keep both files together when moving a fitted model.
+
+Compare fixed and training-free gated calibration without changing the
+backbone, memory, split, or image aggregation:
+
+```bash
+for fusion in fixed gated; do
+  python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+    --normal-shots 1 --defect-shots 0 --seed 42 --normal-augment-count 30 \
+    --image-size 672 --feature-layers=-1,-2,-3,-4 \
+    --anomaly-method pca_knn --fusion-mode "$fusion" --gate-temperature 1.0 \
+    --knn-backend torch --knn-dtype float16 --memory-max-patches 5000 \
+    --output "outputs/mvtec-fusion-${fusion}-seed42.json"
+done
+```
 
 ### Paper-protocol normal shots
 
@@ -263,20 +276,6 @@ python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots -1 --defect-shots 1 --seed 42 --feature-layer-preset middle7 \
   --layer-aggregation mean --output outputs/ablation-layer-middle7-mean.jsonl
-```
-
-Compare feature-level fusion with independent per-layer PCA score fusion:
-
-```bash
-for fusion in feature score_mean score_max; do
-  python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-    --normal-shots 1 --defect-shots 0 --seed 42 --normal-augment-count 30 \
-    --image-size 672 --feature-layers=-1,-2,-3,-4 \
-    --layer-aggregation mean --layer-fusion "$fusion" \
-    --anomaly-method pca_knn --knn-weight 0.5 \
-    --knn-backend torch --knn-dtype float16 --memory-max-patches 5000 \
-    --output "outputs/mvtec-layer-${fusion}-seed42.json"
-done
 ```
 
 For the paper-protocol anomaly-detection comparison, keep defect references

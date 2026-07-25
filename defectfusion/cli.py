@@ -100,10 +100,10 @@ def main(argv=None):
     f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     f.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn"], default=None); f.add_argument("--knn-weight", type=float, default=None)
+    f.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None); f.add_argument("--gate-temperature", type=float, default=None)
     f.add_argument("--memory-max-patches", type=int, default=None); f.add_argument("--knn-chunk-size", type=int, default=None)
     f.add_argument("--knn-backend", choices=["auto", "numpy", "torch"], default=None); f.add_argument("--knn-dtype", choices=["float32", "float16"], default=None)
     f.add_argument("--feature-layers", default=None); f.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
-    f.add_argument("--layer-fusion", choices=["feature", "score_mean", "score_max"], default=None)
     f.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); f.add_argument("--gaussian-sigma", type=float, default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
@@ -132,6 +132,8 @@ def main(argv=None):
     e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     e.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn"], default=None, help="normal anomaly detector")
     e.add_argument("--knn-weight", type=float, default=None, help="kNN contribution in calibrated pca_knn fusion")
+    e.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None, help="fixed weight or normal-tail-calibrated patch gate")
+    e.add_argument("--gate-temperature", type=float, default=None, help="soft gate temperature; lower values select one expert more strongly")
     e.add_argument("--memory-max-patches", type=int, default=None, help="maximum normal patches retained for kNN; 0 keeps all")
     e.add_argument("--knn-chunk-size", type=int, default=None, help="query patches per kNN matrix chunk")
     e.add_argument("--knn-backend", choices=["auto", "numpy", "torch"], default=None, help="auto uses Torch when the extractor is on CUDA")
@@ -139,7 +141,6 @@ def main(argv=None):
     e.add_argument("--feature-layers", default=None, help="comma-separated hidden-state indices")
     e.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None, help="named layer selection; middle7 matches the SubspaceAD indices")
     e.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
-    e.add_argument("--layer-fusion", choices=["feature", "score_mean", "score_max"], default=None, help="feature fusion before PCA or calibrated per-layer PCA score fusion")
     e.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); e.add_argument("--gaussian-sigma", type=float, default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
@@ -150,11 +151,14 @@ def main(argv=None):
     type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
     anomaly_method = getattr(a, "anomaly_method", None) or cfg.get("anomaly_method", "pca")
     knn_weight = getattr(a, "knn_weight", None); knn_weight = knn_weight if knn_weight is not None else cfg.get("knn_weight", 0.5)
+    fusion_mode = getattr(a, "fusion_mode", None) or cfg.get("fusion_mode", "fixed")
+    gate_temperature = getattr(a, "gate_temperature", None); gate_temperature = gate_temperature if gate_temperature is not None else cfg.get("gate_temperature", 1.0)
     memory_max_patches = getattr(a, "memory_max_patches", None); memory_max_patches = memory_max_patches if memory_max_patches is not None else cfg.get("memory_max_patches", 50000)
     knn_chunk_size = getattr(a, "knn_chunk_size", None); knn_chunk_size = knn_chunk_size if knn_chunk_size is not None else cfg.get("knn_chunk_size", 256)
     knn_backend = getattr(a, "knn_backend", None) or cfg.get("knn_backend", "auto")
     knn_dtype = getattr(a, "knn_dtype", None) or cfg.get("knn_dtype", "float32")
     if not 0 <= knn_weight <= 1: p.error("--knn-weight must be in [0, 1]")
+    if gate_temperature <= 0: p.error("--gate-temperature must be positive")
     if memory_max_patches < 0: p.error("--memory-max-patches must be non-negative")
     if knn_chunk_size <= 0: p.error("--knn-chunk-size must be positive")
     try:
@@ -162,7 +166,6 @@ def main(argv=None):
     except ValueError as exc:
         p.error(str(exc))
     layer_aggregation = getattr(a, "layer_aggregation", None) or cfg.get("layer_aggregation", "mean")
-    layer_fusion = getattr(a, "layer_fusion", None) or cfg.get("layer_fusion", "feature")
     map_postprocess = getattr(a, "map_postprocess", None) or cfg.get("map_postprocess", "none")
     gaussian_sigma = getattr(a, "gaussian_sigma", None)
     gaussian_sigma = gaussian_sigma if gaussian_sigma is not None else cfg.get("gaussian_sigma", 1.0)
@@ -178,7 +181,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, layer_fusion=layer_fusion).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -213,7 +216,7 @@ def main(argv=None):
             if category.name in no_augment_categories: augment_count = 0
             normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
             print(f"[normal-augment] {category.name}: {len(normal_training_images)} views", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, layer_fusion=layer_fusion).fit_normal(normal_training_images)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category.name}: backend={fusion.normal_memory.resolved_backend} "
@@ -254,10 +257,11 @@ def main(argv=None):
             metrics["feature_layer_preset"] = feature_layer_preset
             metrics["image_size"] = image_size
             metrics["layer_aggregation"] = layer_aggregation
-            metrics["layer_fusion"] = layer_fusion
             metrics["type_matching"] = type_matching
             metrics["anomaly_method"] = anomaly_method
             metrics["knn_weight"] = knn_weight if anomaly_method == "pca_knn" else 0
+            metrics["fusion_mode"] = fusion_mode if anomaly_method == "pca_knn" else "none"
+            metrics["gate_temperature"] = gate_temperature if anomaly_method == "pca_knn" and fusion_mode == "gated" else 0
             metrics["memory_max_patches"] = memory_max_patches if anomaly_method != "pca" else 0
             metrics["knn_chunk_size"] = knn_chunk_size if anomaly_method != "pca" else 0
             metrics["knn_backend"] = fusion.normal_memory.resolved_backend if anomaly_method != "pca" else "none"

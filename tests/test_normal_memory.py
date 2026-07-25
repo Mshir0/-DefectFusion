@@ -4,29 +4,11 @@ from pathlib import Path
 
 import numpy as np
 
-from defectfusion.model import NormalPatchMemory, NormalSubspace
+from defectfusion.model import NormalPatchMemory
 from defectfusion.pipeline import DefectFusion
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
-    def test_independent_layer_scores_are_calibrated_then_averaged(self):
-        extractor = type("Extractor", (), {"debias": False, "layer_aggregation": "mean"})()
-        fusion = DefectFusion(extractor, layer_fusion="score_mean")
-        normal_a = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=np.float32)
-        normal_b = np.array([[0, 0], [2, 0], [0, 2], [2, 2]], dtype=np.float32)
-        fusion.layer_subspaces = [NormalSubspace(max_components=1).fit(normal_a), NormalSubspace(max_components=1).fit(normal_b)]
-        query_a = np.array([[2, 2], [0.5, 0.5]], dtype=np.float32)
-        query_b = np.array([[4, 4], [1, 1]], dtype=np.float32)
-        scores, calibrated = fusion._pca_patch_scores(
-            np.zeros_like(query_a), [query_a, query_b]
-        )
-        expected = np.stack([
-            subspace.calibrated(subspace.score(query))
-            for subspace, query in zip(fusion.layer_subspaces, [query_a, query_b])
-        ]).mean(axis=0)
-        self.assertTrue(calibrated)
-        np.testing.assert_allclose(scores, expected)
-
     def test_numpy_backend_matches_auto_cpu(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
@@ -48,14 +30,30 @@ class NormalPatchMemoryTest(unittest.TestCase):
         pca_only = DefectFusion(object(), anomaly_method="pca_knn", knn_weight=0.0)
         pca_only.subspace.fit(normal)
         pca_only.normal_memory.fit(normal)
-        fused, pca, _ = pca_only._anomaly_scores(query)
+        fused, pca, _, _ = pca_only._anomaly_scores(query)
         np.testing.assert_allclose(fused, pca_only.subspace.calibrated(pca))
 
         knn_only = DefectFusion(object(), anomaly_method="pca_knn", knn_weight=1.0)
         knn_only.subspace.fit(normal)
         knn_only.normal_memory.fit(normal)
-        fused, _, knn = knn_only._anomaly_scores(query)
+        fused, _, knn, _ = knn_only._anomaly_scores(query)
         np.testing.assert_allclose(fused, knn_only.normal_memory.calibrated(knn))
+
+    def test_tail_evidence_is_monotonic(self):
+        calibration = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float64)
+        evidence = NormalPatchMemory._tail_evidence([0.05, 0.25, 0.5, 0.6], calibration)
+        self.assertTrue(np.all(np.diff(evidence) > 0))
+
+    def test_gated_fusion_produces_patchwise_weights(self):
+        normal = np.array([[1, 0], [0, 1], [1, 1], [-1, 1]], dtype=np.float32)
+        query = np.array([[1, -1], [-1, -1]], dtype=np.float32)
+        fusion = DefectFusion(object(), anomaly_method="pca_knn", fusion_mode="gated")
+        fusion.subspace.fit(normal)
+        fusion.normal_memory.fit(normal)
+        fused, _, _, gate = fusion._anomaly_scores(query)
+        self.assertEqual(gate.shape, (2,))
+        self.assertTrue(np.all((gate >= 0) & (gate <= 1)))
+        self.assertTrue(np.all(np.isfinite(fused)))
 
     def test_memory_uses_npz_sidecar(self):
         fusion = DefectFusion(object(), anomaly_method="knn", memory_max_patches=10)
@@ -72,19 +70,10 @@ class NormalPatchMemoryTest(unittest.TestCase):
                 fusion.normal_memory.features,
                 atol=5e-4,
             )
-
-    def test_layer_subspaces_round_trip_without_aggregate_pca(self):
-        extractor = type("Extractor", (), {"debias": False, "layer_aggregation": "mean"})()
-        fusion = DefectFusion(extractor, layer_fusion="score_max")
-        normal = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=np.float32)
-        fusion.layer_subspaces = [NormalSubspace(max_components=1).fit(normal)]
-        with tempfile.TemporaryDirectory() as directory:
-            state_path = Path(directory) / "model.json"
-            fusion.save(state_path)
-            loaded = DefectFusion.load(state_path, extractor)
-            self.assertEqual(loaded.layer_fusion, "score_max")
-            self.assertIsNone(loaded.subspace.components)
-            self.assertEqual(len(loaded.layer_subspaces), 1)
+            np.testing.assert_allclose(
+                loaded.normal_memory.calibration_scores,
+                fusion.normal_memory.calibration_scores,
+            )
 
 
 if __name__ == "__main__":

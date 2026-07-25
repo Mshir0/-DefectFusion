@@ -10,16 +10,10 @@ from .model import NormalPatchMemory, NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", layer_fusion: str = "feature"):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", fusion_mode: str = "fixed", gate_temperature: float = 1.0):
         self.extractor = extractor
         self.alpha = alpha
         self.subspace = NormalSubspace()
-        if layer_fusion not in {"feature", "score_mean", "score_max"}:
-            raise ValueError("layer_fusion must be feature, score_mean, or score_max")
-        if layer_fusion != "feature" and getattr(extractor, "debias", False):
-            raise ValueError("score-level layer fusion is not compatible with --debias")
-        self.layer_fusion = layer_fusion
-        self.layer_subspaces = []
         knn_device = getattr(extractor, "device", None)
         self.normal_memory = NormalPatchMemory(memory_max_patches, knn_chunk_size, backend=knn_backend, device=knn_device, dtype=knn_dtype)
         self.prototype_bank = PrototypeBank()
@@ -43,29 +37,26 @@ class DefectFusion:
             raise ValueError("knn_weight must be in [0, 1]")
         self.anomaly_method = anomaly_method
         self.knn_weight = float(knn_weight)
+        if fusion_mode not in {"fixed", "gated"}:
+            raise ValueError("fusion_mode must be fixed or gated")
+        if gate_temperature <= 0:
+            raise ValueError("gate_temperature must be positive")
+        self.fusion_mode = fusion_mode
+        self.gate_temperature = float(gate_temperature)
         self.reference_grid = None
         self.reference_shape = None
 
     def fit_normal(self, image_paths):
         patch_batches = []
-        layer_batches = None
         for path in image_paths:
             image = path.copy() if isinstance(path, Image.Image) else Image.open(path)
-            patches, grid, layers = self._extract(image)
+            patches, grid = self.extractor.extract(image)
             patch_batches.append(patches)
-            if layers is not None:
-                if layer_batches is None:
-                    layer_batches = [[] for _ in layers]
-                for batches, layer in zip(layer_batches, layers):
-                    batches.append(layer)
             self.reference_shape = grid
         if not patch_batches:
             raise ValueError("No normal images were provided")
         features = np.concatenate(patch_batches, axis=0)
-        if layer_batches is None:
-            self.subspace.fit(features)
-        else:
-            self.layer_subspaces = [NormalSubspace().fit(np.concatenate(batches, axis=0)) for batches in layer_batches]
+        self.subspace.fit(features)
         if self.anomaly_method in {"knn", "pca_knn"}:
             self.normal_memory.fit(features)
         self.reference_grid = features.shape[1]
@@ -73,36 +64,12 @@ class DefectFusion:
 
     def add_prototype(self, label: str, image_path):
         image = Image.open(image_path)
-        patches, _, layers = self._extract(image)
-        self.prototype_bank.add(label, self._anomaly_patches(patches, layers))
+        patches, _ = self.extractor.extract(image)
+        self.prototype_bank.add(label, self._anomaly_patches(patches))
         return self
 
-    def _extract(self, image):
-        if self.layer_fusion == "feature":
-            patches, grid = self.extractor.extract(image)
-            return patches, grid, None
-        layers, grid = self.extractor.extract_layers(image)
-        if self.extractor.layer_aggregation == "mean":
-            patches = np.stack(layers, axis=0).mean(axis=0)
-        else:
-            patches = np.concatenate(layers, axis=1)
-        return patches, grid, layers
-
-    def _pca_patch_scores(self, patches, layer_patches=None):
-        if self.layer_fusion == "feature":
-            return self.subspace.score(patches), False
-        if layer_patches is None or len(layer_patches) != len(self.layer_subspaces):
-            raise ValueError("Independent layer features do not match the fitted layer PCA models")
-        calibrated = np.stack([
-            subspace.calibrated(subspace.score(layer))
-            for subspace, layer in zip(self.layer_subspaces, layer_patches)
-        ], axis=0)
-        if self.layer_fusion == "score_mean":
-            return calibrated.mean(axis=0), True
-        return calibrated.max(axis=0), True
-
-    def _anomaly_patches(self, patches, layer_patches=None):
-        scores, _ = self._pca_patch_scores(patches, layer_patches)
+    def _anomaly_patches(self, patches):
+        scores = self.subspace.score(patches)
         keep = max(1, int(np.ceil(len(scores) * self.top_k_ratio)))
         indices = np.argpartition(scores, -keep)[-keep:]
         return patches[indices]
@@ -118,17 +85,24 @@ class DefectFusion:
         keep = max(1, int(np.ceil(scores.size * 0.01)))
         return float(np.partition(scores, -keep)[-keep:].mean())
 
-    def _anomaly_scores(self, patches, layer_patches=None):
-        pca_scores, pca_is_calibrated = self._pca_patch_scores(patches, layer_patches)
+    def _anomaly_scores(self, patches):
+        pca_scores = self.subspace.score(patches)
         if self.anomaly_method == "pca":
-            return pca_scores, pca_scores, None
+            return pca_scores, pca_scores, None, None
         knn_scores = self.normal_memory.score(patches)
         if self.anomaly_method == "knn":
-            return knn_scores, pca_scores, knn_scores
-        pca_calibrated = pca_scores if pca_is_calibrated else self.subspace.calibrated(pca_scores)
+            return knn_scores, pca_scores, knn_scores, None
+        if self.fusion_mode == "gated":
+            pca_evidence = self.subspace.tail_evidence(pca_scores)
+            knn_evidence = self.normal_memory.tail_evidence(knn_scores)
+            logits = np.clip((knn_evidence - pca_evidence) / self.gate_temperature, -60.0, 60.0)
+            knn_gate = 1.0 / (1.0 + np.exp(-logits))
+            fused = (1.0 - knn_gate) * pca_evidence + knn_gate * knn_evidence
+            return fused, pca_scores, knn_scores, knn_gate
+        pca_calibrated = self.subspace.calibrated(pca_scores)
         knn_calibrated = self.normal_memory.calibrated(knn_scores)
         fused = (1.0 - self.knn_weight) * pca_calibrated + self.knn_weight * knn_calibrated
-        return fused, pca_scores, knn_scores
+        return fused, pca_scores, knn_scores, None
 
     def _postprocess_map(self, anomaly_map, image):
         if self.map_postprocess == "none":
@@ -161,13 +135,13 @@ class DefectFusion:
 
     def predict(self, image_path):
         image = Image.open(image_path)
-        patches, grid, layers = self._extract(image)
+        patches, grid = self.extractor.extract(image)
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
-        anomaly_scores, pca_scores, knn_scores = self._anomaly_scores(patches, layers)
+        anomaly_scores, pca_scores, knn_scores, knn_gate = self._anomaly_scores(patches)
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         fused_score = self._aggregate_image_score(anomaly_scores)
-        typing_patches = self._anomaly_patches(patches, layers)
+        typing_patches = self._anomaly_patches(patches)
         typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
         label, label_score = self.prototype_bank.predict(typing_features)
         result = {
@@ -179,16 +153,20 @@ class DefectFusion:
             "defect_type_score": float(label_score),
             "fused_score": fused_score * self.alpha + float(label_score) * (1.0 - self.alpha),
             "anomaly_method": self.anomaly_method,
+            "fusion_mode": self.fusion_mode,
             "pca_anomaly_score": self._aggregate_image_score(pca_scores),
         }
         if knn_scores is not None:
             result["knn_anomaly_score"] = self._aggregate_image_score(knn_scores)
+        if knn_gate is not None:
+            result["knn_gate_mean"] = float(np.mean(knn_gate))
+            result["knn_gate_top1p_mean"] = self._aggregate_image_score(knn_gate)
         return result
 
     def save(self, path):
         state = {
             "alpha": self.alpha,
-            "subspace": self.subspace.to_dict() if self.subspace.components is not None else None,
+            "subspace": self.subspace.to_dict(),
             "prototype_bank": self.prototype_bank.to_dict(),
             "unknown_threshold": self.prototype_bank.unknown_threshold,
             "top_k_ratio": self.top_k_ratio,
@@ -202,10 +180,11 @@ class DefectFusion:
             "knn_chunk_size": self.normal_memory.query_chunk_size,
             "knn_backend": self.normal_memory.backend,
             "knn_dtype": self.normal_memory.dtype,
-            "layer_fusion": self.layer_fusion,
-            "layer_subspaces": [subspace.to_dict() for subspace in self.layer_subspaces],
+            "fusion_mode": self.fusion_mode,
+            "gate_temperature": self.gate_temperature,
             "knn_center": self.normal_memory.center,
             "knn_scale": self.normal_memory.scale,
+            "knn_calibration_scores": self.normal_memory.calibration_scores.tolist() if self.normal_memory.calibration_scores is not None else None,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
@@ -221,10 +200,8 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), layer_fusion=state.get("layer_fusion", "feature"))
-        if state.get("subspace") is not None:
-            obj.subspace = NormalSubspace.from_dict(state["subspace"])
-        obj.layer_subspaces = [NormalSubspace.from_dict(item) for item in state.get("layer_subspaces", [])]
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0))
+        obj.subspace = NormalSubspace.from_dict(state["subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
         obj.prototype_bank.unknown_threshold = state.get("unknown_threshold", 0.35)
         memory_file = state.get("normal_memory_file")
@@ -233,6 +210,8 @@ class DefectFusion:
             obj.normal_memory.features = np.load(memory_path)["features"].astype(np.float32)
             obj.normal_memory.center = float(state.get("knn_center", 0.0))
             obj.normal_memory.scale = float(state.get("knn_scale", 1.0))
+            calibration = state.get("knn_calibration_scores")
+            obj.normal_memory.calibration_scores = None if calibration is None else np.asarray(calibration, dtype=np.float64)
         obj.reference_grid = state.get("reference_grid")
         obj.reference_shape = state.get("reference_shape")
         return obj

@@ -12,13 +12,14 @@
   "type_matching": "bidirectional_patch",
   "anomaly_method": "pca",
   "knn_weight": 0.5,
+  "fusion_mode": "fixed",
+  "gate_temperature": 1.0,
   "memory_max_patches": 50000,
   "knn_chunk_size": 256,
   "knn_backend": "auto",
   "knn_dtype": "float32",
   "feature_layers": [-1, -2, -3, -4],
   "layer_aggregation": "mean",
-  "layer_fusion": "feature",
   "map_postprocess": "none",
   "gaussian_sigma": 1.0
 }

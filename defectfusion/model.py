@@ -18,6 +18,7 @@ class NormalPatchMemory:
         self._torch_bank = None
         self.center = 0.0
         self.scale = 1.0
+        self.calibration_scores = None
 
     @staticmethod
     def _normalize(features):
@@ -45,6 +46,7 @@ class NormalPatchMemory:
         sample_indices = np.linspace(0, len(bank) - 1, sample_count, dtype=np.int64)
         calibration = self.score(bank[sample_indices], exclude_indices=sample_indices)
         self.center, self.scale = self._robust_stats(calibration)
+        self.calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
         return self
 
     def _resolved_backend(self):
@@ -110,11 +112,33 @@ class NormalPatchMemory:
     def calibrated(self, scores):
         return (np.asarray(scores, dtype=np.float64) - self.center) / self.scale
 
+    def tail_evidence(self, scores):
+        return self._tail_evidence(scores, self.calibration_scores)
+
+    @staticmethod
+    def _tail_evidence(scores, calibration_scores):
+        reference = np.asarray(calibration_scores, dtype=np.float64)
+        if reference.size < 2:
+            raise ValueError("Tail calibration requires at least two normal scores")
+        reference = np.sort(reference)
+        ranks = np.arange(1, len(reference) + 1, dtype=np.float64) / (len(reference) + 1)
+        values = np.asarray(scores, dtype=np.float64)
+        cdf = np.interp(values, reference, ranks, left=0.0, right=ranks[-1])
+        evidence = -np.log(np.maximum(1.0 - cdf, 1.0 / (len(reference) + 1)))
+        above = values > reference[-1]
+        if np.any(above):
+            tail_index = max(0, len(reference) - min(16, len(reference)))
+            tail_scale = max(reference[-1] - reference[tail_index], np.std(reference) * 0.1, 1e-12)
+            evidence = np.asarray(evidence)
+            evidence[above] += (values[above] - reference[-1]) / tail_scale
+        return evidence
+
 class NormalSubspace:
     def __init__(self, explained_variance=0.99, max_components=None):
         self.explained_variance = explained_variance; self.max_components = max_components
         self.mean = self.components = None
         self.score_center = 0.0; self.score_scale = 1.0
+        self.calibration_scores = None
     def fit(self, features):
         x = np.asarray(features, dtype=np.float64); self.mean = x.mean(0)
         _, s, vt = np.linalg.svd(x - self.mean, full_matrices=False); var = s * s
@@ -123,15 +147,19 @@ class NormalSubspace:
         self.components = vt[:max(1, keep)]
         scores = self.score(x)
         self.score_center, self.score_scale = NormalPatchMemory._robust_stats(scores)
+        sample_count = min(len(scores), 4096)
+        sample_indices = np.linspace(0, len(scores) - 1, sample_count, dtype=np.int64)
+        self.calibration_scores = np.sort(np.asarray(scores[sample_indices], dtype=np.float64))
         return self
     def score(self, features):
         z = np.asarray(features, dtype=np.float64) - self.mean; recon = (z @ self.components.T) @ self.components
         return np.sum((z - recon) ** 2, axis=1)
     def calibrated(self, scores): return (np.asarray(scores, dtype=np.float64) - self.score_center) / self.score_scale
-    def to_dict(self): return {"mean": self.mean.tolist(), "components": self.components.tolist(), "score_center": self.score_center, "score_scale": self.score_scale}
+    def tail_evidence(self, scores): return NormalPatchMemory._tail_evidence(scores, self.calibration_scores)
+    def to_dict(self): return {"mean": self.mean.tolist(), "components": self.components.tolist(), "score_center": self.score_center, "score_scale": self.score_scale, "calibration_scores": self.calibration_scores.tolist() if self.calibration_scores is not None else None}
     @classmethod
     def from_dict(cls, d):
-        obj = cls(); obj.mean = np.asarray(d["mean"]); obj.components = np.asarray(d["components"]); obj.score_center = float(d.get("score_center", 0.0)); obj.score_scale = float(d.get("score_scale", 1.0)); return obj
+        obj = cls(); obj.mean = np.asarray(d["mean"]); obj.components = np.asarray(d["components"]); obj.score_center = float(d.get("score_center", 0.0)); obj.score_scale = float(d.get("score_scale", 1.0)); calibration = d.get("calibration_scores"); obj.calibration_scores = None if calibration is None else np.asarray(calibration, dtype=np.float64); return obj
 
 class PrototypeBank:
     def __init__(self, unknown_threshold=0.35):
