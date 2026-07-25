@@ -20,9 +20,12 @@ class NormalSubspace:
         obj = cls(); obj.mean = np.asarray(d["mean"]); obj.components = np.asarray(d["components"]); return obj
 
 class PrototypeBank:
-    def __init__(self, unknown_threshold=0.35): self.prototypes = {}; self.unknown_threshold = unknown_threshold
+    def __init__(self, unknown_threshold=0.35): self.prototypes = {}; self.counts = {}; self.unknown_threshold = unknown_threshold
     def add(self, label, features):
-        x = np.asarray(features, dtype=np.float64); p = x.mean(0); p /= max(np.linalg.norm(p), 1e-12); self.prototypes[label] = p
+        x = np.asarray(features, dtype=np.float64); p = x.mean(0); p /= max(np.linalg.norm(p), 1e-12)
+        count = self.counts.get(label, 0)
+        if count: p = (self.prototypes[label] * count + p) / (count + 1); p /= max(np.linalg.norm(p), 1e-12)
+        self.prototypes[label] = p; self.counts[label] = count + 1
     def predict(self, feature):
         if not self.prototypes: return "unknown", 0.0
         x = np.asarray(feature, dtype=np.float64); x /= max(np.linalg.norm(x), 1e-12)
@@ -31,4 +34,4 @@ class PrototypeBank:
     def to_dict(self): return {k: v.tolist() for k, v in self.prototypes.items()}
     @classmethod
     def from_dict(cls, d):
-        b = cls(); b.prototypes = {k: np.asarray(v) for k, v in d.items()}; return b
+        b = cls(); b.prototypes = {k: np.asarray(v) for k, v in d.items()}; b.counts = {k: 1 for k in d}; return b

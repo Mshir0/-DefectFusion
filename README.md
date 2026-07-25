@@ -47,3 +47,11 @@ Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSONL file per
 category. Add `--prototype-dir` (subdirectories are defect labels) to enable
 defect-type accuracy, macro-F1, and a confusion matrix.
+
+For a reproducible MVTec few-shot experiment, randomly select N test images
+per defect type as prototypes (selected images are excluded from evaluation):
+
+```bash
+python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+  --few-shot 1 --seed 42 --output outputs/mvtec-all.jsonl
+```

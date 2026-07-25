@@ -9,14 +9,17 @@ def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
 
-def evaluate_mvtec(fusion, category_dir, output, *, progress=True):
+def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_images=None):
     """Evaluate a fitted model on one MVTec category and write JSONL results."""
     root = Path(category_dir)
+    excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
     rows, image_y, image_s, pixel_y, pixel_s = [], [], [], [], []
     test = root / "test"
     for defect_dir in sorted(p for p in test.iterdir() if p.is_dir()):
         defect = defect_dir.name
         for image in _images(defect_dir):
+            if str(image.resolve()) in excluded_images:
+                continue
             result = fusion.predict(str(image))
             truth = defect != "good"
             result.update({"category": root.name, "ground_truth_type": defect, "ground_truth_anomaly": truth})
@@ -40,8 +43,9 @@ def evaluate_mvtec(fusion, category_dir, output, *, progress=True):
         if len(set(image_y)) > 1: metrics["image_auroc"] = float(roc_auc_score(image_y, image_s))
         if pixel_y and len(set(pixel_y)) > 1: metrics["pixel_auroc"] = float(roc_auc_score(pixel_y, pixel_s))
         from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
-        true_types = [r["ground_truth_type"] for r in rows]
-        pred_types = [r["defect_type"] for r in rows]
+        defect_rows = [r for r in rows if r["ground_truth_anomaly"]]
+        true_types = [r["ground_truth_type"] for r in defect_rows]
+        pred_types = [r["defect_type"] for r in defect_rows]
         if any(p != "unknown" for p in pred_types):
             labels = sorted(set(true_types) | set(pred_types))
             metrics["defect_type_accuracy"] = float(accuracy_score(true_types, pred_types))

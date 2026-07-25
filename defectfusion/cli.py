@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import random
 from pathlib import Path
 
 from .features import DinoFeatureExtractor
@@ -39,6 +40,8 @@ def main(argv=None):
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
     e.add_argument("--prototype-dir", help="optional few-shot prototypes; subdirectories are defect labels")
+    e.add_argument("--few-shot", type=int, default=0, help="random exemplars per MVTec defect type")
+    e.add_argument("--seed", type=int, default=42, help="seed used for reproducible few-shot selection")
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
     e.add_argument("--output", default="outputs/mvtec-results.jsonl")
     a = p.parse_args(argv); cfg = _config(a.config)
@@ -76,8 +79,22 @@ def main(argv=None):
                     if label_dir.is_dir():
                         for image in _images(str(label_dir)):
                             fusion.add_prototype(label_dir.name, image)
+            selected = []
+            if a.few_shot > 0:
+                rng = random.Random(a.seed)
+                for defect_dir in sorted(x for x in (category / "test").iterdir() if x.is_dir() and x.name != "good"):
+                    candidates = _images(str(defect_dir))
+                    chosen = rng.sample(candidates, min(a.few_shot, len(candidates)))
+                    for image in chosen:
+                        fusion.add_prototype(defect_dir.name, image)
+                        selected.append(image)
+                        print(f"[few-shot] {category.name}/{defect_dir.name}: {Path(image).name}", flush=True)
             result_path = a.output if len(categories) == 1 else str(Path(a.output).with_name(f"{Path(a.output).stem}-{category.name}.jsonl"))
-            all_metrics.append(evaluate_mvtec(fusion, category, result_path))
+            metrics = evaluate_mvtec(fusion, category, result_path, excluded_images=selected)
+            metrics["few_shot"] = a.few_shot
+            metrics["seed"] = a.seed
+            metrics["few_shot_images"] = [str(Path(x)) for x in selected]
+            all_metrics.append(metrics)
         print(json.dumps(all_metrics[0] if len(all_metrics) == 1 else {"categories": all_metrics}, ensure_ascii=False, indent=2))
 
 
