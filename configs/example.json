@@ -5,5 +5,6 @@
   "prototype_dir": "examples/data/prototypes",
   "output": "outputs/example-model.json",
   "alpha": 0.5,
-  "unknown_threshold": 0.35
+  "unknown_threshold": 0.35,
+  "top_k_ratio": 0.05
 }

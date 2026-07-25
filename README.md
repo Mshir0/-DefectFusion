@@ -66,4 +66,5 @@ python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
 
 Defect typing uses the highest PCA-reconstruction-residual patches instead of
 the whole-image mean. Control their fraction with `--top-k-ratio` (default
-`0.1`); use `1.0` to reproduce whole-image prototype classification.
+`0.05`, selected by the MVTec 1-shot ablation); use `1.0` to reproduce
+whole-image prototype classification.
