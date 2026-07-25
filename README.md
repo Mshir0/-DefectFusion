@@ -42,7 +42,9 @@ python -m defectfusion.cli evaluate-mvtec \
 ```
 
 The command fits only on `train/good`, writes one JSON object per test image,
-and prints image-level and pixel-level AUROC when both classes are present.
+and reports Image AUROC/AUPR plus Pixel AUROC/AUPR/AUPRO when ground-truth
+masks are available. AUPRO follows the MVTec convention and integrates the
+per-region overlap curve over `FPR <= 0.3`.
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSONL file per
 category. For a multi-category run, `--output` stores the final combined JSON
@@ -296,5 +298,22 @@ for seed in 0 1 2; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots 4 --defect-shots 1 --seed "$seed" \
     --output "outputs/ablation-seed-${seed}.jsonl"
+done
+```
+
+Run the current fixed PCA+kNN 1-shot configuration for the final five-seed
+comparison (each summary includes Image AUROC/AUPR and Pixel AUROC/AUPR/AUPRO):
+
+```bash
+for seed in 0 1 2 3 4; do
+  python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+    --model facebook/dinov3-vitl16-pretrain-lvd1689m --device cuda \
+    --normal-shots 1 --defect-shots 0 --seed "$seed" \
+    --normal-augment-count 30 --image-size 672 \
+    --feature-layers=-1,-3,-5,-7 --layer-aggregation mean \
+    --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
+    --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
+    --knn-chunk-size 1024 \
+    --output "outputs/mvtec-fixed-seed-${seed}.json"
 done
 ```

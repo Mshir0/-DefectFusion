@@ -273,7 +273,10 @@ def main(argv=None):
         if len(all_metrics) == 1:
             summary = all_metrics[0]
         else:
-            metric_names = ("image_auroc", "pixel_auroc", "defect_type_accuracy", "defect_type_macro_f1")
+            metric_names = (
+                "image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "pixel_aupro",
+                "defect_type_accuracy", "defect_type_macro_f1",
+            )
             macro = {}
             for name in metric_names:
                 values = [float(item[name]) for item in all_metrics if name in item]
