@@ -30,6 +30,32 @@ def _layers(value) -> tuple[int, ...]:
     return tuple(int(x.strip()) for x in str(value).split(",") if x.strip())
 
 
+FEATURE_LAYER_PRESETS = {
+    "last4": (-1, -2, -3, -4),
+    # SubspaceAD uses these seven intermediate hidden states with mean fusion.
+    "middle7": (-12, -13, -14, -15, -16, -17, -18),
+}
+
+
+def _feature_layers(args, cfg) -> tuple[tuple[int, ...], str | None]:
+    explicit = getattr(args, "feature_layers", None)
+    preset = getattr(args, "feature_layer_preset", None)
+    if explicit and preset:
+        raise ValueError("--feature-layers and --feature-layer-preset are mutually exclusive")
+    if explicit:
+        return _layers(explicit), None
+    if preset:
+        return FEATURE_LAYER_PRESETS[preset], preset
+    if "feature_layers" in cfg:
+        return _layers(cfg["feature_layers"]), None
+    config_preset = cfg.get("feature_layer_preset")
+    if config_preset:
+        if config_preset not in FEATURE_LAYER_PRESETS:
+            raise ValueError(f"Unknown feature_layer_preset: {config_preset}")
+        return FEATURE_LAYER_PRESETS[config_preset], config_preset
+    return FEATURE_LAYER_PRESETS["last4"], "last4"
+
+
 def _augment_normal_images(paths, count, augmentations, seed):
     if count <= 0:
         return paths
@@ -73,7 +99,7 @@ def main(argv=None):
     f.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
     f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
-    f.add_argument("--feature-layers", default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
+    f.add_argument("--feature-layers", default=None); f.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
     f.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); f.add_argument("--gaussian-sigma", type=float, default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
@@ -81,7 +107,7 @@ def main(argv=None):
     q.add_argument("--image-size", type=int, default=None)
     q.add_argument("--output", help="write JSON results to a file")
     q.add_argument("--debias", action="store_true"); q.add_argument("--svd-components", type=int, default=20)
-    q.add_argument("--feature-layers", default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
+    q.add_argument("--feature-layers", default=None); q.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
     e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
@@ -101,6 +127,7 @@ def main(argv=None):
     e.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     e.add_argument("--feature-layers", default=None, help="comma-separated hidden-state indices")
+    e.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None, help="named layer selection; middle7 matches the SubspaceAD indices")
     e.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
     e.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); e.add_argument("--gaussian-sigma", type=float, default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
@@ -110,7 +137,10 @@ def main(argv=None):
     top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
     image_score = getattr(a, "image_score", None) or cfg.get("image_score", "mtop1p")
     type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
-    feature_layers = _layers(getattr(a, "feature_layers", None) or cfg.get("feature_layers", [-1, -2, -3, -4]))
+    try:
+        feature_layers, feature_layer_preset = _feature_layers(a, cfg)
+    except ValueError as exc:
+        p.error(str(exc))
     layer_aggregation = getattr(a, "layer_aggregation", None) or cfg.get("layer_aggregation", "mean")
     map_postprocess = getattr(a, "map_postprocess", None) or cfg.get("map_postprocess", "none")
     gaussian_sigma = getattr(a, "gaussian_sigma", None)
@@ -193,6 +223,7 @@ def main(argv=None):
             metrics["top_k_ratio"] = top_k_ratio
             metrics["image_score"] = image_score
             metrics["feature_layers"] = list(feature_layers)
+            metrics["feature_layer_preset"] = feature_layer_preset
             metrics["image_size"] = image_size
             metrics["layer_aggregation"] = layer_aggregation
             metrics["type_matching"] = type_matching

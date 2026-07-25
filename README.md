@@ -83,6 +83,10 @@ Dense features are averaged from the final four DINOv3 transformer blocks by
 default. Override this with `--feature-layers=-1` for the former last-layer
 baseline, or select layers and concatenation explicitly, for example
 `--feature-layers=-1,-3,-5 --layer-aggregation concat`.
+Use `--feature-layer-preset middle7` to select the seven intermediate states
+`-12,-13,-14,-15,-16,-17,-18` used by the SubspaceAD benchmark. This matches
+its hidden-state indices, but not necessarily the same relative network depth
+when the backbone has a different number of transformer blocks.
 
 ## Ablation experiments
 
@@ -115,6 +119,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch` | Type Accuracy, Macro-F1 |
 | Feature layers | `--feature-layers` | `-1,-2,-3,-4` | `-1`, `-1,-2`, `-1,-2,-3,-4`, `-1,-3,-5` | All metrics |
+| Feature layer preset | `--feature-layer-preset` | `last4` | `last4, middle7` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
 | Map post-process | `--map-postprocess` | `none` | `none, gaussian, crf` | Pixel AUROC |
 | Gaussian sigma | `--gaussian-sigma` | `1.0` | `0.5, 1.0, 2.0` | Pixel AUROC |
@@ -209,6 +214,20 @@ python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots -1 --defect-shots 1 --seed 42 --feature-layers=-1,-2,-3,-4 \
   --layer-aggregation mean --output outputs/ablation-layer-last4-mean.jsonl
+
+python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+  --normal-shots -1 --defect-shots 1 --seed 42 --feature-layer-preset middle7 \
+  --layer-aggregation mean --output outputs/ablation-layer-middle7-mean.jsonl
+```
+
+For the paper-protocol anomaly-detection comparison, keep defect references
+disabled and change only the layer selection:
+
+```bash
+python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+  --normal-shots 1 --defect-shots 0 --seed 42 --normal-augment-count 30 \
+  --image-size 672 --feature-layer-preset middle7 --layer-aggregation mean \
+  --output outputs/mvtec-normal-1shot-middle7.json
 ```
 
 Measure shot-sampling stability with multiple seeds. Report the mean and standard

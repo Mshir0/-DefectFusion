@@ -19,6 +19,13 @@ class DinoFeatureExtractor:
         self.feature_layers = tuple(feature_layers)
         if not self.feature_layers:
             raise ValueError("feature_layers cannot be empty")
+        state_count = int(getattr(self.model.config, "num_hidden_layers", 0) or 0) + 1
+        invalid = [index for index in self.feature_layers if index >= state_count or index < -state_count]
+        if invalid:
+            raise ValueError(
+                f"Feature layers {invalid} are invalid for a model with "
+                f"{state_count} hidden states (embedding output plus transformer blocks)"
+            )
         if layer_aggregation not in {"mean", "concat"}:
             raise ValueError("layer_aggregation must be mean or concat")
         self.layer_aggregation = layer_aggregation
