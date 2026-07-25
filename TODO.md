@@ -11,7 +11,7 @@
 ## Paper-derived next steps
 
 - [x] Fuse PCA residuals with an AnomalyDINO-style normal-patch kNN memory score.
-- [ ] Fit independent PCA models per feature layer and fuse calibrated anomaly maps.
+- [x] Fit independent PCA models per feature layer and fuse calibrated anomaly maps.
 - [ ] Apply INSID3 positional debiasing only to cross-image defect matching.
 - [ ] Add PCA score ablations: cosine residual, dropped PCs, and Mahalanobis residual.
 - [ ] Score each defect reference independently and robustly aggregate reference scores.

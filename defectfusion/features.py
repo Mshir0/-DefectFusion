@@ -39,29 +39,33 @@ class DinoFeatureExtractor:
             do_center_crop=False,
         ).to(self.device)
 
-    def _patch_tokens(self, inputs):
+    def _selected_patch_tokens(self, inputs):
         out = self.model(**inputs, output_hidden_states=True)
         n_register = int(getattr(self.model.config, "num_register_tokens", 0) or 0)
         try:
             selected = [out.hidden_states[index][:, 1 + n_register :, :] for index in self.feature_layers]
         except IndexError as exc:
             raise ValueError(f"Invalid feature layer in {self.feature_layers}; model returned {len(out.hidden_states)} states") from exc
-        if self.layer_aggregation == "mean":
-            tokens = torch.stack(selected, dim=0).mean(dim=0)
-        else:
-            tokens = torch.cat(selected, dim=-1)
-        n = tokens.shape[1]
+        n = selected[0].shape[1]
         pixel_values = inputs.get("pixel_values")
         patch_size = int(getattr(self.model.config, "patch_size", 16) or 16)
         if pixel_values is not None:
             height, width = pixel_values.shape[-2:]
             grid = (height // patch_size, width // patch_size)
             if grid[0] * grid[1] == n:
-                return tokens, grid
+                return selected, grid
         side = int(n ** 0.5)
         if side * side != n:
             raise ValueError(f"Backbone returned {n} patch tokens; cannot infer spatial grid")
         grid = (side, side)
+        return selected, grid
+
+    def _patch_tokens(self, inputs):
+        selected, grid = self._selected_patch_tokens(inputs)
+        if self.layer_aggregation == "mean":
+            tokens = torch.stack(selected, dim=0).mean(dim=0)
+        else:
+            tokens = torch.cat(selected, dim=-1)
         return tokens, grid
 
     @torch.inference_mode()
@@ -91,3 +95,12 @@ class DinoFeatureExtractor:
         tokens, grid = self._patch_tokens(inputs)
         tokens = self._debias(tokens) if self.debias else tokens.float()
         return tokens[0].cpu().numpy(), grid
+
+    @torch.inference_mode()
+    def extract_layers(self, image: Image.Image):
+        """Return one dense patch-feature matrix per configured hidden state."""
+        if self.debias:
+            raise ValueError("Independent layer PCA is not compatible with global positional debiasing")
+        inputs = self._prepare(image.convert("RGB"))
+        selected, grid = self._selected_patch_tokens(inputs)
+        return [tokens[0].float().cpu().numpy() for tokens in selected], grid
