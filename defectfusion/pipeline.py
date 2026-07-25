@@ -6,14 +6,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .model import NormalSubspace, PrototypeBank
+from .model import NormalPatchMemory, NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256):
         self.extractor = extractor
         self.alpha = alpha
         self.subspace = NormalSubspace()
+        self.normal_memory = NormalPatchMemory(memory_max_patches, knn_chunk_size)
         self.prototype_bank = PrototypeBank()
         self.prototype_bank.unknown_threshold = unknown_threshold
         if not 0 < top_k_ratio <= 1:
@@ -29,6 +30,12 @@ class DefectFusion:
             raise ValueError("map_postprocess must be none, gaussian, or crf")
         self.map_postprocess = map_postprocess
         self.gaussian_sigma = gaussian_sigma
+        if anomaly_method not in {"pca", "knn", "pca_knn"}:
+            raise ValueError("anomaly_method must be pca, knn, or pca_knn")
+        if not 0 <= knn_weight <= 1:
+            raise ValueError("knn_weight must be in [0, 1]")
+        self.anomaly_method = anomaly_method
+        self.knn_weight = float(knn_weight)
         self.reference_grid = None
         self.reference_shape = None
 
@@ -43,6 +50,8 @@ class DefectFusion:
             raise ValueError("No normal images were provided")
         features = np.concatenate(patch_batches, axis=0)
         self.subspace.fit(features)
+        if self.anomaly_method in {"knn", "pca_knn"}:
+            self.normal_memory.fit(features)
         self.reference_grid = features.shape[1]
         return self
 
@@ -68,6 +77,18 @@ class DefectFusion:
             return float(np.percentile(scores, 99))
         keep = max(1, int(np.ceil(scores.size * 0.01)))
         return float(np.partition(scores, -keep)[-keep:].mean())
+
+    def _anomaly_scores(self, patches):
+        pca_scores = self.subspace.score(patches)
+        if self.anomaly_method == "pca":
+            return pca_scores, pca_scores, None
+        knn_scores = self.normal_memory.score(patches)
+        if self.anomaly_method == "knn":
+            return knn_scores, pca_scores, knn_scores
+        pca_calibrated = self.subspace.calibrated(pca_scores)
+        knn_calibrated = self.normal_memory.calibrated(knn_scores)
+        fused = (1.0 - self.knn_weight) * pca_calibrated + self.knn_weight * knn_calibrated
+        return fused, pca_scores, knn_scores
 
     def _postprocess_map(self, anomaly_map, image):
         if self.map_postprocess == "none":
@@ -103,13 +124,13 @@ class DefectFusion:
         patches, grid = self.extractor.extract(image)
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
-        anomaly_scores = self.subspace.score(patches)
+        anomaly_scores, pca_scores, knn_scores = self._anomaly_scores(patches)
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         fused_score = self._aggregate_image_score(anomaly_scores)
         typing_patches = self._anomaly_patches(patches)
         typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
         label, label_score = self.prototype_bank.predict(typing_features)
-        return {
+        result = {
             "image": str(image_path),
             "grid": list(grid),
             "anomaly_score": fused_score,
@@ -117,7 +138,12 @@ class DefectFusion:
             "defect_type": label,
             "defect_type_score": float(label_score),
             "fused_score": fused_score * self.alpha + float(label_score) * (1.0 - self.alpha),
+            "anomaly_method": self.anomaly_method,
+            "pca_anomaly_score": self._aggregate_image_score(pca_scores),
         }
+        if knn_scores is not None:
+            result["knn_anomaly_score"] = self._aggregate_image_score(knn_scores)
+        return result
 
     def save(self, path):
         state = {
@@ -130,21 +156,37 @@ class DefectFusion:
             "type_matching": self.type_matching,
             "map_postprocess": self.map_postprocess,
             "gaussian_sigma": self.gaussian_sigma,
+            "anomaly_method": self.anomaly_method,
+            "knn_weight": self.knn_weight,
+            "memory_max_patches": self.normal_memory.max_patches,
+            "knn_chunk_size": self.normal_memory.query_chunk_size,
+            "knn_center": self.normal_memory.center,
+            "knn_scale": self.normal_memory.scale,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if self.normal_memory.features is not None:
+            memory_path = path.with_suffix(path.suffix + ".normal-memory.npz")
+            np.savez_compressed(memory_path, features=self.normal_memory.features.astype(np.float16))
+            state["normal_memory_file"] = memory_path.name
         path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
         obj.prototype_bank.unknown_threshold = state.get("unknown_threshold", 0.35)
+        memory_file = state.get("normal_memory_file")
+        if memory_file:
+            memory_path = Path(path).parent / memory_file
+            obj.normal_memory.features = np.load(memory_path)["features"].astype(np.float32)
+            obj.normal_memory.center = float(state.get("knn_center", 0.0))
+            obj.normal_memory.scale = float(state.get("knn_scale", 1.0))
         obj.reference_grid = state.get("reference_grid")
         obj.reference_shape = state.get("reference_shape")
         return obj

@@ -118,6 +118,10 @@ python -m defectfusion.cli evaluate-mvtec \
 | Typing patch ratio | `--top-k-ratio` | `0.05` | `0.05, 0.10, 0.20, 0.30, 1.0` | Type Accuracy, Macro-F1 |
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch` | Type Accuracy, Macro-F1 |
+| Anomaly detector | `--anomaly-method` | `pca` | `pca, knn, pca_knn` | Image/Pixel AUROC |
+| kNN fusion weight | `--knn-weight` | `0.5` | `0.25, 0.5, 0.75` | Active with `pca_knn` |
+| Normal patch memory | `--memory-max-patches` | `50000` | `10000, 25000, 50000, 0` | kNN accuracy, memory, runtime |
+| kNN query chunk | `--knn-chunk-size` | `256` | `64, 128, 256` | Runtime/memory only |
 | Feature layers | `--feature-layers` | `-1,-2,-3,-4` | `-1`, `-1,-2`, `-1,-2,-3,-4`, `-1,-3,-5` | All metrics |
 | Feature layer preset | `--feature-layer-preset` | `last4` | `last4, middle7` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
@@ -147,6 +151,32 @@ Gaussian smoothing on the patch grid, or `crf` for RGB-guided DenseCRF. CRF
 requires installing the optional dependency with `pip install -e '.[crf]'`.
 Gaussian smoothing is disabled by default after the MVTec sigma=1.0 ablation
 reduced macro pixel AUROC; it remains available only for explicit experiments.
+
+### PCA and normal-patch kNN fusion
+
+`--anomaly-method knn` uses the AnomalyDINO normal-patch memory score: cosine
+distance to the closest normalized normal patch. `pca_knn` combines it with
+the PCA reconstruction residual after each score is robustly calibrated on
+normal training patches. `--knn-weight` controls the calibrated kNN fraction.
+The default remains `pca`, so existing baselines do not change. kNN queries
+are chunked; lower `--knn-chunk-size` if inference runs out of memory. A
+positive `--memory-max-patches` deterministically subsamples the normal bank;
+use `0` to retain every patch.
+
+Run a single-variable comparison with the current 1-shot protocol:
+
+```bash
+for method in pca knn pca_knn; do
+  python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+    --normal-shots 1 --defect-shots 0 --seed 42 --normal-augment-count 30 \
+    --image-size 672 --feature-layers=-1,-3,-5,-7 \
+    --anomaly-method "$method" --knn-weight 0.5 \
+    --output "outputs/mvtec-${method}-seed42.json"
+done
+```
+
+Saved fitted kNN models use `<model-state>.normal-memory.npz` alongside the
+JSON state. Keep both files together when moving a fitted model.
 
 ### Paper-protocol normal shots
 
