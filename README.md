@@ -26,3 +26,18 @@ write prediction JSON. All options can be placed in a JSON file (see
 
 The default classifier reports `unknown` when no prototype is sufficiently
 confident. Model weights are downloaded by HuggingFace/torch at runtime.
+
+## MVTec AD evaluation
+
+Download and unpack MVTec AD so that each category has `train/good`,
+`test/<defect_type>`, and `ground_truth/<defect_type>` directories. Then run:
+
+```bash
+python -m defectfusion.cli evaluate-mvtec \
+  --data-dir data/mvtec/bottle \
+  --model facebook/dinov2-small \
+  --output outputs/mvtec-bottle.jsonl
+```
+
+The command fits only on `train/good`, writes one JSON object per test image,
+and prints image-level and pixel-level AUROC when both classes are present.

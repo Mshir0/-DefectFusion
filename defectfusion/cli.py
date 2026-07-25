@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .features import DinoFeatureExtractor
 from .pipeline import DefectFusion
+from .mvtec import evaluate_mvtec
 
 
 def _images(root: str, recursive: bool = True) -> list[str]:
@@ -34,6 +35,10 @@ def main(argv=None):
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
     q.add_argument("--output", help="write JSON results to a file")
+    e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
+    e.add_argument("--data-dir", required=True, help="MVTec category directory")
+    e.add_argument("--model", default=None); e.add_argument("--device", default=None)
+    e.add_argument("--output", default="outputs/mvtec-results.jsonl")
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov2-small")
     extractor = DinoFeatureExtractor(model_name, device=getattr(a, "device", None) or cfg.get("device"))
@@ -52,11 +57,15 @@ def main(argv=None):
                     for image in _images(str(label_dir)):
                         fusion.add_prototype(label_dir.name, image)
         fusion.save(output); print(output)
-    else:
+    elif a.cmd == "predict":
         result = DefectFusion.load(a.model_state, extractor).predict(a.image)
         payload = json.dumps(result, ensure_ascii=False, indent=2)
         if a.output: Path(a.output).write_text(payload + "\n", encoding="utf-8")
         print(payload)
+    else:
+        normal_dir = str(Path(a.data_dir) / "train" / "good")
+        fusion = DefectFusion(extractor).fit_normal(_images(normal_dir))
+        print(json.dumps(evaluate_mvtec(fusion, a.data_dir, a.output), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
