@@ -31,6 +31,7 @@ def _layers(value) -> tuple[int, ...]:
 
 
 FEATURE_LAYER_PRESETS = {
+    "cross4": (-1, -3, -5, -7),
     "last4": (-1, -2, -3, -4),
     # SubspaceAD uses these seven intermediate hidden states with mean fusion.
     "middle7": (-12, -13, -14, -15, -16, -17, -18),
@@ -53,7 +54,7 @@ def _feature_layers(args, cfg) -> tuple[tuple[int, ...], str | None]:
         if config_preset not in FEATURE_LAYER_PRESETS:
             raise ValueError(f"Unknown feature_layer_preset: {config_preset}")
         return FEATURE_LAYER_PRESETS[config_preset], config_preset
-    return FEATURE_LAYER_PRESETS["last4"], "last4"
+    return FEATURE_LAYER_PRESETS["cross4"], "cross4"
 
 
 def _augment_normal_images(paths, count, augmentations, seed):

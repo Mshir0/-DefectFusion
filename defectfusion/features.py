@@ -7,7 +7,7 @@ from PIL import Image
 
 class DinoFeatureExtractor:
     """Dense frozen DINOv2 extractor. The interface also accepts compatible DINOv3 wrappers."""
-    def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, device=None, debias=False, svd_components=20, feature_layers=(-1, -2, -3, -4), layer_aggregation="mean"):
+    def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, device=None, debias=False, svd_components=20, feature_layers=(-1, -3, -5, -7), layer_aggregation="mean"):
         from transformers import AutoImageProcessor, AutoModel
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.processor = AutoImageProcessor.from_pretrained(model_name)

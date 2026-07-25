@@ -18,7 +18,7 @@
   "knn_chunk_size": 256,
   "knn_backend": "auto",
   "knn_dtype": "float32",
-  "feature_layers": [-1, -2, -3, -4],
+  "feature_layers": [-1, -3, -5, -7],
   "layer_aggregation": "mean",
   "map_postprocess": "none",
   "gaussian_sigma": 1.0

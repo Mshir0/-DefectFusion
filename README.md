@@ -79,10 +79,10 @@ Image-level anomaly scores use the mean of the highest-scoring 1% of patch
 residuals (`--image-score mtop1p`). Use `--image-score mean` to reproduce the
 previous whole-image score; `max` and `p99` are also available for ablation.
 
-Dense features are averaged from the final four DINOv3 transformer blocks by
-default. Override this with `--feature-layers=-1` for the former last-layer
-baseline, or select layers and concatenation explicitly, for example
-`--feature-layers=-1,-3,-5 --layer-aggregation concat`.
+Dense features are averaged from the four cross-depth DINOv3 states
+`-1,-3,-5,-7` by default, selected after the MVTec ablation. Use
+`--feature-layer-preset last4` for the consecutive final-four baseline or
+`--feature-layers=-1` for the former last-layer baseline.
 Use `--feature-layer-preset middle7` to select the seven intermediate states
 `-12,-13,-14,-15,-16,-17,-18` used by the SubspaceAD benchmark. This matches
 its hidden-state indices, but not necessarily the same relative network depth
@@ -101,7 +101,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --top-k-ratio 0.05 \
   --type-matching bidirectional_patch \
   --image-score mtop1p \
-  --feature-layers=-1,-2,-3,-4 \
+  --feature-layers=-1,-3,-5,-7 \
   --layer-aggregation mean \
   --output outputs/ablation-recommended.jsonl
 ```
@@ -126,8 +126,8 @@ python -m defectfusion.cli evaluate-mvtec \
 | kNN query chunk | `--knn-chunk-size` | `256` | `64, 128, 256` | Runtime/memory only |
 | kNN backend | `--knn-backend` | `auto` | `auto, torch, numpy` | Runtime only |
 | kNN CUDA dtype | `--knn-dtype` | `float32` | `float32, float16` | Speed, memory, small numeric differences |
-| Feature layers | `--feature-layers` | `-1,-2,-3,-4` | `-1`, `-1,-2`, `-1,-2,-3,-4`, `-1,-3,-5` | All metrics |
-| Feature layer preset | `--feature-layer-preset` | `last4` | `last4, middle7` | All metrics |
+| Feature layers | `--feature-layers` | `-1,-3,-5,-7` | `-1`, `-1,-2,-3,-4`, `-1,-3,-5,-7` | All metrics |
+| Feature layer preset | `--feature-layer-preset` | `cross4` | `cross4, last4, middle7` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
 | Map post-process | `--map-postprocess` | `none` | `none, gaussian, crf` | Pixel AUROC |
 | Gaussian sigma | `--gaussian-sigma` | `1.0` | `0.5, 1.0, 2.0` | Pixel AUROC |
@@ -137,7 +137,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Input resolution | `--image-size` | `448` | `224, 448, 672` | All metrics and memory |
 
 Negative feature-layer values must use the equals form, such as
-`--feature-layers=-1,-2,-3,-4`, so that `argparse` does not interpret them as
+`--feature-layers=-1,-3,-5,-7`, so that `argparse` does not interpret them as
 new options. `concat` multiplies the PCA feature dimension by the number of
 selected layers and therefore uses substantially more memory than `mean`.
 Input images are explicitly resized to `--image-size` without center cropping;
@@ -199,7 +199,7 @@ backbone, memory, split, or image aggregation:
 for fusion in fixed gated; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots 1 --defect-shots 0 --seed 42 --normal-augment-count 30 \
-    --image-size 672 --feature-layers=-1,-2,-3,-4 \
+    --image-size 672 --feature-layers=-1,-3,-5,-7 \
     --anomaly-method pca_knn --fusion-mode "$fusion" --gate-temperature 1.0 \
     --knn-backend torch --knn-dtype float16 --memory-max-patches 5000 \
     --output "outputs/mvtec-fusion-${fusion}-seed42.json"
