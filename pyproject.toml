@@ -1,0 +1,9 @@
+[project]
+name = "defectfusion"
+version = "0.1.0"
+description = "Training-free few-shot defect detection and typing"
+requires-python = ">=3.10"
+dependencies = ["numpy", "Pillow", "torch", "torchvision", "transformers", "scikit-learn"]
+
+[project.scripts]
+defectfusion = "defectfusion.cli:main"
