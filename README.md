@@ -4,7 +4,7 @@ Training-free and few-shot defect detection and defect typing, combining ideas f
 
 ## Design
 
-- Frozen dense DINO features (DINOv2 by default; a compatible DINOv3 wrapper can be supplied).
+- Frozen dense DINO features (DINOv3 ViT-7B by default; a compatible DINO wrapper can be supplied).
 - Position debiasing inspired by INSID3.
 - Foreground-aware normal modeling with a streaming PCA subspace inspired by SubspaceAD.
 - Optional k-nearest-neighbour memory score inspired by AnomalyDINO.
@@ -24,7 +24,9 @@ subdirectory becomes a defect label. Use `--device cuda` when available,
 write prediction JSON. All options can be placed in a JSON file (see
 `configs/example.json`), with command-line flags taking precedence.
 
-The default classifier reports `unknown` when no prototype is sufficiently
+The default backbone is `facebook/dinov3-vit7b16-pretrain-lvd1689m`. This
+checkpoint may require Hugging Face access approval/token and substantial GPU
+memory; pass `--model` to use another compatible checkpoint. The default classifier reports `unknown` when no prototype is sufficiently
 confident. Model weights are downloaded by HuggingFace/torch at runtime.
 
 ## MVTec AD evaluation
@@ -35,7 +37,7 @@ Download and unpack MVTec AD so that each category has `train/good`,
 ```bash
 python -m defectfusion.cli evaluate-mvtec \
   --data-dir data/mvtec/bottle \
-  --model facebook/dinov2-small \
+  --model facebook/dinov3-vit7b16-pretrain-lvd1689m \
   --output outputs/mvtec-bottle.jsonl
 ```
 

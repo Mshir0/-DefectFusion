@@ -40,7 +40,7 @@ def main(argv=None):
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
     e.add_argument("--output", default="outputs/mvtec-results.jsonl")
     a = p.parse_args(argv); cfg = _config(a.config)
-    model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov2-small")
+    model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     extractor = DinoFeatureExtractor(model_name, device=getattr(a, "device", None) or cfg.get("device"))
     if a.cmd == "fit":
         normal_dir = a.normal_dir or cfg.get("normal_dir")
