@@ -11,6 +11,6 @@
   "type_matching": "bidirectional_patch",
   "feature_layers": [-1, -2, -3, -4],
   "layer_aggregation": "mean",
-  "map_postprocess": "gaussian",
+  "map_postprocess": "none",
   "gaussian_sigma": 1.0
 }

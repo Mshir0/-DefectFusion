@@ -6,4 +6,4 @@
 - [x] Add bidirectional patch matching for anomalous regions.
 - [x] Evaluate overlapping multi-scale crops (removed after negative MVTec ablation).
 - [x] Evaluate clustered defect prototypes (removed after negative MVTec ablation).
-- [x] Add Gaussian smoothing and optional CRF map refinement.
+- [x] Evaluate Gaussian smoothing (disabled by default after negative MVTec ablation); retain optional CRF refinement.

@@ -109,7 +109,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch` | Type Accuracy, Macro-F1 |
 | Feature layers | `--feature-layers` | `-1,-2,-3,-4` | `-1`, `-1,-2`, `-1,-2,-3,-4`, `-1,-3,-5` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
-| Map post-process | `--map-postprocess` | `gaussian` | `none, gaussian, crf` | Pixel AUROC |
+| Map post-process | `--map-postprocess` | `none` | `none, gaussian, crf` | Pixel AUROC |
 | Gaussian sigma | `--gaussian-sigma` | `1.0` | `0.5, 1.0, 2.0` | Pixel AUROC |
 | Positional debiasing | `--debias` | off | off/on | All metrics |
 | Debias rank | `--svd-components` | `20` | `2, 5, 10, 20` | Active only with `--debias` |
@@ -129,6 +129,8 @@ Anomaly-map post-processing is isolated from image scoring and defect typing.
 Use `--map-postprocess none` for the raw-map baseline, `gaussian` for separable
 Gaussian smoothing on the patch grid, or `crf` for RGB-guided DenseCRF. CRF
 requires installing the optional dependency with `pip install -e '.[crf]'`.
+Gaussian smoothing is disabled by default after the MVTec sigma=1.0 ablation
+reduced macro pixel AUROC; it remains available only for explicit experiments.
 
 ### Single-variable commands
 
