@@ -7,7 +7,7 @@ from PIL import Image
 
 class DinoFeatureExtractor:
     """Dense frozen DINOv2 extractor. The interface also accepts compatible DINOv3 wrappers."""
-    def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, device=None, debias=False, svd_components=20):
+    def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, device=None, debias=False, svd_components=20, feature_layers=(-1, -2, -3, -4), layer_aggregation="mean"):
         from transformers import AutoImageProcessor, AutoModel
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.processor = AutoImageProcessor.from_pretrained(model_name)
@@ -16,11 +16,24 @@ class DinoFeatureExtractor:
         self.debias = debias
         self.svd_components = svd_components
         self.positional_basis = None
+        self.feature_layers = tuple(feature_layers)
+        if not self.feature_layers:
+            raise ValueError("feature_layers cannot be empty")
+        if layer_aggregation not in {"mean", "concat"}:
+            raise ValueError("layer_aggregation must be mean or concat")
+        self.layer_aggregation = layer_aggregation
 
     def _patch_tokens(self, inputs):
-        out = self.model(**inputs).last_hidden_state
+        out = self.model(**inputs, output_hidden_states=True)
         n_register = int(getattr(self.model.config, "num_register_tokens", 0) or 0)
-        tokens = out[:, 1 + n_register :, :]
+        try:
+            selected = [out.hidden_states[index][:, 1 + n_register :, :] for index in self.feature_layers]
+        except IndexError as exc:
+            raise ValueError(f"Invalid feature layer in {self.feature_layers}; model returned {len(out.hidden_states)} states") from exc
+        if self.layer_aggregation == "mean":
+            tokens = torch.stack(selected, dim=0).mean(dim=0)
+        else:
+            tokens = torch.cat(selected, dim=-1)
         n = tokens.shape[1]
         pixel_values = inputs.get("pixel_values")
         patch_size = int(getattr(self.model.config, "patch_size", 16) or 16)

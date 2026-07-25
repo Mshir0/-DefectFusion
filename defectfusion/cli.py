@@ -23,6 +23,12 @@ def _config(path: str | None) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _layers(value) -> tuple[int, ...]:
+    if isinstance(value, (list, tuple)):
+        return tuple(int(x) for x in value)
+    return tuple(int(x.strip()) for x in str(value).split(",") if x.strip())
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Few-shot / zero-shot defect detection")
     p.add_argument("--config", help="JSON config; CLI flags override it")
@@ -35,11 +41,13 @@ def main(argv=None):
     f.add_argument("--debias", action="store_true"); f.add_argument("--svd-components", type=int, default=20)
     f.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
     f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
+    f.add_argument("--feature-layers", default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
     q.add_argument("--output", help="write JSON results to a file")
     q.add_argument("--debias", action="store_true"); q.add_argument("--svd-components", type=int, default=20)
+    q.add_argument("--feature-layers", default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
     e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
@@ -52,13 +60,18 @@ def main(argv=None):
     e.add_argument("--svd-components", type=int, default=20, help="INSID3 positional basis rank")
     e.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
     e.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
+    e.add_argument("--feature-layers", default=None, help="comma-separated hidden-state indices")
+    e.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
     image_score = getattr(a, "image_score", None) or cfg.get("image_score", "mtop1p")
+    feature_layers = _layers(getattr(a, "feature_layers", None) or cfg.get("feature_layers", [-1, -2, -3, -4]))
+    layer_aggregation = getattr(a, "layer_aggregation", None) or cfg.get("layer_aggregation", "mean")
     extractor = DinoFeatureExtractor(
         model_name, device=getattr(a, "device", None) or cfg.get("device"),
         debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
+        feature_layers=feature_layers, layer_aggregation=layer_aggregation,
     )
     if a.cmd == "fit":
         normal_dir = a.normal_dir or cfg.get("normal_dir")
@@ -111,6 +124,8 @@ def main(argv=None):
             metrics["svd_components"] = a.svd_components if a.debias else 0
             metrics["top_k_ratio"] = top_k_ratio
             metrics["image_score"] = image_score
+            metrics["feature_layers"] = list(feature_layers)
+            metrics["layer_aggregation"] = layer_aggregation
             all_metrics.append(metrics)
         print(json.dumps(all_metrics[0] if len(all_metrics) == 1 else {"categories": all_metrics}, ensure_ascii=False, indent=2))
 

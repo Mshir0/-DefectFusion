@@ -7,5 +7,7 @@
   "alpha": 0.5,
   "unknown_threshold": 0.35,
   "top_k_ratio": 0.05,
-  "image_score": "mtop1p"
+  "image_score": "mtop1p",
+  "feature_layers": [-1, -2, -3, -4],
+  "layer_aggregation": "mean"
 }

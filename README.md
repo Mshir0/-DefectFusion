@@ -72,3 +72,8 @@ whole-image prototype classification.
 Image-level anomaly scores use the mean of the highest-scoring 1% of patch
 residuals (`--image-score mtop1p`). Use `--image-score mean` to reproduce the
 previous whole-image score; `max` and `p99` are also available for ablation.
+
+Dense features are averaged from the final four DINOv3 transformer blocks by
+default. Override this with `--feature-layers=-1` for the former last-layer
+baseline, or select layers and concatenation explicitly, for example
+`--feature-layers=-1,-3,-5 --layer-aggregation concat`.
