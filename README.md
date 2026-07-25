@@ -45,7 +45,9 @@ The command fits only on `train/good`, writes one JSON object per test image,
 and prints image-level and pixel-level AUROC when both classes are present.
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSONL file per
-category. Add `--prototype-dir` (subdirectories are defect labels) to enable
+category. For a multi-category run, `--output` stores the final combined JSON
+summary, including macro averages and every category result; per-image files
+use `<output-stem>-<category>.jsonl`. Add `--prototype-dir` (subdirectories are defect labels) to enable
 defect-type accuracy, macro-F1, and a confusion matrix.
 
 For a reproducible MVTec few-shot experiment, randomly select N test images

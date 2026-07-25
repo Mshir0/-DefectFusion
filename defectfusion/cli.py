@@ -127,7 +127,21 @@ def main(argv=None):
             metrics["feature_layers"] = list(feature_layers)
             metrics["layer_aggregation"] = layer_aggregation
             all_metrics.append(metrics)
-        print(json.dumps(all_metrics[0] if len(all_metrics) == 1 else {"categories": all_metrics}, ensure_ascii=False, indent=2))
+        if len(all_metrics) == 1:
+            summary = all_metrics[0]
+        else:
+            metric_names = ("image_auroc", "pixel_auroc", "defect_type_accuracy", "defect_type_macro_f1")
+            macro = {}
+            for name in metric_names:
+                values = [float(item[name]) for item in all_metrics if name in item]
+                if values:
+                    macro[name] = sum(values) / len(values)
+            summary = {"macro_average": macro, "categories": all_metrics}
+            summary_path = Path(a.output)
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary["summary_file"] = str(summary_path)
+            summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
