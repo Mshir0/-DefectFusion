@@ -14,6 +14,8 @@
   "knn_weight": 0.5,
   "memory_max_patches": 50000,
   "knn_chunk_size": 256,
+  "knn_backend": "auto",
+  "knn_dtype": "float32",
   "feature_layers": [-1, -2, -3, -4],
   "layer_aggregation": "mean",
   "map_postprocess": "none",

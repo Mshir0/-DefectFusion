@@ -3,11 +3,19 @@ import numpy as np
 
 
 class NormalPatchMemory:
-    def __init__(self, max_patches=50000, query_chunk_size=256, calibration_patches=4096):
+    def __init__(self, max_patches=50000, query_chunk_size=256, calibration_patches=4096, backend="auto", device=None, dtype="float32"):
         self.max_patches = int(max_patches)
         self.query_chunk_size = int(query_chunk_size)
         self.calibration_patches = int(calibration_patches)
+        if backend not in {"auto", "numpy", "torch"}:
+            raise ValueError("kNN backend must be auto, numpy, or torch")
+        if dtype not in {"float32", "float16"}:
+            raise ValueError("kNN dtype must be float32 or float16")
+        self.backend = backend
+        self.device = None if device is None else str(device)
+        self.dtype = dtype
         self.features = None
+        self._torch_bank = None
         self.center = 0.0
         self.scale = 1.0
 
@@ -32,18 +40,31 @@ class NormalPatchMemory:
             indices = np.linspace(0, len(bank) - 1, self.max_patches, dtype=np.int64)
             bank = bank[indices]
         self.features = np.ascontiguousarray(bank)
+        self._torch_bank = None
         sample_count = min(len(bank), max(2, self.calibration_patches))
         sample_indices = np.linspace(0, len(bank) - 1, sample_count, dtype=np.int64)
         calibration = self.score(bank[sample_indices], exclude_indices=sample_indices)
         self.center, self.scale = self._robust_stats(calibration)
         return self
 
-    def score(self, features, exclude_indices=None):
-        if self.features is None or len(self.features) == 0:
-            raise ValueError("Normal patch memory has not been fitted")
-        query = self._normalize(features)
+    def _resolved_backend(self):
+        if self.backend != "auto":
+            return self.backend
+        if self.device and self.device.startswith("cuda"):
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    return "torch"
+            except ImportError:
+                pass
+        return "numpy"
+
+    @property
+    def resolved_backend(self):
+        return self._resolved_backend()
+
+    def _score_numpy(self, query, exclude):
         scores = np.empty(len(query), dtype=np.float32)
-        exclude = None if exclude_indices is None else np.asarray(exclude_indices)
         for start in range(0, len(query), self.query_chunk_size):
             end = min(start + self.query_chunk_size, len(query))
             similarity = query[start:end] @ self.features.T
@@ -52,6 +73,39 @@ class NormalPatchMemory:
                 similarity[rows, exclude[start:end]] = -np.inf
             scores[start:end] = 1.0 - similarity.max(axis=1)
         return scores
+
+    def _score_torch(self, query, exclude):
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError("Torch kNN backend requires PyTorch") from exc
+        device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError("Torch kNN backend requested CUDA, but CUDA is unavailable")
+        dtype = torch.float16 if self.dtype == "float16" else torch.float32
+        if self._torch_bank is None or self._torch_bank.device != torch.device(device) or self._torch_bank.dtype != dtype:
+            self._torch_bank = torch.as_tensor(self.features, device=device, dtype=dtype).contiguous()
+        scores = np.empty(len(query), dtype=np.float32)
+        with torch.inference_mode():
+            for start in range(0, len(query), self.query_chunk_size):
+                end = min(start + self.query_chunk_size, len(query))
+                query_chunk = torch.as_tensor(query[start:end], device=device, dtype=dtype)
+                similarity = query_chunk @ self._torch_bank.T
+                if exclude is not None:
+                    rows = torch.arange(end - start, device=device)
+                    columns = torch.as_tensor(exclude[start:end], device=device)
+                    similarity[rows, columns] = -torch.inf
+                scores[start:end] = (1.0 - similarity.max(dim=1).values).float().cpu().numpy()
+        return scores
+
+    def score(self, features, exclude_indices=None):
+        if self.features is None or len(self.features) == 0:
+            raise ValueError("Normal patch memory has not been fitted")
+        query = self._normalize(features)
+        exclude = None if exclude_indices is None else np.asarray(exclude_indices)
+        if self._resolved_backend() == "torch":
+            return self._score_torch(query, exclude)
+        return self._score_numpy(query, exclude)
 
     def calibrated(self, scores):
         return (np.asarray(scores, dtype=np.float64) - self.center) / self.scale

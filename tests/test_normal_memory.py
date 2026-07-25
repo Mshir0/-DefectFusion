@@ -9,6 +9,13 @@ from defectfusion.pipeline import DefectFusion
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
+    def test_numpy_backend_matches_auto_cpu(self):
+        normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
+        query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
+        automatic = NormalPatchMemory(backend="auto").fit(normal)
+        numpy_memory = NormalPatchMemory(backend="numpy").fit(normal)
+        np.testing.assert_allclose(automatic.score(query), numpy_memory.score(query))
+
     def test_leave_one_out_calibration_is_finite(self):
         features = np.eye(4, dtype=np.float32)
         memory = NormalPatchMemory(max_patches=0, query_chunk_size=2).fit(features)

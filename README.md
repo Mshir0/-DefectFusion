@@ -122,6 +122,8 @@ python -m defectfusion.cli evaluate-mvtec \
 | kNN fusion weight | `--knn-weight` | `0.5` | `0.25, 0.5, 0.75` | Active with `pca_knn` |
 | Normal patch memory | `--memory-max-patches` | `50000` | `10000, 25000, 50000, 0` | kNN accuracy, memory, runtime |
 | kNN query chunk | `--knn-chunk-size` | `256` | `64, 128, 256` | Runtime/memory only |
+| kNN backend | `--knn-backend` | `auto` | `auto, torch, numpy` | Runtime only |
+| kNN CUDA dtype | `--knn-dtype` | `float32` | `float32, float16` | Speed, memory, small numeric differences |
 | Feature layers | `--feature-layers` | `-1,-2,-3,-4` | `-1`, `-1,-2`, `-1,-2,-3,-4`, `-1,-3,-5` | All metrics |
 | Feature layer preset | `--feature-layer-preset` | `last4` | `last4, middle7` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
@@ -162,6 +164,12 @@ The default remains `pca`, so existing baselines do not change. kNN queries
 are chunked; lower `--knn-chunk-size` if inference runs out of memory. A
 positive `--memory-max-patches` deterministically subsamples the normal bank;
 use `0` to retain every patch.
+With `--knn-backend auto`, a CUDA DINO extractor automatically uses Torch
+matrix multiplication and keeps the normalized memory bank on the same GPU.
+Use `--knn-backend torch` to require that path explicitly. `--knn-dtype
+float16` halves memory-bank and similarity-matrix storage and is normally the
+fastest CUDA setting; compare it with `float32` once before using it for final
+reported numbers.
 
 Run a single-variable comparison with the current 1-shot protocol:
 
@@ -171,6 +179,7 @@ for method in pca knn pca_knn; do
     --normal-shots 1 --defect-shots 0 --seed 42 --normal-augment-count 30 \
     --image-size 672 --feature-layers=-1,-3,-5,-7 \
     --anomaly-method "$method" --knn-weight 0.5 \
+    --knn-backend torch --knn-dtype float16 \
     --output "outputs/mvtec-${method}-seed42.json"
 done
 ```
