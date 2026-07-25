@@ -1,6 +1,7 @@
 {
   "model": "facebook/dinov3-vit7b16-pretrain-lvd1689m",
   "device": "cpu",
+  "image_size": 448,
   "normal_dir": "examples/data/normal",
   "prototype_dir": "examples/data/prototypes",
   "output": "outputs/example-model.json",

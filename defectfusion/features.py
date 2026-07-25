@@ -23,6 +23,15 @@ class DinoFeatureExtractor:
             raise ValueError("layer_aggregation must be mean or concat")
         self.layer_aggregation = layer_aggregation
 
+    def _prepare(self, image):
+        return self.processor(
+            images=image,
+            return_tensors="pt",
+            do_resize=True,
+            size={"height": self.image_size, "width": self.image_size},
+            do_center_crop=False,
+        ).to(self.device)
+
     def _patch_tokens(self, inputs):
         out = self.model(**inputs, output_hidden_states=True)
         n_register = int(getattr(self.model.config, "num_register_tokens", 0) or 0)
@@ -52,7 +61,7 @@ class DinoFeatureExtractor:
     def _build_positional_basis(self):
         # INSID3 estimates positional directions from a zero-content image.
         image = Image.new("RGB", (self.image_size, self.image_size), color=0)
-        inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+        inputs = self._prepare(image)
         tokens, _ = self._patch_tokens(inputs)
         features = F.normalize(tokens[0].float(), p=2, dim=-1).T
         features = features - features.mean(dim=1, keepdim=True)
@@ -71,7 +80,7 @@ class DinoFeatureExtractor:
     @torch.inference_mode()
     def extract(self, image: Image.Image):
         image = image.convert("RGB")
-        inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+        inputs = self._prepare(image)
         tokens, grid = self._patch_tokens(inputs)
         tokens = self._debias(tokens) if self.debias else tokens.float()
         return tokens[0].cpu().numpy(), grid

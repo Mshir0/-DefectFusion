@@ -121,11 +121,15 @@ python -m defectfusion.cli evaluate-mvtec \
 | Positional debiasing | `--debias` | off | off/on | All metrics |
 | Debias rank | `--svd-components` | `20` | `2, 5, 10, 20` | Active only with `--debias` |
 | Device | `--device` | auto | `cpu, cuda` | Runtime only |
+| Input resolution | `--image-size` | `448` | `224, 448, 672` | All metrics and memory |
 
 Negative feature-layer values must use the equals form, such as
 `--feature-layers=-1,-2,-3,-4`, so that `argparse` does not interpret them as
 new options. `concat` multiplies the PCA feature dimension by the number of
 selected layers and therefore uses substantially more memory than `mean`.
+Input images are explicitly resized to `--image-size` without center cropping;
+the value is passed to the Hugging Face processor rather than relying on its
+checkpoint default. Higher resolutions increase patch count quadratically.
 
 Defect typing performs bidirectional matching between the PCA-selected Top-K
 query patches and all defect-reference patches for each label. Its score is the
@@ -149,6 +153,7 @@ for shots in 1 2 4; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots "$shots" --defect-shots 0 --seed 42 \
     --normal-augment-count 30 --normal-augmentations rotate \
+    --image-size 672 \
     --output "outputs/mvtec-normal-${shots}shot.json"
 done
 ```

@@ -66,6 +66,7 @@ def main(argv=None):
     f = sub.add_parser("fit", help="fit normal subspace and optional defect prototypes")
     f.add_argument("--normal-dir"); f.add_argument("--prototype-dir", help="subdirectories are defect labels")
     f.add_argument("--model", default=None); f.add_argument("--output", default=None)
+    f.add_argument("--image-size", type=int, default=None)
     f.add_argument("--alpha", type=float, default=None); f.add_argument("--unknown-threshold", type=float, default=None)
     f.add_argument("--device", default=None); f.add_argument("--non-recursive", action="store_true")
     f.add_argument("--debias", action="store_true"); f.add_argument("--svd-components", type=int, default=20)
@@ -77,6 +78,7 @@ def main(argv=None):
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
+    q.add_argument("--image-size", type=int, default=None)
     q.add_argument("--output", help="write JSON results to a file")
     q.add_argument("--debias", action="store_true"); q.add_argument("--svd-components", type=int, default=20)
     q.add_argument("--feature-layers", default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
@@ -91,6 +93,7 @@ def main(argv=None):
     e.add_argument("--normal-augmentations", nargs="+", choices=["rotate", "hflip", "vflip", "color_jitter", "affine"], default=None)
     e.add_argument("--no-augment-categories", nargs="+", default=None)
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
+    e.add_argument("--image-size", type=int, default=None)
     e.add_argument("--output", default="outputs/mvtec-results.jsonl")
     e.add_argument("--debias", action="store_true", help="apply INSID3 positional debiasing")
     e.add_argument("--svd-components", type=int, default=20, help="INSID3 positional basis rank")
@@ -102,6 +105,8 @@ def main(argv=None):
     e.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); e.add_argument("--gaussian-sigma", type=float, default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
+    image_size = getattr(a, "image_size", None) or cfg.get("image_size", 448)
+    if image_size <= 0: p.error("--image-size must be positive")
     top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
     image_score = getattr(a, "image_score", None) or cfg.get("image_score", "mtop1p")
     type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
@@ -111,7 +116,7 @@ def main(argv=None):
     gaussian_sigma = getattr(a, "gaussian_sigma", None)
     gaussian_sigma = gaussian_sigma if gaussian_sigma is not None else cfg.get("gaussian_sigma", 1.0)
     extractor = DinoFeatureExtractor(
-        model_name, device=getattr(a, "device", None) or cfg.get("device"),
+        model_name, image_size=image_size, device=getattr(a, "device", None) or cfg.get("device"),
         debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
         feature_layers=feature_layers, layer_aggregation=layer_aggregation,
     )
@@ -188,6 +193,7 @@ def main(argv=None):
             metrics["top_k_ratio"] = top_k_ratio
             metrics["image_score"] = image_score
             metrics["feature_layers"] = list(feature_layers)
+            metrics["image_size"] = image_size
             metrics["layer_aggregation"] = layer_aggregation
             metrics["type_matching"] = type_matching
             metrics["map_postprocess"] = map_postprocess
