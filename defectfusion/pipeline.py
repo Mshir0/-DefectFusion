@@ -35,7 +35,7 @@ class DefectFusion:
     def fit_normal(self, image_paths):
         patch_batches = []
         for path in image_paths:
-            image = Image.open(path)
+            image = path.copy() if isinstance(path, Image.Image) else Image.open(path)
             patches, grid = self.extractor.extract(image)
             patch_batches.append(patches)
             self.reference_shape = grid

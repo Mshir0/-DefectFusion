@@ -108,6 +108,8 @@ python -m defectfusion.cli evaluate-mvtec \
 |---|---|---:|---|---|
 | Normal references | `--normal-shots` | `-1` (all) | `1, 2, 4, -1` | Detection sample efficiency |
 | Defect references | `--defect-shots` | `0` | `0, 1, 3, 5` | Type Accuracy, Macro-F1 |
+| Normal augment count | `--normal-augment-count` | `30` in normal few-shot | `0, 10, 30` | Detection sample efficiency |
+| Normal augmentations | `--normal-augmentations` | `rotate` | `rotate, hflip, vflip, color_jitter, affine` | Detection metrics |
 | Sampling seed | `--seed` | `42` | `0, 1, 2, 42` | Few-shot variance |
 | Typing patch ratio | `--top-k-ratio` | `0.05` | `0.05, 0.10, 0.20, 0.30, 1.0` | Type Accuracy, Macro-F1 |
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
@@ -146,6 +148,7 @@ Use no labeled defects and vary only normal references to compare with the
 for shots in 1 2 4; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots "$shots" --defect-shots 0 --seed 42 \
+    --normal-augment-count 30 --normal-augmentations rotate \
     --output "outputs/mvtec-normal-${shots}shot.json"
 done
 ```
@@ -153,6 +156,10 @@ done
 `--normal-shots 0` is unsupported because PCA cannot be fitted without normal
 features. The legacy `--few-shot` spelling remains an alias for
 `--defect-shots`, but new experiments should use the explicit name.
+Normal augmentation is active only for normal few-shot runs by default. Each
+selected normal image contributes its original view plus 30 random rotations;
+`transistor` is excluded by default, matching the SubspaceAD benchmark setup.
+Use `--normal-augment-count 0` for the unaugmented baseline.
 
 ### Single-variable commands
 

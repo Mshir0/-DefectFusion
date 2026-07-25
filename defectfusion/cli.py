@@ -5,6 +5,7 @@ import glob
 import json
 import random
 from pathlib import Path
+from PIL import Image
 
 from .features import DinoFeatureExtractor
 from .pipeline import DefectFusion
@@ -27,6 +28,35 @@ def _layers(value) -> tuple[int, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(int(x) for x in value)
     return tuple(int(x.strip()) for x in str(value).split(",") if x.strip())
+
+
+def _augment_normal_images(paths, count, augmentations, seed):
+    if count <= 0:
+        return paths
+    from torchvision.transforms import functional as TF
+    rng = random.Random(seed)
+    result = []
+    for path in paths:
+        image = Image.open(path).convert("RGB")
+        result.append(image)
+        for _ in range(count):
+            augmented = image.copy()
+            for name in augmentations:
+                if name == "rotate": augmented = TF.rotate(augmented, rng.uniform(0, 345))
+                elif name == "hflip" and rng.random() < 0.5: augmented = TF.hflip(augmented)
+                elif name == "vflip" and rng.random() < 0.5: augmented = TF.vflip(augmented)
+                elif name == "color_jitter":
+                    augmented = TF.adjust_brightness(augmented, rng.uniform(0.8, 1.2))
+                    augmented = TF.adjust_contrast(augmented, rng.uniform(0.8, 1.2))
+                    augmented = TF.adjust_saturation(augmented, rng.uniform(0.8, 1.2))
+                    augmented = TF.adjust_hue(augmented, rng.uniform(-0.1, 0.1))
+                elif name == "affine":
+                    translate = [round(rng.uniform(-0.15, 0.15) * image.width), round(rng.uniform(-0.15, 0.15) * image.height)]
+                    augmented = TF.affine(augmented, angle=0, translate=translate, scale=1.0, shear=rng.uniform(-10, 10))
+                elif name not in {"hflip", "vflip"}:
+                    raise ValueError(f"Unknown normal augmentation: {name}")
+            result.append(augmented)
+    return result
 
 
 def main(argv=None):
@@ -57,6 +87,9 @@ def main(argv=None):
     e.add_argument("--normal-shots", type=int, default=-1, help="normal train/good references per category; -1 uses all")
     e.add_argument("--defect-shots", "--few-shot", dest="defect_shots", type=int, default=0, help="labeled defect exemplars per defect type")
     e.add_argument("--seed", type=int, default=42, help="seed used for reproducible normal and defect sampling")
+    e.add_argument("--normal-augment-count", type=int, default=None, help="augmented views per normal shot; defaults to 30 in few-shot mode")
+    e.add_argument("--normal-augmentations", nargs="+", choices=["rotate", "hflip", "vflip", "color_jitter", "affine"], default=None)
+    e.add_argument("--no-augment-categories", nargs="+", default=None)
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
     e.add_argument("--output", default="outputs/mvtec-results.jsonl")
     e.add_argument("--debias", action="store_true", help="apply INSID3 positional debiasing")
@@ -106,6 +139,9 @@ def main(argv=None):
         if not a.data_dir and not a.data_root: p.error("evaluate-mvtec requires --data-dir or --data-root")
         if a.normal_shots == 0 or a.normal_shots < -1: p.error("--normal-shots must be -1 or a positive integer")
         if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
+        if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
+        normal_augmentations = a.normal_augmentations or cfg.get("normal_augmentations", ["rotate"])
+        no_augment_categories = a.no_augment_categories or cfg.get("no_augment_categories", ["transistor"])
         categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
         all_metrics = []
         for category in categories:
@@ -117,7 +153,11 @@ def main(argv=None):
                 normal_rng = random.Random(a.seed)
                 normal_selected = sorted(normal_rng.sample(normal_candidates, min(a.normal_shots, len(normal_candidates))))
             print(f"[normal-shots] {category.name}: {len(normal_selected)}/{len(normal_candidates)}", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma).fit_normal(normal_selected)
+            augment_count = a.normal_augment_count if a.normal_augment_count is not None else (30 if a.normal_shots != -1 else 0)
+            if category.name in no_augment_categories: augment_count = 0
+            normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
+            print(f"[normal-augment] {category.name}: {len(normal_training_images)} views", flush=True)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma).fit_normal(normal_training_images)
             if a.prototype_dir:
                 for label_dir in sorted(Path(a.prototype_dir).iterdir()):
                     if label_dir.is_dir():
@@ -137,6 +177,9 @@ def main(argv=None):
             metrics = evaluate_mvtec(fusion, category, result_path, excluded_images=selected)
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]
+            metrics["normal_augment_count"] = augment_count
+            metrics["normal_augmentations"] = list(normal_augmentations)
+            metrics["normal_training_views"] = len(normal_training_images)
             metrics["defect_shots"] = a.defect_shots
             metrics["seed"] = a.seed
             metrics["defect_shot_images"] = [str(Path(x)) for x in selected]
