@@ -43,3 +43,7 @@ python -m defectfusion.cli evaluate-mvtec \
 
 The command fits only on `train/good`, writes one JSON object per test image,
 and prints image-level and pixel-level AUROC when both classes are present.
+Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
+the CLI prints each image as it is processed and writes one JSONL file per
+category. Add `--prototype-dir` (subdirectories are defect labels) to enable
+defect-type accuracy, macro-F1, and a confusion matrix.

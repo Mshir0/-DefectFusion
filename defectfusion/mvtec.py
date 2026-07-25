@@ -9,7 +9,7 @@ def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
 
-def evaluate_mvtec(fusion, category_dir, output):
+def evaluate_mvtec(fusion, category_dir, output, *, progress=True):
     """Evaluate a fitted model on one MVTec category and write JSONL results."""
     root = Path(category_dir)
     rows, image_y, image_s, pixel_y, pixel_s = [], [], [], [], []
@@ -30,6 +30,8 @@ def evaluate_mvtec(fusion, category_dir, output):
                 score = np.asarray(PILImage.fromarray(score.astype("float32"), mode="F").resize(mask.shape[::-1], PILImage.Resampling.BILINEAR))
                 pixel_y.extend(mask.ravel().astype(int)); pixel_s.extend(score.ravel())
             image_y.append(int(truth)); image_s.append(float(result["anomaly_score"])); rows.append(result)
+            if progress:
+                print(f"[{len(rows):04d}] {image.name} anomaly={result['anomaly_score']:.5f} type={result['defect_type']}", flush=True)
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
     metrics = {"category": root.name, "images": len(rows), "results": str(output)}
@@ -37,6 +39,17 @@ def evaluate_mvtec(fusion, category_dir, output):
         from sklearn.metrics import roc_auc_score
         if len(set(image_y)) > 1: metrics["image_auroc"] = float(roc_auc_score(image_y, image_s))
         if pixel_y and len(set(pixel_y)) > 1: metrics["pixel_auroc"] = float(roc_auc_score(pixel_y, pixel_s))
+        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
+        true_types = [r["ground_truth_type"] for r in rows]
+        pred_types = [r["defect_type"] for r in rows]
+        if any(p != "unknown" for p in pred_types):
+            labels = sorted(set(true_types) | set(pred_types))
+            metrics["defect_type_accuracy"] = float(accuracy_score(true_types, pred_types))
+            metrics["defect_type_macro_f1"] = float(f1_score(true_types, pred_types, labels=labels, average="macro", zero_division=0))
+            metrics["defect_type_labels"] = labels
+            metrics["defect_type_confusion_matrix"] = confusion_matrix(true_types, pred_types, labels=labels).tolist()
+        else:
+            metrics["defect_type_note"] = "No prototypes supplied; type metrics are unavailable"
     except ImportError:
         metrics["metrics_note"] = "Install scikit-learn to compute AUROC"
     return metrics

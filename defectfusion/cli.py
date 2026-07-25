@@ -36,7 +36,9 @@ def main(argv=None):
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
     q.add_argument("--output", help="write JSON results to a file")
     e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
-    e.add_argument("--data-dir", required=True, help="MVTec category directory")
+    e.add_argument("--data-dir", help="MVTec category directory")
+    e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
+    e.add_argument("--prototype-dir", help="optional few-shot prototypes; subdirectories are defect labels")
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
     e.add_argument("--output", default="outputs/mvtec-results.jsonl")
     a = p.parse_args(argv); cfg = _config(a.config)
@@ -63,9 +65,20 @@ def main(argv=None):
         if a.output: Path(a.output).write_text(payload + "\n", encoding="utf-8")
         print(payload)
     else:
-        normal_dir = str(Path(a.data_dir) / "train" / "good")
-        fusion = DefectFusion(extractor).fit_normal(_images(normal_dir))
-        print(json.dumps(evaluate_mvtec(fusion, a.data_dir, a.output), ensure_ascii=False, indent=2))
+        if not a.data_dir and not a.data_root: p.error("evaluate-mvtec requires --data-dir or --data-root")
+        categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
+        all_metrics = []
+        for category in categories:
+            normal_dir = str(category / "train" / "good")
+            fusion = DefectFusion(extractor).fit_normal(_images(normal_dir))
+            if a.prototype_dir:
+                for label_dir in sorted(Path(a.prototype_dir).iterdir()):
+                    if label_dir.is_dir():
+                        for image in _images(str(label_dir)):
+                            fusion.add_prototype(label_dir.name, image)
+            result_path = a.output if len(categories) == 1 else str(Path(a.output).with_name(f"{Path(a.output).stem}-{category.name}.jsonl"))
+            all_metrics.append(evaluate_mvtec(fusion, category, result_path))
+        print(json.dumps(all_metrics[0] if len(all_metrics) == 1 else {"categories": all_metrics}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
