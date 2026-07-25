@@ -10,11 +10,11 @@ from .model import NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch"):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", prototype_clusters: int = 3, cluster_seed: int = 0):
         self.extractor = extractor
         self.alpha = alpha
         self.subspace = NormalSubspace()
-        self.prototype_bank = PrototypeBank()
+        self.prototype_bank = PrototypeBank(cluster_count=prototype_clusters, cluster_seed=cluster_seed)
         self.prototype_bank.unknown_threshold = unknown_threshold
         if not 0 < top_k_ratio <= 1:
             raise ValueError("top_k_ratio must be in (0, 1]")
@@ -25,6 +25,8 @@ class DefectFusion:
         if type_matching not in {"prototype_mean", "bidirectional_patch"}:
             raise ValueError("type_matching must be prototype_mean or bidirectional_patch")
         self.type_matching = type_matching
+        self.prototype_clusters = prototype_clusters
+        self.cluster_seed = cluster_seed
         self.reference_grid = None
         self.reference_shape = None
 
@@ -32,9 +34,9 @@ class DefectFusion:
         patch_batches = []
         for path in image_paths:
             image = Image.open(path)
-            views = self._extract_views(image)
-            patch_batches.extend(patches for patches, _, _ in views)
-            self.reference_shape = views[0][1]
+            patches, grid = self.extractor.extract(image)
+            patch_batches.append(patches)
+            self.reference_shape = grid
         if not patch_batches:
             raise ValueError("No normal images were provided")
         features = np.concatenate(patch_batches, axis=0)
@@ -44,15 +46,9 @@ class DefectFusion:
 
     def add_prototype(self, label: str, image_path):
         image = Image.open(image_path)
-        patches = np.concatenate([item[0] for item in self._extract_views(image)], axis=0)
+        patches, _ = self.extractor.extract(image)
         self.prototype_bank.add(label, self._anomaly_patches(patches))
         return self
-
-    def _extract_views(self, image):
-        if hasattr(self.extractor, "extract_views"):
-            return self.extractor.extract_views(image)
-        patches, grid = self.extractor.extract(image)
-        return [(patches, grid, (0, 0, image.width, image.height))]
 
     def _anomaly_patches(self, patches):
         scores = self.subspace.score(patches)
@@ -73,29 +69,18 @@ class DefectFusion:
 
     def predict(self, image_path):
         image = Image.open(image_path)
-        views = self._extract_views(image)
-        patches = np.concatenate([item[0] for item in views], axis=0)
-        grid = views[0][1]
+        patches, grid = self.extractor.extract(image)
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
-        canvas = np.zeros((image.height, image.width), dtype=np.float64)
-        counts = np.zeros_like(canvas)
-        for view_patches, view_grid, (x1, y1, x2, y2) in views:
-            scores = self.subspace.score(view_patches).reshape(view_grid).astype("float32")
-            resized = np.asarray(Image.fromarray(scores, mode="F").resize((x2 - x1, y2 - y1), Image.Resampling.BILINEAR))
-            canvas[y1:y2, x1:x2] += resized
-            counts[y1:y2, x1:x2] += 1
-        fused_map = np.divide(canvas, counts, out=np.zeros_like(canvas), where=counts > 0)
-        coarse_map = np.asarray(Image.fromarray(fused_map.astype("float32"), mode="F").resize(grid[::-1], Image.Resampling.BILINEAR))
-        anomaly_map = coarse_map.tolist()
-        fused_score = self._aggregate_image_score(coarse_map.ravel())
+        anomaly_scores = self.subspace.score(patches)
+        anomaly_map = anomaly_scores.reshape(grid).tolist()
+        fused_score = self._aggregate_image_score(anomaly_scores)
         typing_patches = self._anomaly_patches(patches)
         typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
         label, label_score = self.prototype_bank.predict(typing_features)
         return {
             "image": str(image_path),
             "grid": list(grid),
-            "views": len(views),
             "anomaly_score": fused_score,
             "anomaly_map": anomaly_map,
             "defect_type": label,
@@ -112,6 +97,8 @@ class DefectFusion:
             "top_k_ratio": self.top_k_ratio,
             "image_score": self.image_score,
             "type_matching": self.type_matching,
+            "prototype_clusters": self.prototype_clusters,
+            "cluster_seed": self.cluster_seed,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
@@ -123,7 +110,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), prototype_clusters=state.get("prototype_clusters", 0), cluster_seed=state.get("cluster_seed", 0))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
         obj.prototype_bank.unknown_threshold = state.get("unknown_threshold", 0.35)

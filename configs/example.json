@@ -11,7 +11,6 @@
   "type_matching": "bidirectional_patch",
   "feature_layers": [-1, -2, -3, -4],
   "layer_aggregation": "mean",
-  "multiscale_mode": "overlap",
-  "crop_ratio": 0.75,
-  "crop_overlap": 0.5
+  "prototype_clusters": 3,
+  "cluster_seed": 0
 }

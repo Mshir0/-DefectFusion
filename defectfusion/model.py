@@ -20,7 +20,19 @@ class NormalSubspace:
         obj = cls(); obj.mean = np.asarray(d["mean"]); obj.components = np.asarray(d["components"]); return obj
 
 class PrototypeBank:
-    def __init__(self, unknown_threshold=0.35): self.prototypes = {}; self.patch_banks = {}; self.counts = {}; self.unknown_threshold = unknown_threshold
+    def __init__(self, unknown_threshold=0.35, cluster_count=3, cluster_seed=0):
+        if cluster_count < 0:
+            raise ValueError("cluster_count must be non-negative")
+        self.prototypes = {}; self.patch_banks = {}; self.cluster_banks = {}; self.counts = {}; self.unknown_threshold = unknown_threshold
+        self.cluster_count = cluster_count; self.cluster_seed = cluster_seed
+
+    def _cluster(self, patches):
+        patches = np.asarray(patches, dtype=np.float64)
+        if self.cluster_count <= 0 or len(patches) <= self.cluster_count:
+            return patches
+        from sklearn.cluster import KMeans
+        centers = KMeans(n_clusters=self.cluster_count, random_state=self.cluster_seed, n_init=10).fit(patches).cluster_centers_
+        return centers / np.maximum(np.linalg.norm(centers, axis=1, keepdims=True), 1e-12)
     def add(self, label, features):
         x = np.asarray(features, dtype=np.float64)
         if x.ndim == 0:
@@ -33,14 +45,17 @@ class PrototypeBank:
         patches = x[None, :] if x.ndim == 1 else x
         patches = patches / np.maximum(np.linalg.norm(patches, axis=1, keepdims=True), 1e-12)
         self.patch_banks[label] = np.concatenate([self.patch_banks[label], patches], axis=0) if label in self.patch_banks else patches
+        self.cluster_banks[label] = self._cluster(self.patch_banks[label])
     def predict(self, feature):
         if not self.prototypes: return "unknown", 0.0
         x = np.asarray(feature, dtype=np.float64)
         if x.ndim == 2 and self.patch_banks:
             x = x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+            query = self._cluster(x)
             candidates = []
-            for label, reference in self.patch_banks.items():
-                similarity = x @ reference.T
+            references = self.cluster_banks if self.cluster_count > 0 else self.patch_banks
+            for label, reference in references.items():
+                similarity = query @ reference.T
                 forward = similarity.max(axis=1).mean()
                 backward = similarity.max(axis=0).mean()
                 candidates.append((label, float(0.5 * (forward + backward))))
@@ -50,13 +65,14 @@ class PrototypeBank:
             x /= max(np.linalg.norm(x), 1e-12)
             label, score = max(((k, float(x @ v)) for k, v in self.prototypes.items()), key=lambda kv: kv[1])
         return (label, score) if score >= self.unknown_threshold else ("unknown", score)
-    def to_dict(self): return {"prototypes": {k: v.tolist() for k, v in self.prototypes.items()}, "patch_banks": {k: v.tolist() for k, v in self.patch_banks.items()}, "counts": self.counts}
+    def to_dict(self): return {"prototypes": {k: v.tolist() for k, v in self.prototypes.items()}, "patch_banks": {k: v.tolist() for k, v in self.patch_banks.items()}, "cluster_banks": {k: v.tolist() for k, v in self.cluster_banks.items()}, "counts": self.counts, "cluster_count": self.cluster_count, "cluster_seed": self.cluster_seed}
     @classmethod
     def from_dict(cls, d):
-        b = cls()
+        b = cls(cluster_count=int(d.get("cluster_count", 0)) if "prototypes" in d else 0, cluster_seed=int(d.get("cluster_seed", 0)) if "prototypes" in d else 0)
         if "prototypes" in d:
             b.prototypes = {k: np.asarray(v) for k, v in d["prototypes"].items()}
             b.patch_banks = {k: np.asarray(v) for k, v in d.get("patch_banks", {}).items()}
+            b.cluster_banks = {k: np.asarray(v) for k, v in d.get("cluster_banks", {}).items()}
             b.counts = {k: int(v) for k, v in d.get("counts", {}).items()}
         else:
             b.prototypes = {k: np.asarray(v) for k, v in d.items()}; b.counts = {k: 1 for k in d}

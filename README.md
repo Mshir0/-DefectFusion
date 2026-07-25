@@ -109,9 +109,8 @@ python -m defectfusion.cli evaluate-mvtec \
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch` | Type Accuracy, Macro-F1 |
 | Feature layers | `--feature-layers` | `-1,-2,-3,-4` | `-1`, `-1,-2`, `-1,-2,-3,-4`, `-1,-3,-5` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
-| Multi-scale views | `--multiscale-mode` | `overlap` | `none, overlap` | All metrics and runtime |
-| Crop size | `--crop-ratio` | `0.75` | `0.50, 0.75` | All metrics and runtime |
-| Crop overlap | `--crop-overlap` | `0.50` | `0.25, 0.50` | All metrics and runtime |
+| Prototype clusters | `--prototype-clusters` | `3` | `0, 2, 3, 5` | Type Accuracy, Macro-F1 |
+| Cluster seed | `--cluster-seed` | `0` | `0, 1, 2` | Prototype stability |
 | Positional debiasing | `--debias` | off | off/on | All metrics |
 | Debias rank | `--svd-components` | `20` | `2, 5, 10, 20` | Active only with `--debias` |
 | Device | `--device` | auto | `cpu, cuda` | Runtime only |
@@ -126,11 +125,9 @@ query patches and all few-shot patches for each defect label. Its score is the
 mean of query-to-reference and reference-to-query nearest-neighbour
 similarities, which rewards both precise matches and reference coverage.
 
-Multi-scale inference combines the full image with overlapping local crops.
-Every view is encoded at the backbone input resolution; crop anomaly maps are
-stitched into the original image coordinates and averaged in overlap regions.
-Use `--multiscale-mode none` for the former full-image-only baseline. The
-default 0.75 crop ratio produces four local crops plus the full-image view.
+Top-K anomaly patches are clustered per defect label into multiple normalized
+prototypes before bidirectional matching. Set `--prototype-clusters 0` to use
+all raw Top-K patches and reproduce the previous bidirectional baseline.
 
 ### Single-variable commands
 
