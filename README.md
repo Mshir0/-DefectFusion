@@ -50,19 +50,23 @@ summary, including macro averages and every category result; per-image files
 use `<output-stem>-<category>.jsonl`. Add `--prototype-dir` (subdirectories are defect labels) to enable
 defect-type accuracy, macro-F1, and a confusion matrix.
 
-For a reproducible MVTec few-shot experiment, randomly select N test images
-per defect type as prototypes (selected images are excluded from evaluation):
+MVTec evaluation separates normal references used for anomaly detection from
+labeled defect references used for typing. `--normal-shots 1/2/4` samples that
+many images from `train/good`; `-1` uses all normal training images.
+`--defect-shots` samples test images per defect type as typing prototypes
+(selected defect images are excluded from evaluation):
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-  --few-shot 1 --seed 42 --output outputs/mvtec-all.jsonl
+  --normal-shots 4 --defect-shots 1 --seed 42 \
+  --output outputs/mvtec-all.jsonl
 ```
 
 Enable INSID3 positional debiasing for an ablation with the same split:
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-  --few-shot 1 --seed 42 --debias --svd-components 20 \
+  --normal-shots -1 --defect-shots 1 --seed 42 --debias --svd-components 20 \
   --output outputs/mvtec-all-debiased.jsonl
 ```
 
@@ -82,14 +86,14 @@ baseline, or select layers and concatenation explicitly, for example
 
 ## Ablation experiments
 
-Keep the dataset, backbone, few-shot seed, and all unrelated parameters fixed
+Keep the dataset, backbone, normal/defect shot counts, seed, and all unrelated parameters fixed
 when comparing one option. The current recommended setup is:
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec \
   --data-root data/mvtec \
   --model facebook/dinov3-vit7b16-pretrain-lvd1689m \
-  --few-shot 1 --seed 42 \
+  --normal-shots -1 --defect-shots 1 --seed 42 \
   --top-k-ratio 0.05 \
   --type-matching bidirectional_patch \
   --image-score mtop1p \
@@ -102,7 +106,8 @@ python -m defectfusion.cli evaluate-mvtec \
 
 | Dimension | Argument | Current default | Ablation values | Main affected metrics |
 |---|---|---:|---|---|
-| Few-shot count | `--few-shot` | `0` | `0, 1, 3, 5` | Type Accuracy, Macro-F1 |
+| Normal references | `--normal-shots` | `-1` (all) | `1, 2, 4, -1` | Detection sample efficiency |
+| Defect references | `--defect-shots` | `0` | `0, 1, 3, 5` | Type Accuracy, Macro-F1 |
 | Sampling seed | `--seed` | `42` | `0, 1, 2, 42` | Few-shot variance |
 | Typing patch ratio | `--top-k-ratio` | `0.05` | `0.05, 0.10, 0.20, 0.30, 1.0` | Type Accuracy, Macro-F1 |
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
@@ -121,7 +126,7 @@ new options. `concat` multiplies the PCA feature dimension by the number of
 selected layers and therefore uses substantially more memory than `mean`.
 
 Defect typing performs bidirectional matching between the PCA-selected Top-K
-query patches and all few-shot patches for each defect label. Its score is the
+query patches and all defect-reference patches for each label. Its score is the
 mean of query-to-reference and reference-to-query nearest-neighbour
 similarities, which rewards both precise matches and reference coverage.
 
@@ -132,6 +137,23 @@ requires installing the optional dependency with `pip install -e '.[crf]'`.
 Gaussian smoothing is disabled by default after the MVTec sigma=1.0 ablation
 reduced macro pixel AUROC; it remains available only for explicit experiments.
 
+### Paper-protocol normal shots
+
+Use no labeled defects and vary only normal references to compare with the
+1/2/4-shot AnomalyDINO and SubspaceAD table:
+
+```bash
+for shots in 1 2 4; do
+  python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+    --normal-shots "$shots" --defect-shots 0 --seed 42 \
+    --output "outputs/mvtec-normal-${shots}shot.json"
+done
+```
+
+`--normal-shots 0` is unsupported because PCA cannot be fitted without normal
+features. The legacy `--few-shot` spelling remains an alias for
+`--defect-shots`, but new experiments should use the explicit name.
+
 ### Single-variable commands
 
 Reproduce the original whole-image typing and image-score baseline:
@@ -139,7 +161,7 @@ Reproduce the original whole-image typing and image-score baseline:
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --model facebook/dinov3-vit7b16-pretrain-lvd1689m \
-  --few-shot 1 --seed 42 --top-k-ratio 1.0 --image-score mean \
+  --normal-shots -1 --defect-shots 1 --seed 42 --top-k-ratio 1.0 --image-score mean \
   --feature-layers=-1 --layer-aggregation mean \
   --output outputs/ablation-original.jsonl
 ```
@@ -149,7 +171,7 @@ Compare PCA-residual Top-K typing ratios:
 ```bash
 for ratio in 0.05 0.10 0.20 0.30 1.0; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-    --few-shot 1 --seed 42 --top-k-ratio "$ratio" \
+    --normal-shots -1 --defect-shots 1 --seed 42 --top-k-ratio "$ratio" \
     --output "outputs/ablation-topk-${ratio}.jsonl"
 done
 ```
@@ -160,7 +182,7 @@ unchanged:
 ```bash
 for score in mean mtop1p p99 max; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-    --few-shot 1 --seed 42 --image-score "$score" \
+    --normal-shots -1 --defect-shots 1 --seed 42 --image-score "$score" \
     --output "outputs/ablation-image-${score}.jsonl"
 done
 ```
@@ -169,21 +191,21 @@ Compare single-layer and multi-layer features:
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-  --few-shot 1 --seed 42 --feature-layers=-1 \
+  --normal-shots -1 --defect-shots 1 --seed 42 --feature-layers=-1 \
   --output outputs/ablation-layer-last.jsonl
 
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-  --few-shot 1 --seed 42 --feature-layers=-1,-2,-3,-4 \
+  --normal-shots -1 --defect-shots 1 --seed 42 --feature-layers=-1,-2,-3,-4 \
   --layer-aggregation mean --output outputs/ablation-layer-last4-mean.jsonl
 ```
 
-Measure few-shot stability with multiple seeds. Report the mean and standard
+Measure shot-sampling stability with multiple seeds. Report the mean and standard
 deviation across runs rather than selecting the best seed:
 
 ```bash
 for seed in 0 1 2; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-    --few-shot 1 --seed "$seed" \
+    --normal-shots 4 --defect-shots 1 --seed "$seed" \
     --output "outputs/ablation-seed-${seed}.jsonl"
 done
 ```
