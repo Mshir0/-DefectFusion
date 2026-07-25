@@ -18,10 +18,19 @@ class DinoFeatureExtractor:
         image = image.convert("RGB")
         inputs = self.processor(images=image, return_tensors="pt").to(self.device)
         out = self.model(**inputs).last_hidden_state
-        tokens = out[:, 1:, :]
+        # DINOv3 returns CLS + optional register tokens + spatial patch tokens.
+        n_register = int(getattr(self.model.config, "num_register_tokens", 0) or 0)
+        tokens = out[:, 1 + n_register :, :]
         n = tokens.shape[1]
+        pixel_values = inputs.get("pixel_values")
+        patch_size = getattr(getattr(self.model.config, "patch_size", None), "__int__", lambda: 16)()
+        if pixel_values is not None and isinstance(patch_size, int):
+            height, width = pixel_values.shape[-2:]
+            grid = (height // patch_size, width // patch_size)
+            if grid[0] * grid[1] == n:
+                return tokens[0].float().cpu().numpy(), grid
         side = int(n ** 0.5)
         if side * side != n:
-            raise ValueError(f"Backbone returned {n} tokens; expected a square patch grid")
+            raise ValueError(f"Backbone returned {n} patch tokens; cannot infer spatial grid")
         x = tokens[0].float().cpu().numpy()
         return x, (side, side)
