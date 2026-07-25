@@ -1,0 +1,9 @@
+{
+  "model": "facebook/dinov2-small",
+  "device": "cpu",
+  "normal_dir": "examples/data/normal",
+  "prototype_dir": "examples/data/prototypes",
+  "output": "outputs/example-model.json",
+  "alpha": 0.5,
+  "unknown_threshold": 0.35
+}

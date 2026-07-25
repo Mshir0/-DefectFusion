@@ -13,8 +13,16 @@ Training-free and few-shot defect detection and defect typing, combining ideas f
 ## Quick start
 
 ```bash
-python -m defectfusion.cli fit --normal-dir data/normal --model facebook/dinov2-small
-python -m defectfusion.cli predict --model-state outputs/model.npz --image image.jpg
+python examples/generate_data.py
+python -m defectfusion.cli fit --config configs/example.json
+python -m defectfusion.cli predict --model-state outputs/example-model.json --image examples/data/prototypes/scratch/scratch_0.png
 ```
 
-The default classifier reports `unknown` when no prototype is sufficiently confident. Model weights are downloaded by HuggingFace/torch at runtime.
+`fit` accepts `--normal-dir` and an optional `--prototype-dir`; each prototype
+subdirectory becomes a defect label. Use `--device cuda` when available,
+`--unknown-threshold` to control the `unknown` decision, and `--output` to
+write prediction JSON. All options can be placed in a JSON file (see
+`configs/example.json`), with command-line flags taking precedence.
+
+The default classifier reports `unknown` when no prototype is sufficiently
+confident. Model weights are downloaded by HuggingFace/torch at runtime.

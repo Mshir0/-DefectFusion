@@ -10,11 +10,12 @@ from .model import NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35):
         self.extractor = extractor
         self.alpha = alpha
         self.subspace = NormalSubspace()
         self.prototype_bank = PrototypeBank()
+        self.prototype_bank.unknown_threshold = unknown_threshold
         self.reference_grid = None
         self.reference_shape = None
 
@@ -62,6 +63,7 @@ class DefectFusion:
             "alpha": self.alpha,
             "subspace": self.subspace.to_dict(),
             "prototype_bank": self.prototype_bank.to_dict(),
+            "unknown_threshold": self.prototype_bank.unknown_threshold,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
@@ -73,7 +75,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
         obj.reference_grid = state.get("reference_grid")
