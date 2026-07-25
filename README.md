@@ -91,6 +91,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --model facebook/dinov3-vit7b16-pretrain-lvd1689m \
   --few-shot 1 --seed 42 \
   --top-k-ratio 0.05 \
+  --type-matching bidirectional_patch \
   --image-score mtop1p \
   --feature-layers=-1,-2,-3,-4 \
   --layer-aggregation mean \
@@ -105,11 +106,9 @@ python -m defectfusion.cli evaluate-mvtec \
 | Sampling seed | `--seed` | `42` | `0, 1, 2, 42` | Few-shot variance |
 | Typing patch ratio | `--top-k-ratio` | `0.05` | `0.05, 0.10, 0.20, 0.30, 1.0` | Type Accuracy, Macro-F1 |
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
+| Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch` | Type Accuracy, Macro-F1 |
 | Feature layers | `--feature-layers` | `-1,-2,-3,-4` | `-1`, `-1,-2`, `-1,-2,-3,-4`, `-1,-3,-5` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
-| Foreground mask | `--foreground-mask` | `dino_saliency` | `none, dino_saliency` | All metrics |
-| Foreground cutoff | `--foreground-percentile` | `0.15` | `0.05, 0.15, 0.30` | All metrics |
-| Saliency layer | `--saliency-layer` | `6` | `0, 6, -1` | All metrics |
 | Positional debiasing | `--debias` | off | off/on | All metrics |
 | Debias rank | `--svd-components` | `20` | `2, 5, 10, 20` | Active only with `--debias` |
 | Device | `--device` | auto | `cpu, cuda` | Runtime only |
@@ -119,12 +118,10 @@ Negative feature-layer values must use the equals form, such as
 new options. `concat` multiplies the PCA feature dimension by the number of
 selected layers and therefore uses substantially more memory than `mean`.
 
-Foreground suppression uses DINO register-to-patch attention (or CLS-to-patch
-attention for models without registers). Patches below the configured
-saliency percentile are excluded from PCA fitting, image-score aggregation,
-and defect prototypes, and are set to zero in anomaly maps. Use
-`--foreground-mask none` for the no-mask ablation. Attention extraction uses
-the eager implementation and can be slower than the no-mask baseline.
+Defect typing performs bidirectional matching between the PCA-selected Top-K
+query patches and all few-shot patches for each defect label. Its score is the
+mean of query-to-reference and reference-to-query nearest-neighbour
+similarities, which rewards both precise matches and reference coverage.
 
 ### Single-variable commands
 

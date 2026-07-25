@@ -8,9 +8,7 @@
   "unknown_threshold": 0.35,
   "top_k_ratio": 0.05,
   "image_score": "mtop1p",
+  "type_matching": "bidirectional_patch",
   "feature_layers": [-1, -2, -3, -4],
-  "layer_aggregation": "mean",
-  "foreground_mask": "dino_saliency",
-  "foreground_percentile": 0.15,
-  "saliency_layer": 6
+  "layer_aggregation": "mean"
 }

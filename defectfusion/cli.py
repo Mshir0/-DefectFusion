@@ -41,17 +41,14 @@ def main(argv=None):
     f.add_argument("--debias", action="store_true"); f.add_argument("--svd-components", type=int, default=20)
     f.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
     f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
+    f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     f.add_argument("--feature-layers", default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
-    f.add_argument("--foreground-mask", choices=["none", "dino_saliency"], default=None)
-    f.add_argument("--foreground-percentile", type=float, default=None); f.add_argument("--saliency-layer", type=int, default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
     q.add_argument("--output", help="write JSON results to a file")
     q.add_argument("--debias", action="store_true"); q.add_argument("--svd-components", type=int, default=20)
     q.add_argument("--feature-layers", default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
-    q.add_argument("--foreground-mask", choices=["none", "dino_saliency"], default=None)
-    q.add_argument("--foreground-percentile", type=float, default=None); q.add_argument("--saliency-layer", type=int, default=None)
     e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
@@ -64,28 +61,20 @@ def main(argv=None):
     e.add_argument("--svd-components", type=int, default=20, help="INSID3 positional basis rank")
     e.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
     e.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
+    e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     e.add_argument("--feature-layers", default=None, help="comma-separated hidden-state indices")
     e.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
-    e.add_argument("--foreground-mask", choices=["none", "dino_saliency"], default=None)
-    e.add_argument("--foreground-percentile", type=float, default=None)
-    e.add_argument("--saliency-layer", type=int, default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
     image_score = getattr(a, "image_score", None) or cfg.get("image_score", "mtop1p")
+    type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
     feature_layers = _layers(getattr(a, "feature_layers", None) or cfg.get("feature_layers", [-1, -2, -3, -4]))
     layer_aggregation = getattr(a, "layer_aggregation", None) or cfg.get("layer_aggregation", "mean")
-    foreground_mask = getattr(a, "foreground_mask", None) or cfg.get("foreground_mask", "dino_saliency")
-    foreground_percentile = getattr(a, "foreground_percentile", None)
-    foreground_percentile = foreground_percentile if foreground_percentile is not None else cfg.get("foreground_percentile", 0.15)
-    saliency_layer = getattr(a, "saliency_layer", None)
-    saliency_layer = saliency_layer if saliency_layer is not None else cfg.get("saliency_layer", 6)
     extractor = DinoFeatureExtractor(
         model_name, device=getattr(a, "device", None) or cfg.get("device"),
         debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
         feature_layers=feature_layers, layer_aggregation=layer_aggregation,
-        foreground_mask=foreground_mask, foreground_percentile=foreground_percentile,
-        saliency_layer=saliency_layer,
     )
     if a.cmd == "fit":
         normal_dir = a.normal_dir or cfg.get("normal_dir")
@@ -94,7 +83,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -113,7 +102,7 @@ def main(argv=None):
         all_metrics = []
         for category in categories:
             normal_dir = str(category / "train" / "good")
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score).fit_normal(_images(normal_dir))
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching).fit_normal(_images(normal_dir))
             if a.prototype_dir:
                 for label_dir in sorted(Path(a.prototype_dir).iterdir()):
                     if label_dir.is_dir():
@@ -140,9 +129,7 @@ def main(argv=None):
             metrics["image_score"] = image_score
             metrics["feature_layers"] = list(feature_layers)
             metrics["layer_aggregation"] = layer_aggregation
-            metrics["foreground_mask"] = foreground_mask
-            metrics["foreground_percentile"] = foreground_percentile
-            metrics["saliency_layer"] = saliency_layer
+            metrics["type_matching"] = type_matching
             all_metrics.append(metrics)
         if len(all_metrics) == 1:
             summary = all_metrics[0]

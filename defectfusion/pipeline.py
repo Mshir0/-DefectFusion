@@ -10,7 +10,7 @@ from .model import NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p"):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch"):
         self.extractor = extractor
         self.alpha = alpha
         self.subspace = NormalSubspace()
@@ -22,6 +22,9 @@ class DefectFusion:
         if image_score not in {"mtop1p", "mean", "max", "p99"}:
             raise ValueError("image_score must be one of: mtop1p, mean, max, p99")
         self.image_score = image_score
+        if type_matching not in {"prototype_mean", "bidirectional_patch"}:
+            raise ValueError("type_matching must be prototype_mean or bidirectional_patch")
+        self.type_matching = type_matching
         self.reference_grid = None
         self.reference_shape = None
 
@@ -29,8 +32,8 @@ class DefectFusion:
         patch_batches = []
         for path in image_paths:
             image = Image.open(path)
-            patches, grid, foreground = self.extractor.extract(image, return_mask=True)
-            patch_batches.append(patches[foreground])
+            patches, grid = self.extractor.extract(image)
+            patch_batches.append(patches)
             self.reference_shape = grid
         if not patch_batches:
             raise ValueError("No normal images were provided")
@@ -41,16 +44,15 @@ class DefectFusion:
 
     def add_prototype(self, label: str, image_path):
         image = Image.open(image_path)
-        patches, _, foreground = self.extractor.extract(image, return_mask=True)
-        self.prototype_bank.add(label, self._anomaly_descriptor(patches, foreground))
+        patches, _ = self.extractor.extract(image)
+        self.prototype_bank.add(label, self._anomaly_patches(patches))
         return self
 
-    def _anomaly_descriptor(self, patches, foreground=None):
-        selected = patches if foreground is None else patches[foreground]
-        scores = self.subspace.score(selected)
+    def _anomaly_patches(self, patches):
+        scores = self.subspace.score(patches)
         keep = max(1, int(np.ceil(len(scores) * self.top_k_ratio)))
         indices = np.argpartition(scores, -keep)[-keep:]
-        return selected[indices].mean(axis=0)
+        return patches[indices]
 
     def _aggregate_image_score(self, scores):
         scores = np.asarray(scores, dtype=np.float64)
@@ -65,14 +67,15 @@ class DefectFusion:
 
     def predict(self, image_path):
         image = Image.open(image_path)
-        patches, grid, foreground = self.extractor.extract(image, return_mask=True)
+        patches, grid = self.extractor.extract(image)
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
         anomaly_scores = self.subspace.score(patches)
-        anomaly_scores[~foreground] = 0.0
         anomaly_map = anomaly_scores.reshape(grid).tolist()
-        fused_score = self._aggregate_image_score(anomaly_scores[foreground])
-        label, label_score = self.prototype_bank.predict(self._anomaly_descriptor(patches, foreground))
+        fused_score = self._aggregate_image_score(anomaly_scores)
+        typing_patches = self._anomaly_patches(patches)
+        typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
+        label, label_score = self.prototype_bank.predict(typing_features)
         return {
             "image": str(image_path),
             "grid": list(grid),
@@ -81,7 +84,6 @@ class DefectFusion:
             "defect_type": label,
             "defect_type_score": float(label_score),
             "fused_score": fused_score * self.alpha + float(label_score) * (1.0 - self.alpha),
-            "foreground_ratio": float(np.mean(foreground)),
         }
 
     def save(self, path):
@@ -92,6 +94,7 @@ class DefectFusion:
             "unknown_threshold": self.prototype_bank.unknown_threshold,
             "top_k_ratio": self.top_k_ratio,
             "image_score": self.image_score,
+            "type_matching": self.type_matching,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
@@ -103,9 +106,10 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
+        obj.prototype_bank.unknown_threshold = state.get("unknown_threshold", 0.35)
         obj.reference_grid = state.get("reference_grid")
         obj.reference_shape = state.get("reference_shape")
         return obj
