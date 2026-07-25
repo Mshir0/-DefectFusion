@@ -6,5 +6,6 @@
   "output": "outputs/example-model.json",
   "alpha": 0.5,
   "unknown_threshold": 0.35,
-  "top_k_ratio": 0.05
+  "top_k_ratio": 0.05,
+  "image_score": "mtop1p"
 }

@@ -34,6 +34,7 @@ def main(argv=None):
     f.add_argument("--device", default=None); f.add_argument("--non-recursive", action="store_true")
     f.add_argument("--debias", action="store_true"); f.add_argument("--svd-components", type=int, default=20)
     f.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
+    f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
@@ -50,9 +51,11 @@ def main(argv=None):
     e.add_argument("--debias", action="store_true", help="apply INSID3 positional debiasing")
     e.add_argument("--svd-components", type=int, default=20, help="INSID3 positional basis rank")
     e.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
+    e.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
+    image_score = getattr(a, "image_score", None) or cfg.get("image_score", "mtop1p")
     extractor = DinoFeatureExtractor(
         model_name, device=getattr(a, "device", None) or cfg.get("device"),
         debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
@@ -64,7 +67,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -83,7 +86,7 @@ def main(argv=None):
         all_metrics = []
         for category in categories:
             normal_dir = str(category / "train" / "good")
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio).fit_normal(_images(normal_dir))
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score).fit_normal(_images(normal_dir))
             if a.prototype_dir:
                 for label_dir in sorted(Path(a.prototype_dir).iterdir()):
                     if label_dir.is_dir():
@@ -107,6 +110,7 @@ def main(argv=None):
             metrics["debias"] = a.debias
             metrics["svd_components"] = a.svd_components if a.debias else 0
             metrics["top_k_ratio"] = top_k_ratio
+            metrics["image_score"] = image_score
             all_metrics.append(metrics)
         print(json.dumps(all_metrics[0] if len(all_metrics) == 1 else {"categories": all_metrics}, ensure_ascii=False, indent=2))
 

@@ -68,3 +68,7 @@ Defect typing uses the highest PCA-reconstruction-residual patches instead of
 the whole-image mean. Control their fraction with `--top-k-ratio` (default
 `0.05`, selected by the MVTec 1-shot ablation); use `1.0` to reproduce
 whole-image prototype classification.
+
+Image-level anomaly scores use the mean of the highest-scoring 1% of patch
+residuals (`--image-score mtop1p`). Use `--image-score mean` to reproduce the
+previous whole-image score; `max` and `p99` are also available for ablation.
