@@ -10,5 +10,8 @@
   "image_score": "mtop1p",
   "type_matching": "bidirectional_patch",
   "feature_layers": [-1, -2, -3, -4],
-  "layer_aggregation": "mean"
+  "layer_aggregation": "mean",
+  "multiscale_mode": "overlap",
+  "crop_ratio": 0.75,
+  "crop_overlap": 0.5
 }

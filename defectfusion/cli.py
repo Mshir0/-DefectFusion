@@ -43,12 +43,16 @@ def main(argv=None):
     f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     f.add_argument("--feature-layers", default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
+    f.add_argument("--multiscale-mode", choices=["none", "overlap"], default=None)
+    f.add_argument("--crop-ratio", type=float, default=None); f.add_argument("--crop-overlap", type=float, default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
     q.add_argument("--output", help="write JSON results to a file")
     q.add_argument("--debias", action="store_true"); q.add_argument("--svd-components", type=int, default=20)
     q.add_argument("--feature-layers", default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
+    q.add_argument("--multiscale-mode", choices=["none", "overlap"], default=None)
+    q.add_argument("--crop-ratio", type=float, default=None); q.add_argument("--crop-overlap", type=float, default=None)
     e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
@@ -64,6 +68,8 @@ def main(argv=None):
     e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     e.add_argument("--feature-layers", default=None, help="comma-separated hidden-state indices")
     e.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
+    e.add_argument("--multiscale-mode", choices=["none", "overlap"], default=None)
+    e.add_argument("--crop-ratio", type=float, default=None); e.add_argument("--crop-overlap", type=float, default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
@@ -71,10 +77,16 @@ def main(argv=None):
     type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
     feature_layers = _layers(getattr(a, "feature_layers", None) or cfg.get("feature_layers", [-1, -2, -3, -4]))
     layer_aggregation = getattr(a, "layer_aggregation", None) or cfg.get("layer_aggregation", "mean")
+    multiscale_mode = getattr(a, "multiscale_mode", None) or cfg.get("multiscale_mode", "overlap")
+    crop_ratio = getattr(a, "crop_ratio", None)
+    crop_ratio = crop_ratio if crop_ratio is not None else cfg.get("crop_ratio", 0.75)
+    crop_overlap = getattr(a, "crop_overlap", None)
+    crop_overlap = crop_overlap if crop_overlap is not None else cfg.get("crop_overlap", 0.5)
     extractor = DinoFeatureExtractor(
         model_name, device=getattr(a, "device", None) or cfg.get("device"),
         debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
         feature_layers=feature_layers, layer_aggregation=layer_aggregation,
+        multiscale_mode=multiscale_mode, crop_ratio=crop_ratio, crop_overlap=crop_overlap,
     )
     if a.cmd == "fit":
         normal_dir = a.normal_dir or cfg.get("normal_dir")
@@ -130,6 +142,9 @@ def main(argv=None):
             metrics["feature_layers"] = list(feature_layers)
             metrics["layer_aggregation"] = layer_aggregation
             metrics["type_matching"] = type_matching
+            metrics["multiscale_mode"] = multiscale_mode
+            metrics["crop_ratio"] = crop_ratio
+            metrics["crop_overlap"] = crop_overlap
             all_metrics.append(metrics)
         if len(all_metrics) == 1:
             summary = all_metrics[0]

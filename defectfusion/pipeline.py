@@ -32,9 +32,9 @@ class DefectFusion:
         patch_batches = []
         for path in image_paths:
             image = Image.open(path)
-            patches, grid = self.extractor.extract(image)
-            patch_batches.append(patches)
-            self.reference_shape = grid
+            views = self._extract_views(image)
+            patch_batches.extend(patches for patches, _, _ in views)
+            self.reference_shape = views[0][1]
         if not patch_batches:
             raise ValueError("No normal images were provided")
         features = np.concatenate(patch_batches, axis=0)
@@ -44,9 +44,15 @@ class DefectFusion:
 
     def add_prototype(self, label: str, image_path):
         image = Image.open(image_path)
-        patches, _ = self.extractor.extract(image)
+        patches = np.concatenate([item[0] for item in self._extract_views(image)], axis=0)
         self.prototype_bank.add(label, self._anomaly_patches(patches))
         return self
+
+    def _extract_views(self, image):
+        if hasattr(self.extractor, "extract_views"):
+            return self.extractor.extract_views(image)
+        patches, grid = self.extractor.extract(image)
+        return [(patches, grid, (0, 0, image.width, image.height))]
 
     def _anomaly_patches(self, patches):
         scores = self.subspace.score(patches)
@@ -67,18 +73,29 @@ class DefectFusion:
 
     def predict(self, image_path):
         image = Image.open(image_path)
-        patches, grid = self.extractor.extract(image)
+        views = self._extract_views(image)
+        patches = np.concatenate([item[0] for item in views], axis=0)
+        grid = views[0][1]
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
-        anomaly_scores = self.subspace.score(patches)
-        anomaly_map = anomaly_scores.reshape(grid).tolist()
-        fused_score = self._aggregate_image_score(anomaly_scores)
+        canvas = np.zeros((image.height, image.width), dtype=np.float64)
+        counts = np.zeros_like(canvas)
+        for view_patches, view_grid, (x1, y1, x2, y2) in views:
+            scores = self.subspace.score(view_patches).reshape(view_grid).astype("float32")
+            resized = np.asarray(Image.fromarray(scores, mode="F").resize((x2 - x1, y2 - y1), Image.Resampling.BILINEAR))
+            canvas[y1:y2, x1:x2] += resized
+            counts[y1:y2, x1:x2] += 1
+        fused_map = np.divide(canvas, counts, out=np.zeros_like(canvas), where=counts > 0)
+        coarse_map = np.asarray(Image.fromarray(fused_map.astype("float32"), mode="F").resize(grid[::-1], Image.Resampling.BILINEAR))
+        anomaly_map = coarse_map.tolist()
+        fused_score = self._aggregate_image_score(coarse_map.ravel())
         typing_patches = self._anomaly_patches(patches)
         typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
         label, label_score = self.prototype_bank.predict(typing_features)
         return {
             "image": str(image_path),
             "grid": list(grid),
+            "views": len(views),
             "anomaly_score": fused_score,
             "anomaly_map": anomaly_map,
             "defect_type": label,

@@ -4,6 +4,6 @@
 - [x] Fuse features from multiple DINOv3 layers.
 - [x] Evaluate foreground/saliency suppression (removed after negative MVTec ablation).
 - [x] Add bidirectional patch matching for anomalous regions.
-- [ ] Add overlapping multi-scale crop inference.
+- [x] Add overlapping multi-scale crop inference.
 - [ ] Cluster anomalous patches into multiple defect prototypes.
 - [ ] Add Gaussian smoothing and optional CRF map refinement.
