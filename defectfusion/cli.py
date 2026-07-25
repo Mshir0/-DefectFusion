@@ -32,10 +32,12 @@ def main(argv=None):
     f.add_argument("--model", default=None); f.add_argument("--output", default=None)
     f.add_argument("--alpha", type=float, default=None); f.add_argument("--unknown-threshold", type=float, default=None)
     f.add_argument("--device", default=None); f.add_argument("--non-recursive", action="store_true")
+    f.add_argument("--debias", action="store_true"); f.add_argument("--svd-components", type=int, default=20)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
     q.add_argument("--output", help="write JSON results to a file")
+    q.add_argument("--debias", action="store_true"); q.add_argument("--svd-components", type=int, default=20)
     e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
@@ -44,9 +46,14 @@ def main(argv=None):
     e.add_argument("--seed", type=int, default=42, help="seed used for reproducible few-shot selection")
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
     e.add_argument("--output", default="outputs/mvtec-results.jsonl")
+    e.add_argument("--debias", action="store_true", help="apply INSID3 positional debiasing")
+    e.add_argument("--svd-components", type=int, default=20, help="INSID3 positional basis rank")
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
-    extractor = DinoFeatureExtractor(model_name, device=getattr(a, "device", None) or cfg.get("device"))
+    extractor = DinoFeatureExtractor(
+        model_name, device=getattr(a, "device", None) or cfg.get("device"),
+        debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
+    )
     if a.cmd == "fit":
         normal_dir = a.normal_dir or cfg.get("normal_dir")
         if not normal_dir: p.error("fit requires --normal-dir or config normal_dir")
@@ -94,6 +101,8 @@ def main(argv=None):
             metrics["few_shot"] = a.few_shot
             metrics["seed"] = a.seed
             metrics["few_shot_images"] = [str(Path(x)) for x in selected]
+            metrics["debias"] = a.debias
+            metrics["svd_components"] = a.svd_components if a.debias else 0
             all_metrics.append(metrics)
         print(json.dumps(all_metrics[0] if len(all_metrics) == 1 else {"categories": all_metrics}, ensure_ascii=False, indent=2))
 

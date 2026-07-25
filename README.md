@@ -55,3 +55,11 @@ per defect type as prototypes (selected images are excluded from evaluation):
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --few-shot 1 --seed 42 --output outputs/mvtec-all.jsonl
 ```
+
+Enable INSID3 positional debiasing for an ablation with the same split:
+
+```bash
+python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+  --few-shot 1 --seed 42 --debias --svd-components 20 \
+  --output outputs/mvtec-all-debiased.jsonl
+```
