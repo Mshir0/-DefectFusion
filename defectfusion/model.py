@@ -22,7 +22,11 @@ class NormalSubspace:
 class PrototypeBank:
     def __init__(self, unknown_threshold=0.35): self.prototypes = {}; self.counts = {}; self.unknown_threshold = unknown_threshold
     def add(self, label, features):
-        x = np.asarray(features, dtype=np.float64); p = x.mean(0); p /= max(np.linalg.norm(p), 1e-12)
+        x = np.asarray(features, dtype=np.float64)
+        if x.ndim == 0:
+            raise ValueError("Prototype features must be a vector or a matrix")
+        p = x if x.ndim == 1 else x.mean(axis=0)
+        p = p.copy(); p /= max(np.linalg.norm(p), 1e-12)
         count = self.counts.get(label, 0)
         if count: p = (self.prototypes[label] * count + p) / (count + 1); p /= max(np.linalg.norm(p), 1e-12)
         self.prototypes[label] = p; self.counts[label] = count + 1
