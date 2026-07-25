@@ -5,5 +5,5 @@
 - [x] Evaluate foreground/saliency suppression (removed after negative MVTec ablation).
 - [x] Add bidirectional patch matching for anomalous regions.
 - [x] Evaluate overlapping multi-scale crops (removed after negative MVTec ablation).
-- [x] Cluster anomalous patches into multiple defect prototypes.
-- [ ] Add Gaussian smoothing and optional CRF map refinement.
+- [x] Evaluate clustered defect prototypes (removed after negative MVTec ablation).
+- [x] Add Gaussian smoothing and optional CRF map refinement.

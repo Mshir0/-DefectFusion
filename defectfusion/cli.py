@@ -43,7 +43,7 @@ def main(argv=None):
     f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     f.add_argument("--feature-layers", default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
-    f.add_argument("--prototype-clusters", type=int, default=None); f.add_argument("--cluster-seed", type=int, default=None)
+    f.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); f.add_argument("--gaussian-sigma", type=float, default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
@@ -65,7 +65,7 @@ def main(argv=None):
     e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch"], default=None)
     e.add_argument("--feature-layers", default=None, help="comma-separated hidden-state indices")
     e.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
-    e.add_argument("--prototype-clusters", type=int, default=None); e.add_argument("--cluster-seed", type=int, default=None)
+    e.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); e.add_argument("--gaussian-sigma", type=float, default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
@@ -73,10 +73,9 @@ def main(argv=None):
     type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
     feature_layers = _layers(getattr(a, "feature_layers", None) or cfg.get("feature_layers", [-1, -2, -3, -4]))
     layer_aggregation = getattr(a, "layer_aggregation", None) or cfg.get("layer_aggregation", "mean")
-    prototype_clusters = getattr(a, "prototype_clusters", None)
-    prototype_clusters = prototype_clusters if prototype_clusters is not None else cfg.get("prototype_clusters", 3)
-    cluster_seed = getattr(a, "cluster_seed", None)
-    cluster_seed = cluster_seed if cluster_seed is not None else cfg.get("cluster_seed", 0)
+    map_postprocess = getattr(a, "map_postprocess", None) or cfg.get("map_postprocess", "gaussian")
+    gaussian_sigma = getattr(a, "gaussian_sigma", None)
+    gaussian_sigma = gaussian_sigma if gaussian_sigma is not None else cfg.get("gaussian_sigma", 1.0)
     extractor = DinoFeatureExtractor(
         model_name, device=getattr(a, "device", None) or cfg.get("device"),
         debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
@@ -89,7 +88,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, prototype_clusters=prototype_clusters, cluster_seed=cluster_seed).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -108,7 +107,7 @@ def main(argv=None):
         all_metrics = []
         for category in categories:
             normal_dir = str(category / "train" / "good")
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, prototype_clusters=prototype_clusters, cluster_seed=cluster_seed).fit_normal(_images(normal_dir))
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma).fit_normal(_images(normal_dir))
             if a.prototype_dir:
                 for label_dir in sorted(Path(a.prototype_dir).iterdir()):
                     if label_dir.is_dir():
@@ -136,8 +135,8 @@ def main(argv=None):
             metrics["feature_layers"] = list(feature_layers)
             metrics["layer_aggregation"] = layer_aggregation
             metrics["type_matching"] = type_matching
-            metrics["prototype_clusters"] = prototype_clusters
-            metrics["cluster_seed"] = cluster_seed
+            metrics["map_postprocess"] = map_postprocess
+            metrics["gaussian_sigma"] = gaussian_sigma if map_postprocess == "gaussian" else 0
             all_metrics.append(metrics)
         if len(all_metrics) == 1:
             summary = all_metrics[0]

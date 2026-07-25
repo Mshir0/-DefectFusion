@@ -10,11 +10,11 @@ from .model import NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", prototype_clusters: int = 3, cluster_seed: int = 0):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "gaussian", gaussian_sigma: float = 1.0):
         self.extractor = extractor
         self.alpha = alpha
         self.subspace = NormalSubspace()
-        self.prototype_bank = PrototypeBank(cluster_count=prototype_clusters, cluster_seed=cluster_seed)
+        self.prototype_bank = PrototypeBank()
         self.prototype_bank.unknown_threshold = unknown_threshold
         if not 0 < top_k_ratio <= 1:
             raise ValueError("top_k_ratio must be in (0, 1]")
@@ -25,8 +25,10 @@ class DefectFusion:
         if type_matching not in {"prototype_mean", "bidirectional_patch"}:
             raise ValueError("type_matching must be prototype_mean or bidirectional_patch")
         self.type_matching = type_matching
-        self.prototype_clusters = prototype_clusters
-        self.cluster_seed = cluster_seed
+        if map_postprocess not in {"none", "gaussian", "crf"}:
+            raise ValueError("map_postprocess must be none, gaussian, or crf")
+        self.map_postprocess = map_postprocess
+        self.gaussian_sigma = gaussian_sigma
         self.reference_grid = None
         self.reference_shape = None
 
@@ -67,13 +69,42 @@ class DefectFusion:
         keep = max(1, int(np.ceil(scores.size * 0.01)))
         return float(np.partition(scores, -keep)[-keep:].mean())
 
+    def _postprocess_map(self, anomaly_map, image):
+        if self.map_postprocess == "none":
+            return anomaly_map
+        if self.map_postprocess == "gaussian":
+            import torch
+            import torch.nn.functional as F
+            sigma = max(float(self.gaussian_sigma), 1e-6)
+            radius = max(1, int(np.ceil(3 * sigma)))
+            axis = torch.arange(-radius, radius + 1, dtype=torch.float32)
+            kernel = torch.exp(-(axis ** 2) / (2 * sigma ** 2)); kernel /= kernel.sum()
+            x = torch.as_tensor(anomaly_map, dtype=torch.float32)[None, None]
+            x = F.pad(x, (radius, radius, radius, radius), mode="reflect")
+            x = F.conv2d(x, kernel[None, None, None, :])
+            x = F.conv2d(x, kernel[None, None, :, None])
+            return x[0, 0].numpy()
+        try:
+            import pydensecrf.densecrf as dcrf
+            from pydensecrf.utils import unary_from_softmax
+        except ImportError as exc:
+            raise RuntimeError("CRF requires: pip install 'defectfusion[crf]'") from exc
+        full = np.asarray(Image.fromarray(anomaly_map.astype("float32"), mode="F").resize(image.size, Image.Resampling.BILINEAR))
+        prob = (full - full.min()) / max(float(full.max() - full.min()), 1e-12)
+        unary = unary_from_softmax(np.stack([1 - prob, prob]).astype("float32"))
+        rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        crf = dcrf.DenseCRF2D(image.width, image.height, 2); crf.setUnaryEnergy(unary)
+        crf.addPairwiseGaussian(sxy=3, compat=3); crf.addPairwiseBilateral(sxy=50, srgb=10, rgbim=rgb, compat=5)
+        refined = np.asarray(crf.inference(5), dtype=np.float32)[1].reshape(image.height, image.width)
+        return np.asarray(Image.fromarray(refined, mode="F").resize(anomaly_map.shape[::-1], Image.Resampling.BILINEAR))
+
     def predict(self, image_path):
         image = Image.open(image_path)
         patches, grid = self.extractor.extract(image)
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
         anomaly_scores = self.subspace.score(patches)
-        anomaly_map = anomaly_scores.reshape(grid).tolist()
+        anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         fused_score = self._aggregate_image_score(anomaly_scores)
         typing_patches = self._anomaly_patches(patches)
         typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
@@ -97,8 +128,8 @@ class DefectFusion:
             "top_k_ratio": self.top_k_ratio,
             "image_score": self.image_score,
             "type_matching": self.type_matching,
-            "prototype_clusters": self.prototype_clusters,
-            "cluster_seed": self.cluster_seed,
+            "map_postprocess": self.map_postprocess,
+            "gaussian_sigma": self.gaussian_sigma,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
@@ -110,7 +141,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), prototype_clusters=state.get("prototype_clusters", 0), cluster_seed=state.get("cluster_seed", 0))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
         obj.prototype_bank.unknown_threshold = state.get("unknown_threshold", 0.35)
