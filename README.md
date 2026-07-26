@@ -119,7 +119,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Sampling seed | `--seed` | `42` | `0, 1, 2, 42` | Few-shot variance |
 | Typing patch ratio | `--top-k-ratio` | `0.05` | `0.05, 0.10, 0.20, 0.30, 1.0` | Type Accuracy, Macro-F1 |
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
-| Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch` | Type Accuracy, Macro-F1 |
+| Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch, shrinkage_lda` | Type Accuracy, Macro-F1 |
 | Anomaly detector | `--anomaly-method` | `pca` | `pca, knn, pca_knn` | Image/Pixel AUROC |
 | kNN fusion weight | `--knn-weight` | `0.5` | `0.25, 0.5, 0.75` | Active with `pca_knn` |
 | PCA-kNN fusion | `--fusion-mode` | `fixed` | `fixed, gated` | Image/Pixel AUROC |
@@ -150,6 +150,26 @@ Defect typing performs bidirectional matching between the PCA-selected Top-K
 query patches and all defect-reference patches for each label. Its score is the
 mean of query-to-reference and reference-to-query nearest-neighbour
 similarities, which rewards both precise matches and reference coverage.
+Use `--type-matching shrinkage_lda` to fit a shared-covariance linear
+discriminant classifier on the same normalized Top-K reference patches. It
+uses `solver=lsqr` with automatic covariance shrinkage, fits lazily once per
+category, and averages query-patch class probabilities into an image-level
+defect-type score. Detection metrics are unchanged by this option.
+
+Compare the current matcher and Shrinkage LDA under the same labeled-defect
+split:
+
+```bash
+for matcher in bidirectional_patch shrinkage_lda; do
+  python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
+    --normal-shots -1 --defect-shots 1 --seed 42 \
+    --image-size 672 --feature-layers=-1,-3,-5,-7 \
+    --top-k-ratio 0.05 --type-matching "$matcher" \
+    --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
+    --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
+    --output "outputs/mvtec-type-${matcher}.json"
+done
+```
 
 Anomaly-map post-processing is isolated from image scoring and defect typing.
 Use `--map-postprocess none` for the raw-map baseline, `gaussian` for separable
