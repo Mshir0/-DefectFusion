@@ -105,7 +105,7 @@ def main(argv=None):
     f.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None); f.add_argument("--gate-temperature", type=float, default=None)
     f.add_argument("--memory-max-patches", type=int, default=None); f.add_argument("--knn-chunk-size", type=int, default=None)
     f.add_argument("--knn-backend", choices=["auto", "numpy", "torch"], default=None); f.add_argument("--knn-dtype", choices=["float32", "float16"], default=None)
-    f.add_argument("--feature-layers", default=None); f.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
+    f.add_argument("--feature-layers", default=None); f.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None); f.add_argument("--layer-normalization", choices=["none", "l2"], default=None)
     f.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); f.add_argument("--gaussian-sigma", type=float, default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
@@ -114,7 +114,7 @@ def main(argv=None):
     q.add_argument("--resize-mode", choices=["direct", "longest_pad"], default=None)
     q.add_argument("--output", help="write JSON results to a file")
     q.add_argument("--debias", action="store_true"); q.add_argument("--svd-components", type=int, default=20)
-    q.add_argument("--feature-layers", default=None); q.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
+    q.add_argument("--feature-layers", default=None); q.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None); q.add_argument("--layer-normalization", choices=["none", "l2"], default=None)
     e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
@@ -145,6 +145,7 @@ def main(argv=None):
     e.add_argument("--feature-layers", default=None, help="comma-separated hidden-state indices")
     e.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None, help="named layer selection; middle7 matches the SubspaceAD indices")
     e.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
+    e.add_argument("--layer-normalization", choices=["none", "l2"], default=None, help="normalize each hidden layer before fusion")
     e.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); e.add_argument("--gaussian-sigma", type=float, default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
@@ -171,13 +172,14 @@ def main(argv=None):
     except ValueError as exc:
         p.error(str(exc))
     layer_aggregation = getattr(a, "layer_aggregation", None) or cfg.get("layer_aggregation", "mean")
+    layer_normalization = getattr(a, "layer_normalization", None) or cfg.get("layer_normalization", "none")
     map_postprocess = getattr(a, "map_postprocess", None) or cfg.get("map_postprocess", "none")
     gaussian_sigma = getattr(a, "gaussian_sigma", None)
     gaussian_sigma = gaussian_sigma if gaussian_sigma is not None else cfg.get("gaussian_sigma", 1.0)
     extractor = DinoFeatureExtractor(
         model_name, image_size=image_size, resize_mode=resize_mode, device=getattr(a, "device", None) or cfg.get("device"),
         debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
-        feature_layers=feature_layers, layer_aggregation=layer_aggregation,
+        feature_layers=feature_layers, layer_aggregation=layer_aggregation, layer_normalization=layer_normalization,
     )
     if a.cmd == "fit":
         normal_dir = a.normal_dir or cfg.get("normal_dir")
@@ -263,6 +265,7 @@ def main(argv=None):
             metrics["image_size"] = image_size
             metrics["resize_mode"] = resize_mode
             metrics["layer_aggregation"] = layer_aggregation
+            metrics["layer_normalization"] = layer_normalization
             metrics["type_matching"] = type_matching
             metrics["anomaly_method"] = anomaly_method
             metrics["knn_weight"] = knn_weight if anomaly_method == "pca_knn" else 0

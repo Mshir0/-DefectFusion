@@ -7,7 +7,7 @@ from PIL import Image
 
 class DinoFeatureExtractor:
     """Dense frozen DINOv2 extractor. The interface also accepts compatible DINOv3 wrappers."""
-    def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, resize_mode="direct", device=None, debias=False, svd_components=20, feature_layers=(-1, -3, -5, -7), layer_aggregation="mean"):
+    def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, resize_mode="direct", device=None, debias=False, svd_components=20, feature_layers=(-1, -3, -5, -7), layer_aggregation="mean", layer_normalization="none"):
         from transformers import AutoImageProcessor, AutoModel
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.processor = AutoImageProcessor.from_pretrained(model_name)
@@ -33,6 +33,9 @@ class DinoFeatureExtractor:
         if layer_aggregation not in {"mean", "concat"}:
             raise ValueError("layer_aggregation must be mean or concat")
         self.layer_aggregation = layer_aggregation
+        if layer_normalization not in {"none", "l2"}:
+            raise ValueError("layer_normalization must be none or l2")
+        self.layer_normalization = layer_normalization
 
     def _prepare(self, image):
         self._content_bounds = None
@@ -65,6 +68,8 @@ class DinoFeatureExtractor:
             selected = [out.hidden_states[index][:, 1 + n_register :, :] for index in self.feature_layers]
         except IndexError as exc:
             raise ValueError(f"Invalid feature layer in {self.feature_layers}; model returned {len(out.hidden_states)} states") from exc
+        if self.layer_normalization == "l2":
+            selected = [F.normalize(tokens.float(), p=2, dim=-1) for tokens in selected]
         if self.layer_aggregation == "mean":
             tokens = torch.stack(selected, dim=0).mean(dim=0)
         else:

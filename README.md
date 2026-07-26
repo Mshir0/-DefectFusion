@@ -147,6 +147,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Feature layers | `--feature-layers` | `-1,-3,-5,-7` | `-1`, `-1,-2,-3,-4`, `-1,-3,-5,-7` | All metrics |
 | Feature layer preset | `--feature-layer-preset` | `cross4` | `cross4, last4, middle7` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
+| Per-layer normalization | `--layer-normalization` | `none` | `none, l2` | Multi-layer feature balance |
 | Map post-process | `--map-postprocess` | `none` | `none, gaussian, crf` | Pixel AUROC |
 | Gaussian sigma | `--gaussian-sigma` | `1.0` | `0.5, 1.0, 2.0` | Pixel AUROC |
 | Positional debiasing | `--debias` | off | off/on | All metrics |
@@ -159,6 +160,8 @@ Negative feature-layer values must use the equals form, such as
 `--feature-layers=-1,-3,-5,-7`, so that `argparse` does not interpret them as
 new options. `concat` multiplies the PCA feature dimension by the number of
 selected layers and therefore uses substantially more memory than `mean`.
+Use `--layer-normalization l2` to normalize every patch token independently in
+each selected hidden layer before layer fusion; `none` reproduces prior runs.
 Input images are resized to `--image-size` without center cropping. The default
 `direct` mode reproduces existing experiments. `longest_pad` preserves aspect
 ratio by resizing the longest side and symmetrically padding with the processor
