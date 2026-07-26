@@ -16,6 +16,5 @@ def save(path, defect=None, index=0):
     image.save(path)
 
 for i in range(3): save(ROOT / "normal" / f"normal_{i}.png", index=i)
-for label in ("scratch", "spot"):
-    for i in range(2): save(ROOT / "prototypes" / label / f"{label}_{i}.png", label, i)
+save(ROOT / "test.png", "scratch")
 print(f"wrote example data to {ROOT}")

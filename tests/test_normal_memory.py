@@ -1,24 +1,14 @@
 import tempfile
 import unittest
-import importlib.util
 from pathlib import Path
 
 import numpy as np
 
-from defectfusion.model import NormalPatchMemory, PrototypeBank
+from defectfusion.model import NormalPatchMemory
 from defectfusion.pipeline import DefectFusion
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
-    @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")
-    def test_rbf_svm_classifies_separable_patch_sets(self):
-        bank = PrototypeBank(unknown_threshold=0.0)
-        bank.add("crack", np.array([[1.0, 0.0], [0.9, 0.1], [1.1, -0.1]]))
-        bank.add("color", np.array([[0.0, 1.0], [0.1, 0.9], [-0.1, 1.1]]))
-        label, score = bank.predict_rbf_svm(np.array([[0.95, 0.05], [1.05, -0.05]]))
-        self.assertEqual(label, "crack")
-        self.assertGreater(score, 0.5)
-
     def test_numpy_backend_matches_auto_cpu(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
