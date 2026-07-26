@@ -153,14 +153,35 @@ python -m defectfusion.cli evaluate-mvtec \
 | Debias rank | `--svd-components` | `20` | `2, 5, 10, 20` | Active only with `--debias` |
 | Device | `--device` | auto | `cpu, cuda` | Runtime only |
 | Input resolution | `--image-size` | `448` | `224, 448, 672` | All metrics and memory |
+| Resize geometry | `--resize-mode` | `direct` | `direct, longest_pad` | Geometric fidelity, all metrics |
 
 Negative feature-layer values must use the equals form, such as
 `--feature-layers=-1,-3,-5,-7`, so that `argparse` does not interpret them as
 new options. `concat` multiplies the PCA feature dimension by the number of
 selected layers and therefore uses substantially more memory than `mean`.
-Input images are explicitly resized to `--image-size` without center cropping;
-the value is passed to the Hugging Face processor rather than relying on its
-checkpoint default. Higher resolutions increase patch count quadratically.
+Input images are resized to `--image-size` without center cropping. The default
+`direct` mode reproduces existing experiments. `longest_pad` preserves aspect
+ratio by resizing the longest side and symmetrically padding with the processor
+mean color, which becomes approximately zero after normalization. Higher
+resolutions increase patch count quadratically.
+
+Compare resize geometry while keeping every other option fixed:
+
+```bash
+for mode in direct longest_pad; do
+  python -m defectfusion.cli evaluate-mvtec \
+    --data-root /mnt/sda1/mvtec_anomaly \
+    --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
+    --normal-shots 1 --defect-shots 0 --seed 42 \
+    --normal-augment-count 30 --normal-augmentations rotate \
+    --image-size 672 --resize-mode "$mode" \
+    --feature-layers=-1,-3,-5,-7 --layer-aggregation mean \
+    --image-score mtop1p --anomaly-method pca_knn \
+    --fusion-mode fixed --knn-weight 0.5 \
+    --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
+    --output "outputs/mvtec-resize-${mode}.json"
+done
+```
 
 Defect typing performs bidirectional matching between the PCA-selected Top-K
 query patches and all defect-reference patches for each label. Its score is the

@@ -7,12 +7,16 @@ from PIL import Image
 
 class DinoFeatureExtractor:
     """Dense frozen DINOv2 extractor. The interface also accepts compatible DINOv3 wrappers."""
-    def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, device=None, debias=False, svd_components=20, feature_layers=(-1, -3, -5, -7), layer_aggregation="mean"):
+    def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, resize_mode="direct", device=None, debias=False, svd_components=20, feature_layers=(-1, -3, -5, -7), layer_aggregation="mean"):
         from transformers import AutoImageProcessor, AutoModel
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.processor = AutoImageProcessor.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name).eval().to(self.device)
         self.image_size = image_size
+        if resize_mode not in {"direct", "longest_pad"}:
+            raise ValueError("resize_mode must be direct or longest_pad")
+        self.resize_mode = resize_mode
+        self._content_bounds = None
         self.debias = debias
         self.svd_components = svd_components
         self.positional_basis = None
@@ -31,10 +35,25 @@ class DinoFeatureExtractor:
         self.layer_aggregation = layer_aggregation
 
     def _prepare(self, image):
+        self._content_bounds = None
+        if self.resize_mode == "longest_pad":
+            width, height = image.size
+            scale = self.image_size / max(width, height)
+            resized = image.resize(
+                (max(1, round(width * scale)), max(1, round(height * scale))),
+                Image.Resampling.BICUBIC,
+            )
+            mean = getattr(self.processor, "image_mean", (0.0, 0.0, 0.0))
+            fill = tuple(round(float(value) * 255) for value in mean)
+            padded = Image.new("RGB", (self.image_size, self.image_size), color=fill)
+            offset = ((self.image_size - resized.width) // 2, (self.image_size - resized.height) // 2)
+            padded.paste(resized, offset)
+            self._content_bounds = (offset[0], offset[1], offset[0] + resized.width, offset[1] + resized.height)
+            image = padded
         return self.processor(
             images=image,
             return_tensors="pt",
-            do_resize=True,
+            do_resize=self.resize_mode == "direct",
             size={"height": self.image_size, "width": self.image_size},
             do_center_crop=False,
         ).to(self.device)
@@ -57,6 +76,19 @@ class DinoFeatureExtractor:
             height, width = pixel_values.shape[-2:]
             grid = (height // patch_size, width // patch_size)
             if grid[0] * grid[1] == n:
+                if self._content_bounds is not None:
+                    left, top, right, bottom = self._content_bounds
+                    row_centers = (torch.arange(grid[0], device=tokens.device) + 0.5) * patch_size
+                    column_centers = (torch.arange(grid[1], device=tokens.device) + 0.5) * patch_size
+                    rows = torch.where((row_centers >= top) & (row_centers < bottom))[0]
+                    columns = torch.where((column_centers >= left) & (column_centers < right))[0]
+                    if not len(rows):
+                        rows = torch.argmin(torch.abs(row_centers - (top + bottom) / 2)).reshape(1)
+                    if not len(columns):
+                        columns = torch.argmin(torch.abs(column_centers - (left + right) / 2)).reshape(1)
+                    tokens = tokens.reshape(tokens.shape[0], grid[0], grid[1], tokens.shape[-1])
+                    tokens = tokens[:, rows][:, :, columns].reshape(tokens.shape[0], len(rows) * len(columns), tokens.shape[-1])
+                    grid = (len(rows), len(columns))
                 return tokens, grid
         side = int(n ** 0.5)
         if side * side != n:
