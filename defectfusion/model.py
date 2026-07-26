@@ -164,7 +164,7 @@ class NormalSubspace:
 class PrototypeBank:
     def __init__(self, unknown_threshold=0.35):
         self.prototypes = {}; self.patch_banks = {}; self.counts = {}; self.unknown_threshold = unknown_threshold
-        self._lda = None
+        self._svm = None
     def add(self, label, features):
         x = np.asarray(features, dtype=np.float64)
         if x.ndim == 0:
@@ -177,7 +177,7 @@ class PrototypeBank:
         patches = x[None, :] if x.ndim == 1 else x
         patches = patches / np.maximum(np.linalg.norm(patches, axis=1, keepdims=True), 1e-12)
         self.patch_banks[label] = np.concatenate([self.patch_banks[label], patches], axis=0) if label in self.patch_banks else patches
-        self._lda = None
+        self._svm = None
     def predict(self, feature):
         if not self.prototypes: return "unknown", 0.0
         x = np.asarray(feature, dtype=np.float64)
@@ -195,27 +195,36 @@ class PrototypeBank:
             x /= max(np.linalg.norm(x), 1e-12)
             label, score = max(((k, float(x @ v)) for k, v in self.prototypes.items()), key=lambda kv: kv[1])
         return (label, score) if score >= self.unknown_threshold else ("unknown", score)
-    def predict_lda(self, features):
+    def predict_rbf_svm(self, features):
         if not self.patch_banks:
             return "unknown", 0.0
         labels = sorted(self.patch_banks)
         if len(labels) == 1:
             return labels[0], 1.0
-        if self._lda is None:
-            from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+        if self._svm is None:
+            from sklearn.svm import SVC
             training = np.concatenate([self.patch_banks[label] for label in labels], axis=0)
             targets = np.concatenate([
                 np.full(len(self.patch_banks[label]), label, dtype=object)
                 for label in labels
             ])
-            self._lda = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
-            self._lda.fit(training, targets)
+            self._svm = SVC(
+                kernel="rbf",
+                gamma="scale",
+                class_weight="balanced",
+                decision_function_shape="ovr",
+            )
+            self._svm.fit(training, targets)
         query = np.asarray(features, dtype=np.float64)
         query = query[None, :] if query.ndim == 1 else query
         query = query / np.maximum(np.linalg.norm(query, axis=1, keepdims=True), 1e-12)
-        probabilities = self._lda.predict_proba(query).mean(axis=0)
+        margins = np.asarray(self._svm.decision_function(query), dtype=np.float64)
+        if margins.ndim == 1:
+            margins = np.stack([-margins, margins], axis=1)
+        margins -= margins.max(axis=1, keepdims=True)
+        probabilities = (np.exp(margins) / np.exp(margins).sum(axis=1, keepdims=True)).mean(axis=0)
         index = int(np.argmax(probabilities))
-        label = str(self._lda.classes_[index])
+        label = str(self._svm.classes_[index])
         score = float(probabilities[index])
         return (label, score) if score >= self.unknown_threshold else ("unknown", score)
     def to_dict(self): return {"prototypes": {k: v.tolist() for k, v in self.prototypes.items()}, "patch_banks": {k: v.tolist() for k, v in self.patch_banks.items()}, "counts": self.counts}

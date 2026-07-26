@@ -17,4 +17,5 @@
 - [ ] Add PCA score ablations: cosine residual, dropped PCs, and Mahalanobis residual.
 - [ ] Score each defect reference independently and robustly aggregate reference scores.
 - [ ] Calibrate uncertainty from agreement across multiple normal references.
-- [x] Add a shared-covariance Shrinkage LDA defect-type classifier for Top-K anomaly patches.
+- [x] Evaluate Shrinkage LDA defect typing (removed after negative MVTec ablation).
+- [x] Add a class-balanced RBF-SVM defect-type classifier for Top-K anomaly patches.

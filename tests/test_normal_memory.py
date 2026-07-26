@@ -11,11 +11,11 @@ from defectfusion.pipeline import DefectFusion
 
 class NormalPatchMemoryTest(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")
-    def test_shrinkage_lda_classifies_separable_patch_sets(self):
+    def test_rbf_svm_classifies_separable_patch_sets(self):
         bank = PrototypeBank(unknown_threshold=0.0)
         bank.add("crack", np.array([[1.0, 0.0], [0.9, 0.1], [1.1, -0.1]]))
         bank.add("color", np.array([[0.0, 1.0], [0.1, 0.9], [-0.1, 1.1]]))
-        label, score = bank.predict_lda(np.array([[0.95, 0.05], [1.05, -0.05]]))
+        label, score = bank.predict_rbf_svm(np.array([[0.95, 0.05], [1.05, -0.05]]))
         self.assertEqual(label, "crack")
         self.assertGreater(score, 0.5)
 

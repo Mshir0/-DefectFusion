@@ -24,8 +24,8 @@ class DefectFusion:
         if image_score not in {"mtop1p", "mean", "max", "p99"}:
             raise ValueError("image_score must be one of: mtop1p, mean, max, p99")
         self.image_score = image_score
-        if type_matching not in {"prototype_mean", "bidirectional_patch", "shrinkage_lda"}:
-            raise ValueError("type_matching must be prototype_mean, bidirectional_patch, or shrinkage_lda")
+        if type_matching not in {"prototype_mean", "bidirectional_patch", "rbf_svm"}:
+            raise ValueError("type_matching must be prototype_mean, bidirectional_patch, or rbf_svm")
         self.type_matching = type_matching
         if map_postprocess not in {"none", "gaussian", "crf"}:
             raise ValueError("map_postprocess must be none, gaussian, or crf")
@@ -142,8 +142,8 @@ class DefectFusion:
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         fused_score = self._aggregate_image_score(anomaly_scores)
         typing_patches = self._anomaly_patches(patches)
-        if self.type_matching == "shrinkage_lda":
-            label, label_score = self.prototype_bank.predict_lda(typing_patches)
+        if self.type_matching == "rbf_svm":
+            label, label_score = self.prototype_bank.predict_rbf_svm(typing_patches)
         else:
             typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
             label, label_score = self.prototype_bank.predict(typing_features)
