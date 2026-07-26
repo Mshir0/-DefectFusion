@@ -6,6 +6,6 @@ Generate tiny synthetic images (no model download is needed for generation):
 python examples/generate_data.py
 ```
 
-The layout is `normal/` for defect-free reference images and
-`prototypes/<defect_type>/` for one or more few-shot exemplars. Replace these
-images with your own data while keeping the directory layout.
+The layout is `normal/` for defect-free reference images and `test.png` for an
+anomalous query. The optional `prototypes/<defect_type>/` directories exercise
+the auxiliary typing head; they are not required for anomaly detection.

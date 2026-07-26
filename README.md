@@ -1,6 +1,8 @@
 # DefectFusion
 
-Training-free and few-shot defect detection and defect typing, combining ideas from AnomalyDINO, SubspaceAD, and INSID3.
+Training-free few-shot anomaly detection and localization, combining ideas from
+AnomalyDINO, SubspaceAD, and INSID3. Labeled-defect typing is retained as an
+optional auxiliary task, but it is not part of the default detection setup.
 
 ## Design
 
@@ -8,18 +10,19 @@ Training-free and few-shot defect detection and defect typing, combining ideas f
 - Position debiasing inspired by INSID3.
 - Foreground-aware normal modeling with a streaming PCA subspace inspired by SubspaceAD.
 - Optional k-nearest-neighbour memory score inspired by AnomalyDINO.
-- Few-shot defect prototypes and zero-shot text prototypes are pluggable classifiers.
+- Optional few-shot defect prototypes provide an auxiliary typing head.
 
 ## Quick start
 
 ```bash
 python examples/generate_data.py
 python -m defectfusion.cli fit --config configs/example.json
-python -m defectfusion.cli predict --model-state outputs/example-model.json --image examples/data/prototypes/scratch/scratch_0.png
+python -m defectfusion.cli predict --model-state outputs/example-model.json --image examples/data/test.png
 ```
 
-`fit` accepts `--normal-dir` and an optional `--prototype-dir`; each prototype
-subdirectory becomes a defect label. Use `--device cuda` when available,
+`fit` learns the anomaly detector from `--normal-dir`. The optional
+`--prototype-dir` enables the separate defect-typing head; each subdirectory
+becomes a defect label. Use `--device cuda` when available,
 `--unknown-threshold` to control the `unknown` decision, and `--output` to
 write prediction JSON. All options can be placed in a JSON file (see
 `configs/example.json`), with command-line flags taking precedence.
@@ -36,9 +39,15 @@ Download and unpack MVTec AD so that each category has `train/good`,
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec \
-  --data-dir data/mvtec/bottle \
-  --model facebook/dinov3-vit7b16-pretrain-lvd1689m \
-  --output outputs/mvtec-bottle.jsonl
+  --data-root /mnt/sda1/mvtec_anomaly \
+  --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
+  --normal-shots 1 --defect-shots 0 --seed 42 \
+  --normal-augment-count 30 --normal-augmentations rotate \
+  --image-size 672 --feature-layers=-1,-3,-5,-7 \
+  --layer-aggregation mean --image-score mtop1p \
+  --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
+  --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
+  --output outputs/mvtec-1shot.json
 ```
 
 The command fits only on `train/good`, writes one JSON object per test image,
@@ -52,15 +61,20 @@ summary, including macro averages and every category result; per-image files
 use `<output-stem>-<category>.jsonl`. Add `--prototype-dir` (subdirectories are defect labels) to enable
 defect-type accuracy, macro-F1, and a confusion matrix.
 
-MVTec evaluation separates normal references used for anomaly detection from
-labeled defect references used for typing. `--normal-shots 1/2/4` samples that
-many images from `train/good`; `-1` uses all normal training images.
-`--defect-shots` samples test images per defect type as typing prototypes
-(selected defect images are excluded from evaluation):
+`--normal-shots 1/2/4` samples that many images from `train/good`; `-1` uses
+all normal training images. Keep `--defect-shots 0` for standard anomaly
+detection comparisons with AnomalyDINO and SubspaceAD. No test anomaly is then
+used while fitting the detector.
+
+### Optional defect typing
+
+Typing is an auxiliary experiment, separate from the anomaly-detection setup.
+`--defect-shots` samples labeled test images per defect type as prototypes;
+those selected images are excluded from classification evaluation:
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
-  --normal-shots 4 --defect-shots 1 --seed 42 \
+  --normal-shots 1 --defect-shots 1 --seed 42 \
   --output outputs/mvtec-all.jsonl
 ```
 
@@ -92,19 +106,21 @@ when the backbone has a different number of transformer blocks.
 
 ## Ablation experiments
 
-Keep the dataset, backbone, normal/defect shot counts, seed, and all unrelated parameters fixed
-when comparing one option. The current recommended setup is:
+Keep the dataset, backbone, normal shot count, seed, and all unrelated
+parameters fixed when comparing one detection option. The current recommended
+detection setup is:
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec \
   --data-root data/mvtec \
   --model facebook/dinov3-vit7b16-pretrain-lvd1689m \
-  --normal-shots -1 --defect-shots 1 --seed 42 \
-  --top-k-ratio 0.05 \
-  --type-matching bidirectional_patch \
+  --normal-shots 1 --defect-shots 0 --seed 42 \
+  --normal-augment-count 30 --normal-augmentations rotate \
   --image-score mtop1p \
   --feature-layers=-1,-3,-5,-7 \
-  --layer-aggregation mean \
+  --layer-aggregation mean --image-size 672 \
+  --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
+  --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
   --output outputs/ablation-recommended.jsonl
 ```
 
