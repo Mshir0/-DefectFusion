@@ -90,13 +90,16 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Few-shot / zero-shot defect detection")
     p.add_argument("--config", help="JSON config; CLI flags override it")
     sub = p.add_subparsers(dest="cmd", required=True)
-    f = sub.add_parser("fit", help="fit anomaly detector on normal images")
-    f.add_argument("--normal-dir")
+    f = sub.add_parser("fit", help="fit normal subspace and optional defect prototypes")
+    f.add_argument("--normal-dir"); f.add_argument("--prototype-dir", help="subdirectories are defect labels")
     f.add_argument("--model", default=None); f.add_argument("--output", default=None)
     f.add_argument("--image-size", type=int, default=None)
+    f.add_argument("--alpha", type=float, default=None); f.add_argument("--unknown-threshold", type=float, default=None)
     f.add_argument("--device", default=None); f.add_argument("--non-recursive", action="store_true")
     f.add_argument("--debias", action="store_true"); f.add_argument("--svd-components", type=int, default=20)
+    f.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
     f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
+    f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch", "rbf_svm"], default=None)
     f.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn"], default=None); f.add_argument("--knn-weight", type=float, default=None)
     f.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None); f.add_argument("--gate-temperature", type=float, default=None)
     f.add_argument("--memory-max-patches", type=int, default=None); f.add_argument("--knn-chunk-size", type=int, default=None)
@@ -113,8 +116,10 @@ def main(argv=None):
     e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
+    e.add_argument("--prototype-dir", help="optional defect prototypes; subdirectories are defect labels")
     e.add_argument("--normal-shots", type=int, default=-1, help="normal train/good references per category; -1 uses all")
-    e.add_argument("--seed", type=int, default=42, help="seed used for reproducible normal sampling")
+    e.add_argument("--defect-shots", "--few-shot", dest="defect_shots", type=int, default=0, help="labeled defect exemplars per defect type")
+    e.add_argument("--seed", type=int, default=42, help="seed used for reproducible normal and defect sampling")
     e.add_argument("--normal-augment-count", type=int, default=None, help="augmented views per normal shot; defaults to 30 in few-shot mode")
     e.add_argument("--normal-augmentations", nargs="+", choices=["rotate", "hflip", "vflip", "color_jitter", "affine"], default=None)
     e.add_argument("--no-augment-categories", nargs="+", default=None)
@@ -123,7 +128,9 @@ def main(argv=None):
     e.add_argument("--output", default="outputs/mvtec-results.jsonl")
     e.add_argument("--debias", action="store_true", help="apply INSID3 positional debiasing")
     e.add_argument("--svd-components", type=int, default=20, help="INSID3 positional basis rank")
+    e.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
     e.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
+    e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch", "rbf_svm"], default=None)
     e.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn"], default=None, help="normal anomaly detector")
     e.add_argument("--knn-weight", type=float, default=None, help="kNN contribution in calibrated pca_knn fusion")
     e.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None, help="fixed weight or normal-tail-calibrated patch gate")
@@ -140,7 +147,9 @@ def main(argv=None):
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     image_size = getattr(a, "image_size", None) or cfg.get("image_size", 448)
     if image_size <= 0: p.error("--image-size must be positive")
+    top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
     image_score = getattr(a, "image_score", None) or cfg.get("image_score", "mtop1p")
+    type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
     anomaly_method = getattr(a, "anomaly_method", None) or cfg.get("anomaly_method", "pca")
     knn_weight = getattr(a, "knn_weight", None); knn_weight = knn_weight if knn_weight is not None else cfg.get("knn_weight", 0.5)
     fusion_mode = getattr(a, "fusion_mode", None) or cfg.get("fusion_mode", "fixed")
@@ -170,8 +179,16 @@ def main(argv=None):
         normal_dir = a.normal_dir or cfg.get("normal_dir")
         if not normal_dir: p.error("fit requires --normal-dir or config normal_dir")
         output = a.output or cfg.get("output", "outputs/model.json")
+        alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
+        threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, image_score=image_score, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(paths)
+        proto_dir = a.prototype_dir or cfg.get("prototype_dir")
+        if proto_dir:
+            for label_dir in sorted(Path(proto_dir).iterdir()):
+                if label_dir.is_dir():
+                    for image in _images(str(label_dir)):
+                        fusion.add_prototype(label_dir.name, image)
         fusion.save(output); print(output)
     elif a.cmd == "predict":
         result = DefectFusion.load(a.model_state, extractor).predict(a.image)
@@ -181,6 +198,7 @@ def main(argv=None):
     else:
         if not a.data_dir and not a.data_root: p.error("evaluate-mvtec requires --data-dir or --data-root")
         if a.normal_shots == 0 or a.normal_shots < -1: p.error("--normal-shots must be -1 or a positive integer")
+        if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
         if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
         normal_augmentations = a.normal_augmentations or cfg.get("normal_augmentations", ["rotate"])
         no_augment_categories = a.no_augment_categories or cfg.get("no_augment_categories", ["transistor"])
@@ -199,7 +217,7 @@ def main(argv=None):
             if category.name in no_augment_categories: augment_count = 0
             normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
             print(f"[normal-augment] {category.name}: {len(normal_training_images)} views", flush=True)
-            fusion = DefectFusion(extractor, image_score=image_score, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(normal_training_images)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category.name}: backend={fusion.normal_memory.resolved_backend} "
@@ -207,21 +225,40 @@ def main(argv=None):
                     f"patches={len(fusion.normal_memory.features)} chunk={knn_chunk_size}",
                     flush=True,
                 )
+            if a.prototype_dir:
+                for label_dir in sorted(Path(a.prototype_dir).iterdir()):
+                    if label_dir.is_dir():
+                        for image in _images(str(label_dir)):
+                            fusion.add_prototype(label_dir.name, image)
+            selected = []
+            if a.defect_shots > 0:
+                rng = random.Random(a.seed)
+                for defect_dir in sorted(x for x in (category / "test").iterdir() if x.is_dir() and x.name != "good"):
+                    candidates = _images(str(defect_dir))
+                    chosen = rng.sample(candidates, min(a.defect_shots, len(candidates)))
+                    for image in chosen:
+                        fusion.add_prototype(defect_dir.name, image)
+                        selected.append(image)
+                        print(f"[defect-shot] {category.name}/{defect_dir.name}: {Path(image).name}", flush=True)
             result_path = a.output if len(categories) == 1 else str(Path(a.output).with_name(f"{Path(a.output).stem}-{category.name}.jsonl"))
-            metrics = evaluate_mvtec(fusion, category, result_path)
+            metrics = evaluate_mvtec(fusion, category, result_path, excluded_images=selected)
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]
             metrics["normal_augment_count"] = augment_count
             metrics["normal_augmentations"] = list(normal_augmentations)
             metrics["normal_training_views"] = len(normal_training_images)
+            metrics["defect_shots"] = a.defect_shots
             metrics["seed"] = a.seed
+            metrics["defect_shot_images"] = [str(Path(x)) for x in selected]
             metrics["debias"] = a.debias
             metrics["svd_components"] = a.svd_components if a.debias else 0
+            metrics["top_k_ratio"] = top_k_ratio
             metrics["image_score"] = image_score
             metrics["feature_layers"] = list(feature_layers)
             metrics["feature_layer_preset"] = feature_layer_preset
             metrics["image_size"] = image_size
             metrics["layer_aggregation"] = layer_aggregation
+            metrics["type_matching"] = type_matching
             metrics["anomaly_method"] = anomaly_method
             metrics["knn_weight"] = knn_weight if anomaly_method == "pca_knn" else 0
             metrics["fusion_mode"] = fusion_mode if anomaly_method == "pca_knn" else "none"
@@ -238,6 +275,7 @@ def main(argv=None):
         else:
             metric_names = (
                 "image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "pixel_aupro",
+                "defect_type_accuracy", "defect_type_macro_f1",
             )
             macro = {}
             for name in metric_names:

@@ -160,3 +160,81 @@ class NormalSubspace:
     @classmethod
     def from_dict(cls, d):
         obj = cls(); obj.mean = np.asarray(d["mean"]); obj.components = np.asarray(d["components"]); obj.score_center = float(d.get("score_center", 0.0)); obj.score_scale = float(d.get("score_scale", 1.0)); calibration = d.get("calibration_scores"); obj.calibration_scores = None if calibration is None else np.asarray(calibration, dtype=np.float64); return obj
+
+class PrototypeBank:
+    def __init__(self, unknown_threshold=0.35):
+        self.prototypes = {}; self.patch_banks = {}; self.counts = {}; self.unknown_threshold = unknown_threshold
+        self._svm = None
+    def add(self, label, features):
+        x = np.asarray(features, dtype=np.float64)
+        if x.ndim == 0:
+            raise ValueError("Prototype features must be a vector or a matrix")
+        p = x if x.ndim == 1 else x.mean(axis=0)
+        p = p.copy(); p /= max(np.linalg.norm(p), 1e-12)
+        count = self.counts.get(label, 0)
+        if count: p = (self.prototypes[label] * count + p) / (count + 1); p /= max(np.linalg.norm(p), 1e-12)
+        self.prototypes[label] = p; self.counts[label] = count + 1
+        patches = x[None, :] if x.ndim == 1 else x
+        patches = patches / np.maximum(np.linalg.norm(patches, axis=1, keepdims=True), 1e-12)
+        self.patch_banks[label] = np.concatenate([self.patch_banks[label], patches], axis=0) if label in self.patch_banks else patches
+        self._svm = None
+    def predict(self, feature):
+        if not self.prototypes: return "unknown", 0.0
+        x = np.asarray(feature, dtype=np.float64)
+        if x.ndim == 2 and self.patch_banks:
+            x = x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+            candidates = []
+            for label, reference in self.patch_banks.items():
+                similarity = x @ reference.T
+                forward = similarity.max(axis=1).mean()
+                backward = similarity.max(axis=0).mean()
+                candidates.append((label, float(0.5 * (forward + backward))))
+            label, score = max(candidates, key=lambda kv: kv[1])
+        else:
+            x = x.mean(axis=0) if x.ndim == 2 else x
+            x /= max(np.linalg.norm(x), 1e-12)
+            label, score = max(((k, float(x @ v)) for k, v in self.prototypes.items()), key=lambda kv: kv[1])
+        return (label, score) if score >= self.unknown_threshold else ("unknown", score)
+    def predict_rbf_svm(self, features):
+        if not self.patch_banks:
+            return "unknown", 0.0
+        labels = sorted(self.patch_banks)
+        if len(labels) == 1:
+            return labels[0], 1.0
+        if self._svm is None:
+            from sklearn.svm import SVC
+            training = np.concatenate([self.patch_banks[label] for label in labels], axis=0)
+            targets = np.concatenate([
+                np.full(len(self.patch_banks[label]), label, dtype=object)
+                for label in labels
+            ])
+            self._svm = SVC(
+                kernel="rbf",
+                gamma="scale",
+                class_weight="balanced",
+                decision_function_shape="ovr",
+            )
+            self._svm.fit(training, targets)
+        query = np.asarray(features, dtype=np.float64)
+        query = query[None, :] if query.ndim == 1 else query
+        query = query / np.maximum(np.linalg.norm(query, axis=1, keepdims=True), 1e-12)
+        margins = np.asarray(self._svm.decision_function(query), dtype=np.float64)
+        if margins.ndim == 1:
+            margins = np.stack([-margins, margins], axis=1)
+        margins -= margins.max(axis=1, keepdims=True)
+        probabilities = (np.exp(margins) / np.exp(margins).sum(axis=1, keepdims=True)).mean(axis=0)
+        index = int(np.argmax(probabilities))
+        label = str(self._svm.classes_[index])
+        score = float(probabilities[index])
+        return (label, score) if score >= self.unknown_threshold else ("unknown", score)
+    def to_dict(self): return {"prototypes": {k: v.tolist() for k, v in self.prototypes.items()}, "patch_banks": {k: v.tolist() for k, v in self.patch_banks.items()}, "counts": self.counts}
+    @classmethod
+    def from_dict(cls, d):
+        b = cls()
+        if "prototypes" in d:
+            b.prototypes = {k: np.asarray(v) for k, v in d["prototypes"].items()}
+            b.patch_banks = {k: np.asarray(v) for k, v in d.get("patch_banks", {}).items()}
+            b.counts = {k: int(v) for k, v in d.get("counts", {}).items()}
+        else:
+            b.prototypes = {k: np.asarray(v) for k, v in d.items()}; b.counts = {k: 1 for k in d}
+        return b

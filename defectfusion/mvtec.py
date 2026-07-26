@@ -92,14 +92,17 @@ def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
 
-def evaluate_mvtec(fusion, category_dir, output, *, progress=True):
+def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_images=None):
     """Evaluate a fitted model on one MVTec category and write JSONL results."""
     root = Path(category_dir)
+    excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
     rows, image_y, image_s, pixel_masks, pixel_maps = [], [], [], [], []
     test = root / "test"
     for defect_dir in sorted(p for p in test.iterdir() if p.is_dir()):
         defect = defect_dir.name
         for image in _images(defect_dir):
+            if str(image.resolve()) in excluded_images:
+                continue
             result = fusion.predict(str(image))
             truth = defect != "good"
             result.update({"category": root.name, "ground_truth_type": defect, "ground_truth_anomaly": truth})
@@ -117,7 +120,7 @@ def evaluate_mvtec(fusion, category_dir, output, *, progress=True):
                 pixel_masks.append(mask); pixel_maps.append(score)
             image_y.append(int(truth)); image_s.append(float(result["anomaly_score"])); rows.append(result)
             if progress:
-                print(f"[{len(rows):04d}] {image.name} anomaly={result['anomaly_score']:.5f}", flush=True)
+                print(f"[{len(rows):04d}] {image.name} anomaly={result['anomaly_score']:.5f} type={result['defect_type']}", flush=True)
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
     metrics = {"category": root.name, "images": len(rows), "results": str(output)}
@@ -133,6 +136,18 @@ def evaluate_mvtec(fusion, category_dir, output, *, progress=True):
                 metrics["pixel_auroc"] = float(roc_auc_score(pixel_y, pixel_s))
                 metrics["pixel_aupr"] = float(average_precision_score(pixel_y, pixel_s))
                 metrics["pixel_aupro"] = compute_aupro(pixel_maps, pixel_masks)
+        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
+        defect_rows = [r for r in rows if r["ground_truth_anomaly"]]
+        true_types = [r["ground_truth_type"] for r in defect_rows]
+        pred_types = [r["defect_type"] for r in defect_rows]
+        if any(p != "unknown" for p in pred_types):
+            labels = sorted(set(true_types) | set(pred_types))
+            metrics["defect_type_accuracy"] = float(accuracy_score(true_types, pred_types))
+            metrics["defect_type_macro_f1"] = float(f1_score(true_types, pred_types, labels=labels, average="macro", zero_division=0))
+            metrics["defect_type_labels"] = labels
+            metrics["defect_type_confusion_matrix"] = confusion_matrix(true_types, pred_types, labels=labels).tolist()
+        else:
+            metrics["defect_type_note"] = "No prototypes supplied; type metrics are unavailable"
     except ImportError:
         metrics["metrics_note"] = "Install scikit-learn to compute evaluation metrics"
     return metrics

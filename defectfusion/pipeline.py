@@ -6,18 +6,27 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .model import NormalPatchMemory, NormalSubspace
+from .model import NormalPatchMemory, NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, image_score: str = "mtop1p", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", fusion_mode: str = "fixed", gate_temperature: float = 1.0):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", fusion_mode: str = "fixed", gate_temperature: float = 1.0):
         self.extractor = extractor
+        self.alpha = alpha
         self.subspace = NormalSubspace()
         knn_device = getattr(extractor, "device", None)
         self.normal_memory = NormalPatchMemory(memory_max_patches, knn_chunk_size, backend=knn_backend, device=knn_device, dtype=knn_dtype)
+        self.prototype_bank = PrototypeBank()
+        self.prototype_bank.unknown_threshold = unknown_threshold
+        if not 0 < top_k_ratio <= 1:
+            raise ValueError("top_k_ratio must be in (0, 1]")
+        self.top_k_ratio = top_k_ratio
         if image_score not in {"mtop1p", "mean", "max", "p99"}:
             raise ValueError("image_score must be one of: mtop1p, mean, max, p99")
         self.image_score = image_score
+        if type_matching not in {"prototype_mean", "bidirectional_patch", "rbf_svm"}:
+            raise ValueError("type_matching must be prototype_mean, bidirectional_patch, or rbf_svm")
+        self.type_matching = type_matching
         if map_postprocess not in {"none", "gaussian", "crf"}:
             raise ValueError("map_postprocess must be none, gaussian, or crf")
         self.map_postprocess = map_postprocess
@@ -52,6 +61,18 @@ class DefectFusion:
             self.normal_memory.fit(features)
         self.reference_grid = features.shape[1]
         return self
+
+    def add_prototype(self, label: str, image_path):
+        image = Image.open(image_path)
+        patches, _ = self.extractor.extract(image)
+        self.prototype_bank.add(label, self._anomaly_patches(patches))
+        return self
+
+    def _anomaly_patches(self, patches):
+        scores = self.subspace.score(patches)
+        keep = max(1, int(np.ceil(len(scores) * self.top_k_ratio)))
+        indices = np.argpartition(scores, -keep)[-keep:]
+        return patches[indices]
 
     def _aggregate_image_score(self, scores):
         scores = np.asarray(scores, dtype=np.float64)
@@ -120,11 +141,20 @@ class DefectFusion:
         anomaly_scores, pca_scores, knn_scores, knn_gate = self._anomaly_scores(patches)
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         fused_score = self._aggregate_image_score(anomaly_scores)
+        typing_patches = self._anomaly_patches(patches)
+        if self.type_matching == "rbf_svm":
+            label, label_score = self.prototype_bank.predict_rbf_svm(typing_patches)
+        else:
+            typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
+            label, label_score = self.prototype_bank.predict(typing_features)
         result = {
             "image": str(image_path),
             "grid": list(grid),
             "anomaly_score": fused_score,
             "anomaly_map": anomaly_map,
+            "defect_type": label,
+            "defect_type_score": float(label_score),
+            "fused_score": fused_score * self.alpha + float(label_score) * (1.0 - self.alpha),
             "anomaly_method": self.anomaly_method,
             "fusion_mode": self.fusion_mode,
             "pca_anomaly_score": self._aggregate_image_score(pca_scores),
@@ -138,8 +168,13 @@ class DefectFusion:
 
     def save(self, path):
         state = {
+            "alpha": self.alpha,
             "subspace": self.subspace.to_dict(),
+            "prototype_bank": self.prototype_bank.to_dict(),
+            "unknown_threshold": self.prototype_bank.unknown_threshold,
+            "top_k_ratio": self.top_k_ratio,
             "image_score": self.image_score,
+            "type_matching": self.type_matching,
             "map_postprocess": self.map_postprocess,
             "gaussian_sigma": self.gaussian_sigma,
             "anomaly_method": self.anomaly_method,
@@ -168,8 +203,10 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, image_score=state.get("image_score", "mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
+        obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
+        obj.prototype_bank.unknown_threshold = state.get("unknown_threshold", 0.35)
         memory_file = state.get("normal_memory_file")
         if memory_file:
             memory_path = Path(path).parent / memory_file
