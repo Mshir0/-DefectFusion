@@ -26,6 +26,15 @@ class NormalPatchMemoryTest(unittest.TestCase):
         numpy_memory = NormalPatchMemory(backend="numpy").fit(normal)
         np.testing.assert_allclose(automatic.score(query), numpy_memory.score(query))
 
+    def test_spatial_knn_excludes_distant_better_match(self):
+        features = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+        positions = np.array([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]], dtype=np.float32)
+        spatial = NormalPatchMemory(max_patches=0, backend="numpy", spatial_radius=0.1).fit(features, positions)
+        global_memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(features)
+        query = np.array([[1.0, 0.0]], dtype=np.float32)
+        query_position = np.array([[0.5, 0.5]], dtype=np.float32)
+        self.assertGreater(spatial.score(query, positions=query_position)[0], global_memory.score(query)[0])
+
     def test_leave_one_out_calibration_is_finite(self):
         features = np.eye(4, dtype=np.float32)
         memory = NormalPatchMemory(max_patches=0, query_chunk_size=2).fit(features)

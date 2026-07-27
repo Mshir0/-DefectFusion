@@ -10,12 +10,12 @@ from .model import NormalPatchMemory, NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", fusion_mode: str = "fixed", gate_temperature: float = 1.0):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, fusion_mode: str = "fixed", gate_temperature: float = 1.0):
         self.extractor = extractor
         self.alpha = alpha
         self.subspace = NormalSubspace()
         knn_device = getattr(extractor, "device", None)
-        self.normal_memory = NormalPatchMemory(memory_max_patches, knn_chunk_size, backend=knn_backend, device=knn_device, dtype=knn_dtype)
+        self.normal_memory = NormalPatchMemory(memory_max_patches, knn_chunk_size, backend=knn_backend, device=knn_device, dtype=knn_dtype, spatial_radius=knn_spatial_radius)
         self.prototype_bank = PrototypeBank()
         self.prototype_bank.unknown_threshold = unknown_threshold
         if not 0 < top_k_ratio <= 1:
@@ -47,18 +47,19 @@ class DefectFusion:
         self.reference_shape = None
 
     def fit_normal(self, image_paths):
-        patch_batches = []
+        patch_batches, position_batches = [], []
         for path in image_paths:
             image = path.copy() if isinstance(path, Image.Image) else Image.open(path)
             patches, grid = self.extractor.extract(image)
             patch_batches.append(patches)
+            position_batches.append(self._patch_positions(grid))
             self.reference_shape = grid
         if not patch_batches:
             raise ValueError("No normal images were provided")
         features = np.concatenate(patch_batches, axis=0)
         self.subspace.fit(features)
         if self.anomaly_method in {"knn", "pca_knn"}:
-            self.normal_memory.fit(features)
+            self.normal_memory.fit(features, np.concatenate(position_batches, axis=0))
         self.reference_grid = features.shape[1]
         return self
 
@@ -74,6 +75,11 @@ class DefectFusion:
         indices = np.argpartition(scores, -keep)[-keep:]
         return patches[indices]
 
+    @staticmethod
+    def _patch_positions(grid):
+        rows, columns = np.indices(grid, dtype=np.float32)
+        return np.stack([(rows.ravel() + 0.5) / grid[0], (columns.ravel() + 0.5) / grid[1]], axis=1)
+
     def _aggregate_image_score(self, scores):
         scores = np.asarray(scores, dtype=np.float64)
         if self.image_score == "mean":
@@ -85,11 +91,11 @@ class DefectFusion:
         keep = max(1, int(np.ceil(scores.size * 0.01)))
         return float(np.partition(scores, -keep)[-keep:].mean())
 
-    def _anomaly_scores(self, patches):
+    def _anomaly_scores(self, patches, positions=None):
         pca_scores = self.subspace.score(patches)
         if self.anomaly_method == "pca":
             return pca_scores, pca_scores, None, None
-        knn_scores = self.normal_memory.score(patches)
+        knn_scores = self.normal_memory.score(patches, positions=positions)
         if self.anomaly_method == "knn":
             return knn_scores, pca_scores, knn_scores, None
         if self.fusion_mode == "gated":
@@ -138,7 +144,8 @@ class DefectFusion:
         patches, grid = self.extractor.extract(image)
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
-        anomaly_scores, pca_scores, knn_scores, knn_gate = self._anomaly_scores(patches)
+        positions = self._patch_positions(grid)
+        anomaly_scores, pca_scores, knn_scores, knn_gate = self._anomaly_scores(patches, positions)
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         fused_score = self._aggregate_image_score(anomaly_scores)
         typing_patches = self._anomaly_patches(patches)
@@ -183,6 +190,7 @@ class DefectFusion:
             "knn_chunk_size": self.normal_memory.query_chunk_size,
             "knn_backend": self.normal_memory.backend,
             "knn_dtype": self.normal_memory.dtype,
+            "knn_spatial_radius": self.normal_memory.spatial_radius,
             "fusion_mode": self.fusion_mode,
             "gate_temperature": self.gate_temperature,
             "knn_center": self.normal_memory.center,
@@ -195,7 +203,10 @@ class DefectFusion:
         path.parent.mkdir(parents=True, exist_ok=True)
         if self.normal_memory.features is not None:
             memory_path = path.with_suffix(path.suffix + ".normal-memory.npz")
-            np.savez_compressed(memory_path, features=self.normal_memory.features.astype(np.float16))
+            memory_data = {"features": self.normal_memory.features.astype(np.float16)}
+            if self.normal_memory.positions is not None:
+                memory_data["positions"] = self.normal_memory.positions
+            np.savez_compressed(memory_path, **memory_data)
             state["normal_memory_file"] = memory_path.name
         path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
@@ -203,14 +214,16 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))
         obj.prototype_bank.unknown_threshold = state.get("unknown_threshold", 0.35)
         memory_file = state.get("normal_memory_file")
         if memory_file:
             memory_path = Path(path).parent / memory_file
-            obj.normal_memory.features = np.load(memory_path)["features"].astype(np.float32)
+            memory = np.load(memory_path)
+            obj.normal_memory.features = memory["features"].astype(np.float32)
+            obj.normal_memory.positions = memory["positions"].astype(np.float32) if "positions" in memory else None
             obj.normal_memory.center = float(state.get("knn_center", 0.0))
             obj.normal_memory.scale = float(state.get("knn_scale", 1.0))
             calibration = state.get("knn_calibration_scores")

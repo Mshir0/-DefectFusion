@@ -142,6 +142,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Gate temperature | `--gate-temperature` | `1.0` | `0.5, 1.0, 2.0` | Active with gated fusion |
 | Normal patch memory | `--memory-max-patches` | `50000` | `10000, 25000, 50000, 0` | kNN accuracy, memory, runtime |
 | kNN query chunk | `--knn-chunk-size` | `256` | `64, 128, 256` | Runtime/memory only |
+| kNN spatial radius | `--knn-spatial-radius` | `-1` | `-1, 0.05, 0.10, 0.20` | Local structural matching |
 | kNN backend | `--knn-backend` | `auto` | `auto, torch, numpy` | Runtime only |
 | kNN CUDA dtype | `--knn-dtype` | `float32` | `float32, float16` | Speed, memory, small numeric differences |
 | Feature layers | `--feature-layers` | `-1,-3,-5,-7` | `-1`, `-1,-2,-3,-4`, `-1,-3,-5,-7` | All metrics |
@@ -231,6 +232,10 @@ The default remains `pca`, so existing baselines do not change. kNN queries
 are chunked; lower `--knn-chunk-size` if inference runs out of memory. A
 positive `--memory-max-patches` deterministically subsamples the normal bank;
 use `0` to retain every patch.
+Set `--knn-spatial-radius 0.10` to restrict kNN candidates to a local window
+in normalized patch coordinates. `-1` retains global matching. If leave-one-out
+calibration finds no candidate in the local window, it falls back to the global
+memory while still excluding the query patch itself.
 With `--knn-backend auto`, a CUDA DINO extractor automatically uses Torch
 matrix multiplication and keeps the normalized memory bank on the same GPU.
 Use `--knn-backend torch` to require that path explicitly. `--knn-dtype

@@ -12,6 +12,7 @@
   "gate_temperature": 1.0,
   "memory_max_patches": 50000,
   "knn_chunk_size": 256,
+  "knn_spatial_radius": -1,
   "knn_backend": "auto",
   "knn_dtype": "float32",
   "feature_layers": [-1, -3, -5, -7],

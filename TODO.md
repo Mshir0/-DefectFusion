@@ -12,7 +12,7 @@
 
 - [x] Add aspect-ratio-preserving longest-side resize with mean-color padding for ablation.
 - [x] Add optional per-layer L2 normalization before DINOv3 feature fusion.
-- [ ] Add spatially constrained normal-memory kNN matching.
+- [x] Add optional spatially constrained normal-memory kNN matching.
 - [x] Fuse PCA residuals with an AnomalyDINO-style normal-patch kNN memory score.
 - [x] Evaluate independent per-layer PCA score fusion (removed after negative MVTec ablation).
 - [x] Add training-free normal-tail-calibrated gating for PCA and kNN fusion.

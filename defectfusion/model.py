@@ -3,7 +3,7 @@ import numpy as np
 
 
 class NormalPatchMemory:
-    def __init__(self, max_patches=50000, query_chunk_size=256, calibration_patches=4096, backend="auto", device=None, dtype="float32"):
+    def __init__(self, max_patches=50000, query_chunk_size=256, calibration_patches=4096, backend="auto", device=None, dtype="float32", spatial_radius=-1.0):
         self.max_patches = int(max_patches)
         self.query_chunk_size = int(query_chunk_size)
         self.calibration_patches = int(calibration_patches)
@@ -11,11 +11,16 @@ class NormalPatchMemory:
             raise ValueError("kNN backend must be auto, numpy, or torch")
         if dtype not in {"float32", "float16"}:
             raise ValueError("kNN dtype must be float32 or float16")
+        if spatial_radius != -1 and not 0 <= spatial_radius <= 1:
+            raise ValueError("spatial_radius must be -1 (global) or in [0, 1]")
         self.backend = backend
         self.device = None if device is None else str(device)
         self.dtype = dtype
+        self.spatial_radius = float(spatial_radius)
         self.features = None
+        self.positions = None
         self._torch_bank = None
+        self._torch_positions = None
         self.center = 0.0
         self.scale = 1.0
         self.calibration_scores = None
@@ -33,18 +38,27 @@ class NormalPatchMemory:
         std_floor = float(scores.std() * 0.1)
         return center, max(mad_scale, std_floor, 1e-12)
 
-    def fit(self, features):
+    def fit(self, features, positions=None):
         bank = self._normalize(features)
         if len(bank) < 2:
             raise ValueError("Normal patch kNN requires at least two reference patches")
+        if positions is not None:
+            positions = np.asarray(positions, dtype=np.float32)
+            if positions.shape != (len(bank), 2):
+                raise ValueError("Normal patch positions must have shape (patches, 2)")
         if self.max_patches > 0 and len(bank) > self.max_patches:
             indices = np.linspace(0, len(bank) - 1, self.max_patches, dtype=np.int64)
             bank = bank[indices]
+            if positions is not None:
+                positions = positions[indices]
         self.features = np.ascontiguousarray(bank)
+        self.positions = None if positions is None else np.ascontiguousarray(positions)
         self._torch_bank = None
+        self._torch_positions = None
         sample_count = min(len(bank), max(2, self.calibration_patches))
         sample_indices = np.linspace(0, len(bank) - 1, sample_count, dtype=np.int64)
-        calibration = self.score(bank[sample_indices], exclude_indices=sample_indices)
+        calibration_positions = None if self.positions is None else self.positions[sample_indices]
+        calibration = self.score(bank[sample_indices], exclude_indices=sample_indices, positions=calibration_positions)
         self.center, self.scale = self._robust_stats(calibration)
         self.calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
         return self
@@ -65,18 +79,29 @@ class NormalPatchMemory:
     def resolved_backend(self):
         return self._resolved_backend()
 
-    def _score_numpy(self, query, exclude):
+    def _score_numpy(self, query, exclude, positions):
         scores = np.empty(len(query), dtype=np.float32)
         for start in range(0, len(query), self.query_chunk_size):
             end = min(start + self.query_chunk_size, len(query))
             similarity = query[start:end] @ self.features.T
+            if self.spatial_radius >= 0 and positions is not None and self.positions is not None:
+                distance = np.max(np.abs(positions[start:end, None, :] - self.positions[None, :, :]), axis=2)
+                allowed = distance <= self.spatial_radius
+            else:
+                allowed = np.ones_like(similarity, dtype=bool)
             if exclude is not None:
                 rows = np.arange(end - start)
-                similarity[rows, exclude[start:end]] = -np.inf
+                allowed[rows, exclude[start:end]] = False
+            empty = ~allowed.any(axis=1)
+            if np.any(empty):
+                allowed[empty] = True
+                if exclude is not None:
+                    allowed[np.where(empty)[0], exclude[start:end][empty]] = False
+            similarity[~allowed] = -np.inf
             scores[start:end] = 1.0 - similarity.max(axis=1)
         return scores
 
-    def _score_torch(self, query, exclude):
+    def _score_torch(self, query, exclude, positions):
         try:
             import torch
         except ImportError as exc:
@@ -87,27 +112,47 @@ class NormalPatchMemory:
         dtype = torch.float16 if self.dtype == "float16" else torch.float32
         if self._torch_bank is None or self._torch_bank.device != torch.device(device) or self._torch_bank.dtype != dtype:
             self._torch_bank = torch.as_tensor(self.features, device=device, dtype=dtype).contiguous()
+        if self.positions is not None and (self._torch_positions is None or self._torch_positions.device != torch.device(device)):
+            self._torch_positions = torch.as_tensor(self.positions, device=device, dtype=torch.float32).contiguous()
         scores = np.empty(len(query), dtype=np.float32)
         with torch.inference_mode():
             for start in range(0, len(query), self.query_chunk_size):
                 end = min(start + self.query_chunk_size, len(query))
                 query_chunk = torch.as_tensor(query[start:end], device=device, dtype=dtype)
                 similarity = query_chunk @ self._torch_bank.T
+                if self.spatial_radius >= 0 and positions is not None and self.positions is not None:
+                    query_positions = torch.as_tensor(positions[start:end], device=device, dtype=torch.float32)
+                    distance = torch.amax(torch.abs(query_positions[:, None, :] - self._torch_positions[None, :, :]), dim=2)
+                    allowed = distance <= self.spatial_radius
+                else:
+                    allowed = torch.ones_like(similarity, dtype=torch.bool)
                 if exclude is not None:
                     rows = torch.arange(end - start, device=device)
                     columns = torch.as_tensor(exclude[start:end], device=device)
-                    similarity[rows, columns] = -torch.inf
+                    allowed[rows, columns] = False
+                empty = ~allowed.any(dim=1)
+                if empty.any():
+                    allowed[empty] = True
+                    if exclude is not None:
+                        allowed[rows[empty], columns[empty]] = False
+                similarity[~allowed] = -torch.inf
                 scores[start:end] = (1.0 - similarity.max(dim=1).values).float().cpu().numpy()
         return scores
 
-    def score(self, features, exclude_indices=None):
+    def score(self, features, exclude_indices=None, positions=None):
         if self.features is None or len(self.features) == 0:
             raise ValueError("Normal patch memory has not been fitted")
         query = self._normalize(features)
         exclude = None if exclude_indices is None else np.asarray(exclude_indices)
+        if positions is not None:
+            positions = np.asarray(positions, dtype=np.float32)
+            if positions.shape != (len(query), 2):
+                raise ValueError("Query patch positions must have shape (patches, 2)")
+        if self.spatial_radius >= 0 and (positions is None or self.positions is None):
+            raise ValueError("Spatial kNN requires patch positions for normal and query features")
         if self._resolved_backend() == "torch":
-            return self._score_torch(query, exclude)
-        return self._score_numpy(query, exclude)
+            return self._score_torch(query, exclude, positions)
+        return self._score_numpy(query, exclude, positions)
 
     def calibrated(self, scores):
         return (np.asarray(scores, dtype=np.float64) - self.center) / self.scale
