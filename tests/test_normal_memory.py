@@ -17,6 +17,20 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertEqual(top_one, 100.0)
         self.assertEqual(top_five, 98.0)
 
+    def test_score_first_image_fusion_preserves_separate_peaks(self):
+        class Scores:
+            def __init__(self, values): self.values = np.asarray(values, dtype=np.float64)
+            def score(self, features, positions=None): return self.values
+            def calibrated(self, values): return np.asarray(values)
+
+        patches = np.zeros((4, 2), dtype=np.float32)
+        patch_first = DefectFusion(object(), anomaly_method="pca_knn", image_top_ratio=0.25, image_fusion_stage="patch")
+        patch_first.subspace = Scores([10, 0, 0, 0]); patch_first.normal_memory = Scores([0, 10, 0, 0])
+        score_first = DefectFusion(object(), anomaly_method="pca_knn", image_top_ratio=0.25, image_fusion_stage="score")
+        score_first.subspace = Scores([10, 0, 0, 0]); score_first.normal_memory = Scores([0, 10, 0, 0])
+        self.assertEqual(patch_first._image_anomaly_score(patches), 5.0)
+        self.assertEqual(score_first._image_anomaly_score(patches), 10.0)
+
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")
     def test_rbf_svm_classifies_separable_patch_sets(self):
         bank = PrototypeBank(unknown_threshold=0.0)

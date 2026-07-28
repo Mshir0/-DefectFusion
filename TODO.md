@@ -1,6 +1,6 @@
 # Improvement roadmap
 
-- [x] Aggregate the image anomaly score from the highest-scoring 1% of patches.
+- [x] Add configurable Top-K patch aggregation for the image anomaly score.
 - [x] Fuse features from multiple DINOv3 layers.
 - [x] Evaluate foreground/saliency suppression (removed after negative MVTec ablation).
 - [x] Add bidirectional patch matching for anomalous regions.
@@ -12,6 +12,7 @@
 
 - [x] Add raw/L2 dual-branch scoring: L2 for image AUROC, raw for pixel maps.
 - [x] Add configurable Top-K image aggregation ratios (0.5/1/2/5%).
+- [x] Compare patch-first and image-score-first PCA/kNN fusion.
 - [x] Add aspect-ratio-preserving longest-side resize with mean-color padding for ablation.
 - [x] Add optional per-layer L2 normalization before DINOv3 feature fusion.
 - [x] Add optional spatially constrained normal-memory kNN matching.
