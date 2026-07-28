@@ -61,14 +61,15 @@ class DinoFeatureExtractor:
             do_center_crop=False,
         ).to(self.device)
 
-    def _patch_tokens(self, inputs):
+    def _patch_tokens(self, inputs, layer_normalization=None):
         out = self.model(**inputs, output_hidden_states=True)
         n_register = int(getattr(self.model.config, "num_register_tokens", 0) or 0)
         try:
             selected = [out.hidden_states[index][:, 1 + n_register :, :] for index in self.feature_layers]
         except IndexError as exc:
             raise ValueError(f"Invalid feature layer in {self.feature_layers}; model returned {len(out.hidden_states)} states") from exc
-        if self.layer_normalization == "l2":
+        normalization = self.layer_normalization if layer_normalization is None else layer_normalization
+        if normalization == "l2":
             selected = [F.normalize(tokens.float(), p=2, dim=-1) for tokens in selected]
         if self.layer_aggregation == "mean":
             tokens = torch.stack(selected, dim=0).mean(dim=0)
@@ -128,3 +129,17 @@ class DinoFeatureExtractor:
         tokens, grid = self._patch_tokens(inputs)
         tokens = self._debias(tokens) if self.debias else tokens.float()
         return tokens[0].cpu().numpy(), grid
+
+    @torch.inference_mode()
+    def extract_dual(self, image: Image.Image):
+        """Return raw and per-layer-L2 features from one backbone forward pass."""
+        image = image.convert("RGB")
+        inputs = self._prepare(image)
+        raw, grid = self._patch_tokens(inputs, layer_normalization="none")
+        normalized, normalized_grid = self._patch_tokens(inputs, layer_normalization="l2")
+        if normalized_grid != grid:
+            raise ValueError(f"Dual feature grids differ: raw={grid}, l2={normalized_grid}")
+        if self.debias:
+            raw = self._debias(raw)
+            normalized = self._debias(normalized)
+        return raw[0].float().cpu().numpy(), normalized[0].float().cpu().numpy(), grid
