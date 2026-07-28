@@ -10,6 +10,13 @@ from defectfusion.pipeline import DefectFusion
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
+    def test_image_top_ratio_controls_aggregation(self):
+        scores = np.arange(1, 101, dtype=np.float64)
+        top_one = DefectFusion(object(), image_top_ratio=0.01)._aggregate_image_score(scores)
+        top_five = DefectFusion(object(), image_top_ratio=0.05)._aggregate_image_score(scores)
+        self.assertEqual(top_one, 100.0)
+        self.assertEqual(top_five, 98.0)
+
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")
     def test_rbf_svm_classifies_separable_patch_sets(self):
         bank = PrototypeBank(unknown_threshold=0.0)

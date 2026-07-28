@@ -94,6 +94,27 @@ whole-image prototype classification.
 Image-level anomaly scores use the mean of the highest-scoring 1% of patch
 residuals (`--image-score mtop1p`). Use `--image-score mean` to reproduce the
 previous whole-image score; `max` and `p99` are also available for ablation.
+The historical `mtop1p` name remains for compatibility, while
+`--image-top-ratio` controls the actual fraction. Compare P0.2 on the dual
+image branch with:
+
+```bash
+for ratio in 0.005 0.01 0.02 0.05; do
+  python -m defectfusion.cli evaluate-mvtec \
+    --data-root /mnt/sda1/mvtec_anomaly \
+    --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
+    --normal-shots 1 --defect-shots 0 --seed 42 \
+    --normal-augment-count 30 --normal-augmentations rotate \
+    --image-size 672 --resize-mode direct \
+    --feature-layers=-1,-3,-5,-7 --layer-aggregation mean \
+    --layer-normalization none --dual-branch \
+    --image-score mtop1p --image-top-ratio "$ratio" \
+    --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
+    --knn-spatial-radius -1 --memory-max-patches 5000 \
+    --knn-backend torch --knn-dtype float16 \
+    --output "outputs/mvtec-dual-top-${ratio}-seed42.json"
+done
+```
 
 Dense features are averaged from the four cross-depth DINOv3 states
 `-1,-3,-5,-7` by default, selected after the MVTec ablation. Use
@@ -135,6 +156,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Sampling seed | `--seed` | `42` | `0, 1, 2, 42` | Few-shot variance |
 | Typing patch ratio | `--top-k-ratio` | `0.05` | `0.05, 0.10, 0.20, 0.30, 1.0` | Type Accuracy, Macro-F1 |
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
+| Image Top-K ratio | `--image-top-ratio` | `0.01` | `0.005, 0.01, 0.02, 0.05` | Active with `mtop1p` |
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch, rbf_svm` | Type Accuracy, Macro-F1 |
 | Anomaly detector | `--anomaly-method` | `pca` | `pca, knn, pca_knn` | Image/Pixel AUROC |
 | kNN fusion weight | `--knn-weight` | `0.5` | `0.25, 0.5, 0.75` | Active with `pca_knn` |

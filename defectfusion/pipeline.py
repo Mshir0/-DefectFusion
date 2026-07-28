@@ -10,7 +10,7 @@ from .model import NormalPatchMemory, NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -27,6 +27,9 @@ class DefectFusion:
         if image_score not in {"mtop1p", "mean", "max", "p99"}:
             raise ValueError("image_score must be one of: mtop1p, mean, max, p99")
         self.image_score = image_score
+        if not 0 < image_top_ratio <= 1:
+            raise ValueError("image_top_ratio must be in (0, 1]")
+        self.image_top_ratio = float(image_top_ratio)
         if type_matching not in {"prototype_mean", "bidirectional_patch", "rbf_svm"}:
             raise ValueError("type_matching must be prototype_mean, bidirectional_patch, or rbf_svm")
         self.type_matching = type_matching
@@ -100,7 +103,7 @@ class DefectFusion:
             return float(scores.max())
         if self.image_score == "p99":
             return float(np.percentile(scores, 99))
-        keep = max(1, int(np.ceil(scores.size * 0.01)))
+        keep = max(1, int(np.ceil(scores.size * self.image_top_ratio)))
         return float(np.partition(scores, -keep)[-keep:].mean())
 
     def _anomaly_scores(self, patches, positions=None):
@@ -213,6 +216,7 @@ class DefectFusion:
             "unknown_threshold": self.prototype_bank.unknown_threshold,
             "top_k_ratio": self.top_k_ratio,
             "image_score": self.image_score,
+            "image_top_ratio": self.image_top_ratio,
             "type_matching": self.type_matching,
             "map_postprocess": self.map_postprocess,
             "gaussian_sigma": self.gaussian_sigma,
@@ -256,7 +260,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         if obj.dual_branch and "image_subspace" in state:
             obj.image_subspace = NormalSubspace.from_dict(state["image_subspace"])
