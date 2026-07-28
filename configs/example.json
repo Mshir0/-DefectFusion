@@ -6,7 +6,7 @@
   "normal_dir": "examples/data/normal",
   "output": "outputs/example-model.json",
   "image_score": "mtop1p",
-  "image_top_ratio": 0.05,
+  "image_top_ratio": 0.01,
   "image_fusion_stage": "patch",
   "anomaly_method": "pca",
   "knn_weight": 0.5,

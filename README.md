@@ -91,8 +91,8 @@ the whole-image mean. Control their fraction with `--top-k-ratio` (default
 `0.05`, selected by the MVTec 1-shot ablation); use `1.0` to reproduce
 whole-image prototype classification.
 
-Image-level anomaly scores use the mean of the highest-scoring 5% of patch
-residuals (`--image-score mtop1p --image-top-ratio 0.05`). Use `--image-score mean` to reproduce the
+Image-level anomaly scores use the mean of the highest-scoring 1% of patch
+residuals (`--image-score mtop1p --image-top-ratio 0.01`). Use `--image-score mean` to reproduce the
 previous whole-image score; `max` and `p99` are also available for ablation.
 The historical `mtop1p` name remains for compatibility, while
 `--image-top-ratio` controls the actual fraction. Compare P0.2 on the dual
@@ -156,7 +156,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Sampling seed | `--seed` | `42` | `0, 1, 2, 42` | Few-shot variance |
 | Typing patch ratio | `--top-k-ratio` | `0.05` | `0.05, 0.10, 0.20, 0.30, 1.0` | Type Accuracy, Macro-F1 |
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
-| Image Top-K ratio | `--image-top-ratio` | `0.05` | `0.005, 0.01, 0.02, 0.05` | Active with `mtop1p` |
+| Image Top-K ratio | `--image-top-ratio` | `0.01` | `0.005, 0.01, 0.02, 0.05` | Active with `mtop1p` |
 | Image fusion stage | `--image-fusion-stage` | `patch` | `patch, score` | PCA/kNN image evidence |
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch, rbf_svm` | Type Accuracy, Macro-F1 |
 | Anomaly detector | `--anomaly-method` | `pca` | `pca, knn, pca_knn` | Image/Pixel AUROC |

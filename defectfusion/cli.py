@@ -162,7 +162,7 @@ def main(argv=None):
     resize_mode = getattr(a, "resize_mode", None) or cfg.get("resize_mode", "direct")
     top_k_ratio = getattr(a, "top_k_ratio", None) or cfg.get("top_k_ratio", 0.05)
     image_score = getattr(a, "image_score", None) or cfg.get("image_score", "mtop1p")
-    image_top_ratio = getattr(a, "image_top_ratio", None); image_top_ratio = image_top_ratio if image_top_ratio is not None else cfg.get("image_top_ratio", 0.05)
+    image_top_ratio = getattr(a, "image_top_ratio", None); image_top_ratio = image_top_ratio if image_top_ratio is not None else cfg.get("image_top_ratio", 0.01)
     image_fusion_stage = getattr(a, "image_fusion_stage", None) or cfg.get("image_fusion_stage", "patch")
     type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
     anomaly_method = getattr(a, "anomaly_method", None) or cfg.get("anomaly_method", "pca")
