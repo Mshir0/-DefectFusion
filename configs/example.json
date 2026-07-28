@@ -8,6 +8,7 @@
   "image_score": "mtop1p",
   "image_top_ratio": 0.01,
   "image_fusion_stage": "patch",
+  "image_spatial_weight": 0.0,
   "anomaly_method": "pca",
   "knn_weight": 0.5,
   "fusion_mode": "fixed",

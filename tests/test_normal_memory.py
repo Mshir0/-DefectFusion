@@ -28,8 +28,34 @@ class NormalPatchMemoryTest(unittest.TestCase):
         patch_first.subspace = Scores([10, 0, 0, 0]); patch_first.normal_memory = Scores([0, 10, 0, 0])
         score_first = DefectFusion(object(), anomaly_method="pca_knn", image_top_ratio=0.25, image_fusion_stage="score")
         score_first.subspace = Scores([10, 0, 0, 0]); score_first.normal_memory = Scores([0, 10, 0, 0])
-        self.assertEqual(patch_first._image_anomaly_score(patches), 5.0)
-        self.assertEqual(score_first._image_anomaly_score(patches), 10.0)
+        self.assertEqual(patch_first._image_anomaly_score(patches)[0], 5.0)
+        self.assertEqual(score_first._image_anomaly_score(patches)[0], 10.0)
+
+    def test_spatial_consistency_rewards_connected_top_patches(self):
+        fusion = DefectFusion(object(), image_top_ratio=0.25)
+        connected = np.array([4, 3, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        scattered = np.array([4, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 1])
+        self.assertEqual(fusion._spatial_consistency(connected, (4, 4)), 1.0)
+        self.assertEqual(fusion._spatial_consistency(scattered, (4, 4)), 0.25)
+
+    def test_spatial_weight_zero_preserves_base_score(self):
+        patches = np.zeros((4, 2), dtype=np.float32)
+        fusion = DefectFusion(object(), image_top_ratio=0.5, image_spatial_weight=0.0)
+        fusion._image_scores = lambda features, positions=None: np.array([4.0, 3.0, 0.0, 0.0])
+        score, consistency = fusion._image_anomaly_score(patches, grid=(2, 2))
+        self.assertEqual(score, 3.5)
+        self.assertEqual(consistency, 1.0)
+
+    def test_spatial_weight_boosts_connected_scores_more(self):
+        fusion = DefectFusion(object(), image_top_ratio=0.25, image_spatial_weight=0.5)
+        connected = np.array([4, 3, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        scattered = np.array([4, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 1])
+        patches = np.zeros((16, 2), dtype=np.float32)
+        fusion._image_scores = lambda features, positions=None: connected
+        connected_score, _ = fusion._image_anomaly_score(patches, grid=(4, 4))
+        fusion._image_scores = lambda features, positions=None: scattered
+        scattered_score, _ = fusion._image_anomaly_score(patches, grid=(4, 4))
+        self.assertGreater(connected_score, scattered_score)
 
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")
     def test_rbf_svm_classifies_separable_patch_sets(self):

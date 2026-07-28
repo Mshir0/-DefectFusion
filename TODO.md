@@ -13,6 +13,7 @@
 - [x] Add raw/L2 dual-branch scoring: L2 for image AUROC, raw for pixel maps.
 - [x] Add configurable Top-K image aggregation ratios (0.5/1/2/5%).
 - [x] Compare patch-first and image-score-first PCA/kNN fusion (score-first was negative).
+- [x] Add optional connected Top-K spatial-consistency weighting for image scores.
 - [x] Add aspect-ratio-preserving longest-side resize with mean-color padding for ablation.
 - [x] Add optional per-layer L2 normalization before DINOv3 feature fusion.
 - [x] Add optional spatially constrained normal-memory kNN matching.

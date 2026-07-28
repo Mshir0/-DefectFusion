@@ -102,6 +102,7 @@ def main(argv=None):
     f.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     f.add_argument("--image-top-ratio", type=float, default=None)
     f.add_argument("--image-fusion-stage", choices=["patch", "score"], default=None)
+    f.add_argument("--image-spatial-weight", type=float, default=None)
     f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch", "rbf_svm"], default=None)
     f.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn"], default=None); f.add_argument("--knn-weight", type=float, default=None)
     f.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None); f.add_argument("--gate-temperature", type=float, default=None)
@@ -139,6 +140,7 @@ def main(argv=None):
     e.add_argument("--image-score", choices=["mtop1p", "mean", "max", "p99"], default=None)
     e.add_argument("--image-top-ratio", type=float, default=None, help="top patch fraction used by mtop1p")
     e.add_argument("--image-fusion-stage", choices=["patch", "score"], default=None, help="fuse PCA/kNN before or after image aggregation")
+    e.add_argument("--image-spatial-weight", type=float, default=None, help="relative image-score boost from connected Top-K patches")
     e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch", "rbf_svm"], default=None)
     e.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn"], default=None, help="normal anomaly detector")
     e.add_argument("--knn-weight", type=float, default=None, help="kNN contribution in calibrated pca_knn fusion")
@@ -164,6 +166,7 @@ def main(argv=None):
     image_score = getattr(a, "image_score", None) or cfg.get("image_score", "mtop1p")
     image_top_ratio = getattr(a, "image_top_ratio", None); image_top_ratio = image_top_ratio if image_top_ratio is not None else cfg.get("image_top_ratio", 0.01)
     image_fusion_stage = getattr(a, "image_fusion_stage", None) or cfg.get("image_fusion_stage", "patch")
+    image_spatial_weight = getattr(a, "image_spatial_weight", None); image_spatial_weight = image_spatial_weight if image_spatial_weight is not None else cfg.get("image_spatial_weight", 0.0)
     type_matching = getattr(a, "type_matching", None) or cfg.get("type_matching", "bidirectional_patch")
     anomaly_method = getattr(a, "anomaly_method", None) or cfg.get("anomaly_method", "pca")
     knn_weight = getattr(a, "knn_weight", None); knn_weight = knn_weight if knn_weight is not None else cfg.get("knn_weight", 0.5)
@@ -177,6 +180,7 @@ def main(argv=None):
     knn_dtype = getattr(a, "knn_dtype", None) or cfg.get("knn_dtype", "float32")
     if not 0 <= knn_weight <= 1: p.error("--knn-weight must be in [0, 1]")
     if not 0 < image_top_ratio <= 1: p.error("--image-top-ratio must be in (0, 1]")
+    if image_spatial_weight < 0: p.error("--image-spatial-weight must be non-negative")
     if gate_temperature <= 0: p.error("--gate-temperature must be positive")
     if memory_max_patches < 0: p.error("--memory-max-patches must be non-negative")
     if knn_chunk_size <= 0: p.error("--knn-chunk-size must be positive")
@@ -202,7 +206,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -237,7 +241,7 @@ def main(argv=None):
             if category.name in no_augment_categories: augment_count = 0
             normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
             print(f"[normal-augment] {category.name}: {len(normal_training_images)} views", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(normal_training_images)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category.name}: backend={fusion.normal_memory.resolved_backend} "
@@ -276,6 +280,7 @@ def main(argv=None):
             metrics["image_score"] = image_score
             metrics["image_top_ratio"] = image_top_ratio if image_score == "mtop1p" else 0
             metrics["image_fusion_stage"] = image_fusion_stage
+            metrics["image_spatial_weight"] = image_spatial_weight
             metrics["feature_layers"] = list(feature_layers)
             metrics["feature_layer_preset"] = feature_layer_preset
             metrics["image_size"] = image_size

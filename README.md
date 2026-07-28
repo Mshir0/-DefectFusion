@@ -158,6 +158,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Image score | `--image-score` | `mtop1p` | `mean, mtop1p, p99, max` | Image AUROC |
 | Image Top-K ratio | `--image-top-ratio` | `0.01` | `0.005, 0.01, 0.02, 0.05` | Active with `mtop1p` |
 | Image fusion stage | `--image-fusion-stage` | `patch` | `patch, score` | PCA/kNN image evidence |
+| Image spatial weight | `--image-spatial-weight` | `0.0` | `0, 0.25, 0.5` | Connected Top-K image evidence |
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch, rbf_svm` | Type Accuracy, Macro-F1 |
 | Anomaly detector | `--anomaly-method` | `pca` | `pca, knn, pca_knn` | Image/Pixel AUROC |
 | kNN fusion weight | `--knn-weight` | `0.5` | `0.25, 0.5, 0.75` | Active with `pca_knn` |
