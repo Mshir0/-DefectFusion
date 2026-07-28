@@ -61,8 +61,8 @@ class DinoFeatureExtractor:
             do_center_crop=False,
         ).to(self.device)
 
-    def _patch_tokens(self, inputs, layer_normalization=None):
-        out = self.model(**inputs, output_hidden_states=True)
+    def _patch_tokens(self, inputs, layer_normalization=None, output=None):
+        out = self.model(**inputs, output_hidden_states=True) if output is None else output
         n_register = int(getattr(self.model.config, "num_register_tokens", 0) or 0)
         try:
             selected = [out.hidden_states[index][:, 1 + n_register :, :] for index in self.feature_layers]
@@ -135,8 +135,9 @@ class DinoFeatureExtractor:
         """Return raw and per-layer-L2 features from one backbone forward pass."""
         image = image.convert("RGB")
         inputs = self._prepare(image)
-        raw, grid = self._patch_tokens(inputs, layer_normalization="none")
-        normalized, normalized_grid = self._patch_tokens(inputs, layer_normalization="l2")
+        output = self.model(**inputs, output_hidden_states=True)
+        raw, grid = self._patch_tokens(inputs, layer_normalization="none", output=output)
+        normalized, normalized_grid = self._patch_tokens(inputs, layer_normalization="l2", output=output)
         if normalized_grid != grid:
             raise ValueError(f"Dual feature grids differ: raw={grid}, l2={normalized_grid}")
         if self.debias:
