@@ -24,7 +24,7 @@
 ### ANoCo-inspired follow-ups
 
 - [x] Add soft anchor-consistency weighting to the approximate ANoCo neighbor logits (`beta=0.25` screening value).
-- [x] Add neighborhood-confidence-adaptive query fidelity (`lambda_i`; `gamma=1.0` screening value).
+- [ ] Add neighborhood-confidence-adaptive query fidelity (`lambda_i`).
 - [ ] Compare multiplicative drift with separately calibrated distance/angle evidence.
 - [ ] Use normal-neighborhood disagreement as a PCA/ANoCo gate.
 - [ ] Measure anchor stability across independently augmented normal views.

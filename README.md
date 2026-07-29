@@ -306,9 +306,7 @@ PCA residual using `--anoco-weight` (default `0.5`). The main controls are
 `--anoco-neighbors 16`, `--anoco-query-weight 1.0`, and
 `--anoco-temperature 0.07`. `--anoco-anchor-weight` optionally adds soft
 anchor-reference consistency to the final neighbor logits; its default `0`
-preserves the validated query-only weighting. `--anoco-adaptive-lambda`
-increases query fidelity when the selected normal neighborhood is internally
-inconsistent; `0` disables adaptation and `1.0` is the screening value. The implementation reuses the normal memory,
+preserves the validated query-only weighting. The implementation reuses the normal memory,
 spatial candidate mask, CUDA backend, and chunk size used by kNN. It performs
 two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
