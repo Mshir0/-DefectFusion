@@ -271,6 +271,36 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertGreater(memory.anoco_scale, 0)
         self.assertTrue(np.all(np.isfinite(memory.anoco_calibration_scores)))
 
+    def test_exact_anoco_matches_prefix_and_norm_weight_formula(self):
+        normal = np.array([[2.0, 0.0], [1.9, 0.1], [1.0, 1.0]], dtype=np.float32)
+        query = np.array([[1.0, 0.1]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        actual = memory.score_anoco_exact(query, neighbor_count=3, query_weight=1.0)[0]
+
+        qn = query[0] / np.linalg.norm(query[0])
+        similarities = memory.features @ qn
+        order = np.argsort(similarities)[::-1]
+        anchor_similarity = memory.features[order] @ memory.features[order[0]]
+        condition = anchor_similarity > similarities[order[0]]
+        condition[0] = True
+        prefix = np.logical_and.accumulate(condition)
+        indices = order[prefix]
+        q_norm = np.linalg.norm(query[0])
+        n_norm = np.linalg.norm(normal[indices], axis=1)
+        alpha = 2 * q_norm * n_norm / (q_norm + n_norm)
+        weights = similarities[indices] * alpha
+        updated = (query[0] + np.sum(normal[indices] * weights[:, None], axis=0)) / (1.0 + weights.sum())
+        expected = np.sum((updated - query[0]) ** 2) * (1.0 - np.dot(updated / np.linalg.norm(updated), qn))
+        self.assertAlmostEqual(float(actual), float(expected), places=6)
+        self.assertLess(len(indices), len(normal))
+
+    def test_exact_anoco_calibration_is_finite(self):
+        features = np.eye(6, dtype=np.float32) * np.arange(1, 7, dtype=np.float32)[:, None]
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(features)
+        memory.fit_anoco_exact_calibration(neighbor_count=3)
+        self.assertTrue(np.isfinite(memory.anoco_exact_center))
+        self.assertGreater(memory.anoco_exact_scale, 0)
+
     def test_fused_weight_endpoints_match_calibrated_components(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
@@ -321,6 +351,22 @@ class NormalPatchMemoryTest(unittest.TestCase):
     def test_hybrid_head_requires_dual_branch(self):
         with self.assertRaisesRegex(ValueError, "requires dual_branch"):
             DefectFusion(object(), anomaly_method="pca_knn_anoco")
+
+    def test_exact_hybrid_head_uses_exact_anoco_for_images(self):
+        normal = np.array([[2, 0], [0, 1], [1, 1], [-1, 1]], dtype=np.float32)
+        query = np.array([[1, -1], [-1, -1]], dtype=np.float32)
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco_exact", dual_branch=True,
+            knn_weight=0.5, anoco_weight=0.25, anoco_neighbors=2,
+        )
+        fusion.subspace.fit(normal)
+        fusion.normal_memory.fit(normal)
+        fusion.image_subspace.fit(normal)
+        fusion.image_memory.fit(normal).fit_anoco_exact_calibration(neighbor_count=2)
+        image_fused, image_pca, image_exact, _ = fusion._image_score_bundle(query)
+        expected = (0.75 * fusion.image_subspace.calibrated(image_pca)
+                    + 0.25 * fusion.image_memory.calibrated_anoco_exact(image_exact))
+        np.testing.assert_allclose(image_fused, expected)
 
     def test_tail_evidence_is_monotonic(self):
         calibration = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float64)

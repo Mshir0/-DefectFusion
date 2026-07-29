@@ -311,6 +311,15 @@ with `--dual-branch`. The raw pixel branch uses calibrated PCA+kNN with
 `--knn-weight`, while the L2 image branch uses calibrated PCA+ANoCo with
 `--anoco-weight`. Each branch computes its PCA residual once and reuses it for
 fusion and aggregation.
+
+`--anomaly-method pca_knn_anoco_exact` keeps the same raw PCA+kNN pixel head
+but replaces the image ANoCo approximation with the paper-derived retrieval
+and edge formulation. It sorts the top `--anoco-neighbors` query matches,
+retains the longest prefix satisfying the anchor-consistency inequality, and
+uses cosine similarity times raw-token norm compatibility as the Laplacian
+edge weight. `--anoco-query-weight` is the paper's shared lambda. The candidate
+cap is required for the augmented memory bank and is the only intentional
+departure from full-pool prefix retrieval.
 Set `--knn-spatial-radius 0.10` to restrict kNN candidates to a local window
 in normalized patch coordinates. `-1` retains global matching. If leave-one-out
 calibration finds no candidate in the local window, it falls back to the global

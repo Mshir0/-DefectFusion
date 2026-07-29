@@ -33,6 +33,7 @@
 - [x] Fuse PCA residuals with an AnomalyDINO-style normal-patch kNN memory score.
 - [x] Add an optional ANoCo-inspired anchor-consistent manifold-drift head and PCA/ANoCo fusion.
 - [x] Add a dual head: raw PCA+kNN for localization and L2 PCA+ANoCo for image detection.
+- [x] Add paper-derived ANoCo prefix retrieval, raw-norm edge weights, and degree-aware closed-form updates.
 - [x] Evaluate independent per-layer PCA score fusion (removed after negative MVTec ablation).
 - [x] Add training-free normal-tail-calibrated gating for PCA and kNN fusion.
 - [ ] Apply INSID3 positional debiasing only to cross-image defect matching.
