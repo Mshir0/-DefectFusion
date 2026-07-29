@@ -52,6 +52,47 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertEqual(fusion.subspace.calls, 1)
         self.assertEqual(fusion.image_subspace.calls, 1)
 
+    def test_single_branch_reuses_patch_scores_for_image_aggregation(self):
+        class Extractor:
+            def extract(self, image):
+                return np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0]]), (2, 2)
+
+        class CountingSubspace:
+            def __init__(self):
+                self.calls = 0
+
+            def score(self, features):
+                self.calls += 1
+                return np.arange(len(features), dtype=np.float64)
+
+        fusion = DefectFusion(Extractor(), anomaly_method="pca")
+        fusion.subspace = CountingSubspace()
+        fusion._predict_single(Image.new("RGB", (2, 2)), "image.png")
+        self.assertEqual(fusion.subspace.calls, 1)
+
+    def test_score_first_reuses_pca_and_knn_component_scores(self):
+        class Scores:
+            def __init__(self, values):
+                self.values = np.asarray(values, dtype=np.float64)
+                self.calls = 0
+
+            def score(self, features, positions=None):
+                self.calls += 1
+                return self.values
+
+            def calibrated(self, values):
+                return np.asarray(values)
+
+        patches = np.zeros((4, 2), dtype=np.float32)
+        fusion = DefectFusion(object(), anomaly_method="pca_knn", image_top_ratio=0.25, image_fusion_stage="score")
+        fusion.subspace = Scores([10, 0, 0, 0])
+        fusion.normal_memory = Scores([0, 10, 0, 0])
+        bundle = fusion._image_score_bundle(patches)
+        score, _ = fusion._image_anomaly_score(patches, score_bundle=bundle)
+        self.assertEqual(score, 10.0)
+        self.assertEqual(fusion.subspace.calls, 1)
+        self.assertEqual(fusion.normal_memory.calls, 1)
+
     def test_typing_reuses_existing_pca_scores(self):
         patches = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0]])
         supplied_scores = np.array([0.0, 1.0, 2.0, 3.0])
@@ -169,8 +210,8 @@ class NormalPatchMemoryTest(unittest.TestCase):
     def test_spatial_weight_zero_preserves_base_score(self):
         patches = np.zeros((4, 2), dtype=np.float32)
         fusion = DefectFusion(object(), image_top_ratio=0.5, image_spatial_weight=0.0)
-        fusion._image_scores = lambda features, positions=None: np.array([4.0, 3.0, 0.0, 0.0])
-        score, consistency = fusion._image_anomaly_score(patches, grid=(2, 2))
+        scores = np.array([4.0, 3.0, 0.0, 0.0])
+        score, consistency = fusion._image_anomaly_score(patches, grid=(2, 2), score_bundle=(scores, scores, None, None))
         self.assertEqual(score, 3.5)
         self.assertEqual(consistency, 1.0)
 
@@ -179,10 +220,8 @@ class NormalPatchMemoryTest(unittest.TestCase):
         connected = np.array([4, 3, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
         scattered = np.array([4, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 1])
         patches = np.zeros((16, 2), dtype=np.float32)
-        fusion._image_scores = lambda features, positions=None: connected
-        connected_score, _ = fusion._image_anomaly_score(patches, grid=(4, 4))
-        fusion._image_scores = lambda features, positions=None: scattered
-        scattered_score, _ = fusion._image_anomaly_score(patches, grid=(4, 4))
+        connected_score, _ = fusion._image_anomaly_score(patches, grid=(4, 4), score_bundle=(connected, connected, None, None))
+        scattered_score, _ = fusion._image_anomaly_score(patches, grid=(4, 4), score_bundle=(scattered, scattered, None, None))
         self.assertGreater(connected_score, scattered_score)
 
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")

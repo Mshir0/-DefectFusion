@@ -3,7 +3,7 @@
 ## Performance remediation
 
 - [x] Skip defect-type Top-K selection and the duplicate raw-PCA score when no defect prototypes are loaded.
-- [ ] Reuse raw/L2 PCA and kNN patch scores within each prediction instead of recomputing image-level evidence.
+- [x] Reuse raw/L2 PCA and kNN patch scores within each prediction instead of recomputing image-level evidence.
 - [ ] Replace full CPU SVD with a benchmarked covariance-eigh or randomized/GPU PCA implementation; retain the current SVD as the numerical reference.
 - [ ] Keep patch features and PCA residual scoring on GPU to remove DINO -> CPU PCA -> GPU kNN transfers.
 - [ ] Index spatial kNN memory by canonical position so local radius queries avoid full-bank similarity and mask construction.

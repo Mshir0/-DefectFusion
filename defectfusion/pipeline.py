@@ -239,41 +239,35 @@ class DefectFusion:
             evidences.append(evidence)
         return refined.ravel(), evidences
 
-    def _anomaly_scores(self, patches, positions=None):
-        pca_scores = self.subspace.score(patches)
+    def _branch_scores(self, patches, subspace, memory, positions=None):
+        pca_scores = subspace.score(patches)
         if self.anomaly_method == "pca":
             return pca_scores, pca_scores, None, None
-        knn_scores = self.normal_memory.score(patches, positions=positions)
+        knn_scores = memory.score(patches, positions=positions)
         if self.anomaly_method == "knn":
             return knn_scores, pca_scores, knn_scores, None
         if self.fusion_mode == "gated":
-            pca_evidence = self.subspace.tail_evidence(pca_scores)
-            knn_evidence = self.normal_memory.tail_evidence(knn_scores)
+            pca_evidence = subspace.tail_evidence(pca_scores)
+            knn_evidence = memory.tail_evidence(knn_scores)
             logits = np.clip((knn_evidence - pca_evidence) / self.gate_temperature, -60.0, 60.0)
             knn_gate = 1.0 / (1.0 + np.exp(-logits))
             fused = (1.0 - knn_gate) * pca_evidence + knn_gate * knn_evidence
             return fused, pca_scores, knn_scores, knn_gate
-        pca_calibrated = self.subspace.calibrated(pca_scores)
-        knn_calibrated = self.normal_memory.calibrated(knn_scores)
+        pca_calibrated = subspace.calibrated(pca_scores)
+        knn_calibrated = memory.calibrated(knn_scores)
         fused = (1.0 - self.knn_weight) * pca_calibrated + self.knn_weight * knn_calibrated
         return fused, pca_scores, knn_scores, None
 
+    def _anomaly_scores(self, patches, positions=None):
+        return self._branch_scores(patches, self.subspace, self.normal_memory, positions)
+
+    def _image_score_bundle(self, patches, positions=None):
+        subspace = self.image_subspace if self.dual_branch else self.subspace
+        memory = self.image_memory if self.dual_branch else self.normal_memory
+        return self._branch_scores(patches, subspace, memory, positions)
+
     def _image_scores(self, patches, positions=None):
-        if not self.dual_branch:
-            return self._anomaly_scores(patches, positions)[0]
-        pca_scores = self.image_subspace.score(patches)
-        if self.anomaly_method == "pca":
-            return pca_scores
-        knn_scores = self.image_memory.score(patches, positions=positions)
-        if self.anomaly_method == "knn":
-            return knn_scores
-        if self.fusion_mode == "gated":
-            pca_evidence = self.image_subspace.tail_evidence(pca_scores)
-            knn_evidence = self.image_memory.tail_evidence(knn_scores)
-            logits = np.clip((knn_evidence - pca_evidence) / self.gate_temperature, -60.0, 60.0)
-            gate = 1.0 / (1.0 + np.exp(-logits))
-            return (1.0 - gate) * pca_evidence + gate * knn_evidence
-        return (1.0 - self.knn_weight) * self.image_subspace.calibrated(pca_scores) + self.knn_weight * self.image_memory.calibrated(knn_scores)
+        return self._image_score_bundle(patches, positions)[0]
 
     def _spatial_consistency(self, scores, grid):
         scores = np.asarray(scores, dtype=np.float64)
@@ -306,15 +300,18 @@ class DefectFusion:
             largest = max(largest, size)
         return largest / keep
 
-    def _image_anomaly_score(self, patches, positions=None, grid=None, texture_scores=None):
+    def _image_anomaly_score(self, patches, positions=None, grid=None, texture_scores=None, score_bundle=None):
+        if score_bundle is None:
+            score_bundle = self._image_score_bundle(patches, positions)
+        fused_scores, pca_scores, knn_scores, _ = score_bundle
         if self.image_fusion_stage == "patch" or self.anomaly_method != "pca_knn" or self.fusion_mode != "fixed":
-            patch_scores = self._image_scores(patches, positions)
+            patch_scores = fused_scores
             base_score = self._aggregate_image_score(patch_scores)
         else:
             subspace = self.image_subspace if self.dual_branch else self.subspace
             memory = self.image_memory if self.dual_branch else self.normal_memory
-            pca = subspace.calibrated(subspace.score(patches))
-            knn = memory.calibrated(memory.score(patches, positions=positions))
+            pca = subspace.calibrated(pca_scores)
+            knn = memory.calibrated(knn_scores)
             patch_scores = (1.0 - self.knn_weight) * pca + self.knn_weight * knn
             base_score = (1.0 - self.knn_weight) * self._aggregate_image_score(pca) + self.knn_weight * self._aggregate_image_score(knn)
         if self.texture_evidence and texture_scores is not None:
@@ -361,6 +358,10 @@ class DefectFusion:
             self.reference_grid = patches.shape[1]
         positions = self._patch_positions(grid)
         anomaly_scores, pca_scores, knn_scores, knn_gate = self._anomaly_scores(patches, positions)
+        if self.dual_branch:
+            image_score_bundle = self._image_score_bundle(image_patches, positions)
+        else:
+            image_score_bundle = (anomaly_scores, pca_scores, knn_scores, knn_gate)
         texture_scores = None
         texture_region_evidence = []
         if self.texture_evidence:
@@ -368,7 +369,13 @@ class DefectFusion:
             texture_scores = self.texture_model.score(descriptors)
             anomaly_scores, texture_region_evidence = self._reason_reject(anomaly_scores, texture_scores, grid)
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
-        fused_score, spatial_consistency = self._image_anomaly_score(image_patches if self.dual_branch else patches, positions, grid, texture_scores)
+        fused_score, spatial_consistency = self._image_anomaly_score(
+            image_patches if self.dual_branch else patches,
+            positions,
+            grid,
+            texture_scores,
+            image_score_bundle,
+        )
         if not self.prototype_bank.prototypes:
             label, label_score = "unknown", 0.0
         else:
