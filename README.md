@@ -289,6 +289,22 @@ The default remains `pca`, so existing baselines do not change. kNN queries
 are chunked; lower `--knn-chunk-size` if inference runs out of memory. A
 positive `--memory-max-patches` deterministically subsamples the normal bank;
 use `0` to retain every patch.
+
+### ANoCo-inspired manifold drift
+
+`--anomaly-method anoco` replaces nearest-normal distance with a training-free
+manifold-conformity cost. For every query patch it retrieves a normal anchor,
+ranks normal neighbors by their joint similarity to the query and anchor,
+pulls the query toward that consistent neighborhood in closed form, and scores
+the squared feature displacement times its angular displacement.
+`--anomaly-method pca_anoco` robustly calibrates and fuses this score with the
+PCA residual using `--anoco-weight` (default `0.5`). The main controls are
+`--anoco-neighbors 16`, `--anoco-query-weight 1.0`, and
+`--anoco-temperature 0.07`. The implementation reuses the normal memory,
+spatial candidate mask, CUDA backend, and chunk size used by kNN. It performs
+two query-to-bank similarity products per chunk, so it is expected to be
+roughly twice as expensive as the kNN head. The validated default detector is
+unchanged; screen `anoco` on seed 42 before running `pca_anoco` or five seeds.
 Set `--knn-spatial-radius 0.10` to restrict kNN candidates to a local window
 in normalized patch coordinates. `-1` retains global matching. If leave-one-out
 calibration finds no candidate in the local window, it falls back to the global

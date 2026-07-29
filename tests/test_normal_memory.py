@@ -256,6 +256,21 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertGreater(memory.scale, 0)
         np.testing.assert_allclose(memory.score(features), 0.0, atol=1e-6)
 
+    def test_anoco_scores_off_manifold_query_higher(self):
+        angles = np.linspace(-0.2, 0.2, 9)
+        normal = np.stack([np.cos(angles), np.sin(angles), np.zeros_like(angles)], axis=1).astype(np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        scores = memory.score_anoco(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32), neighbor_count=4)
+        self.assertGreater(scores[1], scores[0])
+
+    def test_anoco_calibration_is_finite(self):
+        features = np.eye(6, dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(features)
+        memory.fit_anoco_calibration(neighbor_count=3)
+        self.assertTrue(np.isfinite(memory.anoco_center))
+        self.assertGreater(memory.anoco_scale, 0)
+        self.assertTrue(np.all(np.isfinite(memory.anoco_calibration_scores)))
+
     def test_fused_weight_endpoints_match_calibrated_components(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
@@ -271,6 +286,17 @@ class NormalPatchMemoryTest(unittest.TestCase):
         knn_only.normal_memory.fit(normal)
         fused, _, knn, _ = knn_only._anomaly_scores(query)
         np.testing.assert_allclose(fused, knn_only.normal_memory.calibrated(knn))
+
+    def test_pca_anoco_weight_endpoints_match_calibrated_components(self):
+        normal = np.array([[1, 0], [0, 1], [1, 1], [-1, 1]], dtype=np.float32)
+        query = np.array([[1, -1], [-1, -1]], dtype=np.float32)
+        for weight in (0.0, 1.0):
+            fusion = DefectFusion(object(), anomaly_method="pca_anoco", anoco_weight=weight, anoco_neighbors=2)
+            fusion.subspace.fit(normal)
+            fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=2)
+            fused, pca, anoco, _ = fusion._anomaly_scores(query)
+            expected = fusion.subspace.calibrated(pca) if weight == 0 else fusion.normal_memory.calibrated_anoco(anoco)
+            np.testing.assert_allclose(fused, expected)
 
     def test_tail_evidence_is_monotonic(self):
         calibration = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float64)
@@ -307,6 +333,19 @@ class NormalPatchMemoryTest(unittest.TestCase):
                 loaded.normal_memory.calibration_scores,
                 fusion.normal_memory.calibration_scores,
             )
+
+    def test_pipeline_save_load_preserves_anoco_state(self):
+        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2)
+        normal = np.eye(5, dtype=np.float32)
+        fusion.subspace.fit(normal)
+        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2)
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "model.json"
+            fusion.save(state_path)
+            loaded = DefectFusion.load(state_path, object())
+            self.assertEqual(loaded.anoco_neighbors, 3)
+            self.assertEqual(loaded.anoco_temperature, 0.2)
+            np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
         fusion = DefectFusion(object(), pca_residual_metric="mahalanobis", test_augmentations=["hflip"])

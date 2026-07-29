@@ -18,7 +18,7 @@ class NormalTrainingView:
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=(), texture_evidence: bool = False, texture_weight: float = 0.25, texture_candidate_ratio: float = 0.1):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=(), texture_evidence: bool = False, texture_weight: float = 0.25, texture_candidate_ratio: float = 0.1):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -56,13 +56,21 @@ class DefectFusion:
             raise ValueError("map_postprocess must be none, gaussian, or crf")
         self.map_postprocess = map_postprocess
         self.gaussian_sigma = gaussian_sigma
-        if anomaly_method not in {"pca", "knn", "pca_knn"}:
-            raise ValueError("anomaly_method must be pca, knn, or pca_knn")
+        if anomaly_method not in {"pca", "knn", "pca_knn", "anoco", "pca_anoco"}:
+            raise ValueError("anomaly_method must be pca, knn, pca_knn, anoco, or pca_anoco")
         if not 0 <= knn_weight <= 1:
             raise ValueError("knn_weight must be in [0, 1]")
         self.anomaly_method = anomaly_method
         self.pca_residual_metric = pca_residual_metric
         self.knn_weight = float(knn_weight)
+        if anoco_neighbors <= 0 or anoco_query_weight <= 0 or anoco_temperature <= 0:
+            raise ValueError("ANoCo neighbors, query weight, and temperature must be positive")
+        if not 0 <= anoco_weight <= 1:
+            raise ValueError("anoco_weight must be in [0, 1]")
+        self.anoco_neighbors = int(anoco_neighbors)
+        self.anoco_query_weight = float(anoco_query_weight)
+        self.anoco_temperature = float(anoco_temperature)
+        self.anoco_weight = float(anoco_weight)
         if fusion_mode not in {"fixed", "gated"}:
             raise ValueError("fusion_mode must be fixed or gated")
         if gate_temperature <= 0:
@@ -115,16 +123,20 @@ class DefectFusion:
         self.subspace.fit(features)
         if self.texture_evidence:
             self.texture_model.fit(np.concatenate(texture_batches, axis=0))
-        if self.anomaly_method in {"knn", "pca_knn"}:
+        if self.anomaly_method != "pca":
             memory_features = np.concatenate(memory_patch_batches, axis=0) if self.align_training_positions else features
             memory_positions = np.concatenate(memory_position_batches if self.align_training_positions else position_batches, axis=0)
             self.normal_memory.fit(memory_features, memory_positions)
+            if self.anomaly_method in {"anoco", "pca_anoco"}:
+                self.normal_memory.fit_anoco_calibration(self.anoco_neighbors, self.anoco_query_weight, self.anoco_temperature)
         if self.dual_branch:
             image_features = np.concatenate(image_patch_batches, axis=0)
             self.image_subspace.fit(image_features)
-            if self.anomaly_method in {"knn", "pca_knn"}:
+            if self.anomaly_method != "pca":
                 image_memory_features = np.concatenate(image_memory_patch_batches, axis=0) if self.align_training_positions else image_features
                 self.image_memory.fit(image_memory_features, memory_positions)
+                if self.anomaly_method in {"anoco", "pca_anoco"}:
+                    self.image_memory.fit_anoco_calibration(self.anoco_neighbors, self.anoco_query_weight, self.anoco_temperature)
         self.reference_grid = features.shape[1]
         return self
 
@@ -243,6 +255,19 @@ class DefectFusion:
         pca_scores = subspace.score(patches)
         if self.anomaly_method == "pca":
             return pca_scores, pca_scores, None, None
+        if self.anomaly_method in {"anoco", "pca_anoco"}:
+            normal_scores = memory.score_anoco(patches, self.anoco_neighbors, self.anoco_query_weight, self.anoco_temperature, positions=positions)
+            if self.anomaly_method == "anoco":
+                return normal_scores, pca_scores, normal_scores, None
+            if self.fusion_mode == "gated":
+                pca_evidence = subspace.tail_evidence(pca_scores)
+                normal_evidence = memory.tail_evidence_anoco(normal_scores)
+                logits = np.clip((normal_evidence - pca_evidence) / self.gate_temperature, -60.0, 60.0)
+                gate = 1.0 / (1.0 + np.exp(-logits))
+                return (1.0 - gate) * pca_evidence + gate * normal_evidence, pca_scores, normal_scores, gate
+            fused = ((1.0 - self.anoco_weight) * subspace.calibrated(pca_scores)
+                     + self.anoco_weight * memory.calibrated_anoco(normal_scores))
+            return fused, pca_scores, normal_scores, None
         knn_scores = memory.score(patches, positions=positions)
         if self.anomaly_method == "knn":
             return knn_scores, pca_scores, knn_scores, None
@@ -304,16 +329,21 @@ class DefectFusion:
         if score_bundle is None:
             score_bundle = self._image_score_bundle(patches, positions)
         fused_scores, pca_scores, knn_scores, _ = score_bundle
-        if self.image_fusion_stage == "patch" or self.anomaly_method != "pca_knn" or self.fusion_mode != "fixed":
+        if self.image_fusion_stage == "patch" or self.anomaly_method not in {"pca_knn", "pca_anoco"} or self.fusion_mode != "fixed":
             patch_scores = fused_scores
             base_score = self._aggregate_image_score(patch_scores)
         else:
             subspace = self.image_subspace if self.dual_branch else self.subspace
             memory = self.image_memory if self.dual_branch else self.normal_memory
             pca = subspace.calibrated(pca_scores)
-            knn = memory.calibrated(knn_scores)
-            patch_scores = (1.0 - self.knn_weight) * pca + self.knn_weight * knn
-            base_score = (1.0 - self.knn_weight) * self._aggregate_image_score(pca) + self.knn_weight * self._aggregate_image_score(knn)
+            if self.anomaly_method == "pca_anoco":
+                normal = memory.calibrated_anoco(knn_scores)
+                weight = self.anoco_weight
+            else:
+                normal = memory.calibrated(knn_scores)
+                weight = self.knn_weight
+            patch_scores = (1.0 - weight) * pca + weight * normal
+            base_score = (1.0 - weight) * self._aggregate_image_score(pca) + weight * self._aggregate_image_score(normal)
         if self.texture_evidence and texture_scores is not None:
             patch_scores, _ = self._reason_reject(patch_scores, texture_scores, grid)
         consistency = self._spatial_consistency(patch_scores, grid) if grid is not None else 0.0
@@ -401,7 +431,8 @@ class DefectFusion:
             "texture_region_evidence": texture_region_evidence,
         }
         if knn_scores is not None:
-            result["knn_anomaly_score"] = self._aggregate_image_score(knn_scores)
+            score_name = "anoco_anomaly_score" if self.anomaly_method in {"anoco", "pca_anoco"} else "knn_anomaly_score"
+            result[score_name] = self._aggregate_image_score(knn_scores)
         if knn_gate is not None:
             result["knn_gate_mean"] = float(np.mean(knn_gate))
             result["knn_gate_top1p_mean"] = self._aggregate_image_score(knn_gate)
@@ -440,8 +471,9 @@ class DefectFusion:
         maps = [self._restore_test_map(result["anomaly_map"], name) for name, result in views]
         base["anomaly_map"] = np.mean(maps, axis=0).tolist()
         averaged_fields = ["anomaly_score", "pca_anomaly_score", "image_spatial_consistency"]
-        if all("knn_anomaly_score" in result for _, result in views):
-            averaged_fields.append("knn_anomaly_score")
+        for field in ("knn_anomaly_score", "anoco_anomaly_score"):
+            if all(field in result for _, result in views):
+                averaged_fields.append(field)
         if all("knn_gate_mean" in result for _, result in views):
             averaged_fields.extend(["knn_gate_mean", "knn_gate_top1p_mean"])
         for field in averaged_fields:
@@ -468,6 +500,10 @@ class DefectFusion:
             "anomaly_method": self.anomaly_method,
             "pca_residual_metric": self.pca_residual_metric,
             "knn_weight": self.knn_weight,
+            "anoco_neighbors": self.anoco_neighbors,
+            "anoco_query_weight": self.anoco_query_weight,
+            "anoco_temperature": self.anoco_temperature,
+            "anoco_weight": self.anoco_weight,
             "memory_max_patches": self.normal_memory.max_patches,
             "knn_chunk_size": self.normal_memory.query_chunk_size,
             "knn_backend": self.normal_memory.backend,
@@ -485,6 +521,9 @@ class DefectFusion:
             "knn_center": self.normal_memory.center,
             "knn_scale": self.normal_memory.scale,
             "knn_calibration_scores": self.normal_memory.calibration_scores.tolist() if self.normal_memory.calibration_scores is not None else None,
+            "anoco_center": self.normal_memory.anoco_center,
+            "anoco_scale": self.normal_memory.anoco_scale,
+            "anoco_calibration_scores": self.normal_memory.anoco_calibration_scores.tolist() if self.normal_memory.anoco_calibration_scores is not None else None,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
@@ -493,6 +532,9 @@ class DefectFusion:
             state["image_knn_center"] = self.image_memory.center
             state["image_knn_scale"] = self.image_memory.scale
             state["image_knn_calibration_scores"] = self.image_memory.calibration_scores.tolist() if self.image_memory.calibration_scores is not None else None
+            state["image_anoco_center"] = self.image_memory.anoco_center
+            state["image_anoco_scale"] = self.image_memory.anoco_scale
+            state["image_anoco_calibration_scores"] = self.image_memory.anoco_calibration_scores.tolist() if self.image_memory.anoco_calibration_scores is not None else None
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if self.normal_memory.features is not None:
@@ -512,7 +554,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()), texture_evidence=state.get("texture_evidence", False), texture_weight=state.get("texture_weight", 0.25), texture_candidate_ratio=state.get("texture_candidate_ratio", 0.1))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_weight=state.get("anoco_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()), texture_evidence=state.get("texture_evidence", False), texture_weight=state.get("texture_weight", 0.25), texture_candidate_ratio=state.get("texture_candidate_ratio", 0.1))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         if obj.texture_evidence and state.get("texture_model") is not None:
             obj.texture_model = NormalTextureModel.from_dict(state["texture_model"])
@@ -530,6 +572,10 @@ class DefectFusion:
             obj.normal_memory.scale = float(state.get("knn_scale", 1.0))
             calibration = state.get("knn_calibration_scores")
             obj.normal_memory.calibration_scores = None if calibration is None else np.asarray(calibration, dtype=np.float64)
+            obj.normal_memory.anoco_center = float(state.get("anoco_center", 0.0))
+            obj.normal_memory.anoco_scale = float(state.get("anoco_scale", 1.0))
+            anoco_calibration = state.get("anoco_calibration_scores")
+            obj.normal_memory.anoco_calibration_scores = None if anoco_calibration is None else np.asarray(anoco_calibration, dtype=np.float64)
             if obj.dual_branch and "image_features" in memory:
                 obj.image_memory.features = memory["image_features"].astype(np.float32)
                 obj.image_memory.positions = memory["image_positions"].astype(np.float32) if "image_positions" in memory else None
@@ -537,6 +583,10 @@ class DefectFusion:
                 obj.image_memory.scale = float(state.get("image_knn_scale", 1.0))
                 image_calibration = state.get("image_knn_calibration_scores")
                 obj.image_memory.calibration_scores = None if image_calibration is None else np.asarray(image_calibration, dtype=np.float64)
+                obj.image_memory.anoco_center = float(state.get("image_anoco_center", 0.0))
+                obj.image_memory.anoco_scale = float(state.get("image_anoco_scale", 1.0))
+                image_anoco_calibration = state.get("image_anoco_calibration_scores")
+                obj.image_memory.anoco_calibration_scores = None if image_anoco_calibration is None else np.asarray(image_anoco_calibration, dtype=np.float64)
         obj.reference_grid = state.get("reference_grid")
         obj.reference_shape = state.get("reference_shape")
         return obj
