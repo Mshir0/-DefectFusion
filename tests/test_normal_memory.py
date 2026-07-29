@@ -381,6 +381,26 @@ class NormalPatchMemoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires anoco_layer_consensus"):
             DefectFusion(object(), retrieval_entropy_weight=0.25)
 
+    def test_fit_normal_calibrates_retrieval_entropy_after_image_memory_fit(self):
+        class Extractor:
+            device = None
+
+            def extract_dual_layers(self, image):
+                raw = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0]], dtype=np.float32)
+                l2 = raw / np.linalg.norm(raw, axis=1, keepdims=True)
+                layers = np.stack([l2, l2[:, ::-1]], axis=0)
+                return raw, l2, layers, (2, 2)
+
+        fusion = DefectFusion(
+            Extractor(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            anoco_layer_consensus=True, retrieval_entropy_weight=0.25,
+            anoco_neighbors=2, knn_backend="numpy",
+        )
+        fusion.fit_normal([Image.new("RGB", (2, 2)), Image.new("RGB", (2, 2))])
+        self.assertIsNotNone(fusion.image_memory.features)
+        self.assertIsNotNone(fusion.image_memory.entropy_calibration_scores)
+        self.assertTrue(np.all(np.isfinite(fusion.image_memory.entropy_calibration_scores)))
+
     def test_hybrid_head_requires_dual_branch(self):
         with self.assertRaisesRegex(ValueError, "requires dual_branch"):
             DefectFusion(object(), anomaly_method="pca_knn_anoco")

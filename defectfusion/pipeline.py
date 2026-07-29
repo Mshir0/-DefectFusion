@@ -107,10 +107,6 @@ class DefectFusion:
                 inverse_position_matrix = None
             if self.dual_branch:
                 if self.anoco_layer_consensus:
-                    if self.retrieval_entropy_weight > 0:
-                        self.image_memory.fit_retrieval_entropy_calibration(
-                            self.anoco_neighbors, self.anoco_temperature,
-                        )
                     patches, image_patches, image_layers, grid = self.extractor.extract_dual_layers(image)
                     image_layer_batches.append(image_layers)
                 else:
@@ -146,6 +142,10 @@ class DefectFusion:
                 self.image_memory.fit(image_memory_features, memory_positions)
                 if self.anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"}:
                     self.image_memory.fit_anoco_calibration(self.anoco_neighbors, self.anoco_query_weight, self.anoco_temperature)
+                if self.retrieval_entropy_weight > 0:
+                    self.image_memory.fit_retrieval_entropy_calibration(
+                        self.anoco_neighbors, self.anoco_temperature,
+                    )
                 if self.anoco_layer_consensus:
                     layer_count = image_layer_batches[0].shape[0]
                     self.image_layer_memories = []
