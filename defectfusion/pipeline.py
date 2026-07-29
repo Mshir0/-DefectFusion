@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .model import NormalPatchMemory, NormalSubspace, PrototypeBank
+from .model import NormalPatchMemory, NormalSubspace, NormalTextureModel, PrototypeBank
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ class NormalTrainingView:
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=()):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=(), texture_evidence: bool = False, texture_weight: float = 0.25, texture_candidate_ratio: float = 0.1):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -73,11 +73,19 @@ class DefectFusion:
         if invalid_augmentations:
             raise ValueError(f"Unknown test augmentations: {sorted(invalid_augmentations)}")
         self.test_augmentations = tuple(dict.fromkeys(test_augmentations))
+        self.texture_evidence = bool(texture_evidence)
+        if texture_weight < 0:
+            raise ValueError("texture_weight must be non-negative")
+        if not 0 < texture_candidate_ratio <= 1:
+            raise ValueError("texture_candidate_ratio must be in (0, 1]")
+        self.texture_weight = float(texture_weight)
+        self.texture_candidate_ratio = float(texture_candidate_ratio)
+        self.texture_model = NormalTextureModel() if self.texture_evidence else None
         self.reference_grid = None
         self.reference_shape = None
 
     def fit_normal(self, image_paths):
-        patch_batches, image_patch_batches, position_batches = [], [], []
+        patch_batches, image_patch_batches, position_batches, texture_batches = [], [], [], []
         memory_patch_batches, image_memory_patch_batches, memory_position_batches = [], [], []
         for path in image_paths:
             if isinstance(path, NormalTrainingView):
@@ -92,6 +100,8 @@ class DefectFusion:
             else:
                 patches, grid = self.extractor.extract(image)
             patch_batches.append(patches)
+            if self.texture_evidence:
+                texture_batches.append(self._texture_descriptors(image, grid))
             positions, valid = self._training_positions(grid, inverse_position_matrix)
             position_batches.append(positions)
             memory_patch_batches.append(patches[valid])
@@ -103,6 +113,8 @@ class DefectFusion:
             raise ValueError("No normal images were provided")
         features = np.concatenate(patch_batches, axis=0)
         self.subspace.fit(features)
+        if self.texture_evidence:
+            self.texture_model.fit(np.concatenate(texture_batches, axis=0))
         if self.anomaly_method in {"knn", "pca_knn"}:
             memory_features = np.concatenate(memory_patch_batches, axis=0) if self.align_training_positions else features
             memory_positions = np.concatenate(memory_position_batches if self.align_training_positions else position_batches, axis=0)
@@ -160,6 +172,72 @@ class DefectFusion:
             return float(np.percentile(scores, 99))
         keep = max(1, int(np.ceil(scores.size * self.image_top_ratio)))
         return float(np.partition(scores, -keep)[-keep:].mean())
+
+    @staticmethod
+    def _texture_descriptors(image, grid):
+        height, width = grid
+        resized = image.convert("L").resize((width * 16, height * 16), Image.Resampling.BILINEAR)
+        gray = np.asarray(resized, dtype=np.float32) / 255.0
+        gradient_y, gradient_x = np.gradient(gray)
+        gradient = np.sqrt(gradient_x ** 2 + gradient_y ** 2)
+        padded = np.pad(gray, 1, mode="reflect")
+        laplacian = np.abs(
+            padded[1:-1, :-2] + padded[1:-1, 2:] + padded[:-2, 1:-1] + padded[2:, 1:-1]
+            - 4.0 * gray
+        )
+        gray_blocks = gray.reshape(height, 16, width, 16)
+        gradient_blocks = gradient.reshape(height, 16, width, 16)
+        laplacian_blocks = laplacian.reshape(height, 16, width, 16)
+        return np.stack([
+            gray_blocks.std(axis=(1, 3)),
+            gradient_blocks.mean(axis=(1, 3)),
+            laplacian_blocks.mean(axis=(1, 3)),
+        ], axis=-1).reshape(-1, 3).astype(np.float32)
+
+    @staticmethod
+    def _connected_regions(mask):
+        mask = np.asarray(mask, dtype=bool)
+        visited = np.zeros_like(mask, dtype=bool)
+        regions = []
+        for row, column in np.argwhere(mask):
+            if visited[row, column]:
+                continue
+            region = []
+            stack = [(int(row), int(column))]
+            visited[row, column] = True
+            while stack:
+                current_row, current_column = stack.pop()
+                region.append((current_row, current_column))
+                for row_offset in (-1, 0, 1):
+                    for column_offset in (-1, 0, 1):
+                        if row_offset == column_offset == 0:
+                            continue
+                        next_row, next_column = current_row + row_offset, current_column + column_offset
+                        if 0 <= next_row < mask.shape[0] and 0 <= next_column < mask.shape[1] and mask[next_row, next_column] and not visited[next_row, next_column]:
+                            visited[next_row, next_column] = True
+                            stack.append((next_row, next_column))
+            regions.append(region)
+        return regions
+
+    def _reason_reject(self, scores, texture_scores, grid):
+        scores = np.asarray(scores, dtype=np.float64)
+        texture_scores = np.asarray(texture_scores, dtype=np.float64)
+        if scores.size != grid[0] * grid[1] or texture_scores.size != scores.size:
+            raise ValueError("Reason-and-reject scores must match the patch grid")
+        keep = max(1, int(np.ceil(scores.size * self.texture_candidate_ratio)))
+        selected = np.argpartition(scores, -keep)[-keep:]
+        candidate_mask = np.zeros(scores.size, dtype=bool)
+        candidate_mask[selected] = True
+        candidate_mask = candidate_mask.reshape(grid)
+        refined = scores.reshape(grid).copy()
+        evidences = []
+        texture_map = texture_scores.reshape(grid)
+        for region in self._connected_regions(candidate_mask):
+            rows, columns = zip(*region)
+            evidence = float(np.clip(np.mean(texture_map[rows, columns]), -5.0, 5.0))
+            refined[rows, columns] += self.texture_weight * evidence
+            evidences.append(evidence)
+        return refined.ravel(), evidences
 
     def _anomaly_scores(self, patches, positions=None):
         pca_scores = self.subspace.score(patches)
@@ -228,7 +306,7 @@ class DefectFusion:
             largest = max(largest, size)
         return largest / keep
 
-    def _image_anomaly_score(self, patches, positions=None, grid=None):
+    def _image_anomaly_score(self, patches, positions=None, grid=None, texture_scores=None):
         if self.image_fusion_stage == "patch" or self.anomaly_method != "pca_knn" or self.fusion_mode != "fixed":
             patch_scores = self._image_scores(patches, positions)
             base_score = self._aggregate_image_score(patch_scores)
@@ -239,6 +317,8 @@ class DefectFusion:
             knn = memory.calibrated(memory.score(patches, positions=positions))
             patch_scores = (1.0 - self.knn_weight) * pca + self.knn_weight * knn
             base_score = (1.0 - self.knn_weight) * self._aggregate_image_score(pca) + self.knn_weight * self._aggregate_image_score(knn)
+        if self.texture_evidence and texture_scores is not None:
+            patch_scores, _ = self._reason_reject(patch_scores, texture_scores, grid)
         consistency = self._spatial_consistency(patch_scores, grid) if grid is not None else 0.0
         score = base_score + self.image_spatial_weight * abs(base_score) * consistency
         return score, consistency
@@ -281,8 +361,14 @@ class DefectFusion:
             self.reference_grid = patches.shape[1]
         positions = self._patch_positions(grid)
         anomaly_scores, pca_scores, knn_scores, knn_gate = self._anomaly_scores(patches, positions)
+        texture_scores = None
+        texture_region_evidence = []
+        if self.texture_evidence:
+            descriptors = self._texture_descriptors(image, grid)
+            texture_scores = self.texture_model.score(descriptors)
+            anomaly_scores, texture_region_evidence = self._reason_reject(anomaly_scores, texture_scores, grid)
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
-        fused_score, spatial_consistency = self._image_anomaly_score(image_patches if self.dual_branch else patches, positions, grid)
+        fused_score, spatial_consistency = self._image_anomaly_score(image_patches if self.dual_branch else patches, positions, grid, texture_scores)
         if not self.prototype_bank.prototypes:
             label, label_score = "unknown", 0.0
         else:
@@ -305,6 +391,7 @@ class DefectFusion:
             "fusion_mode": self.fusion_mode,
             "pca_anomaly_score": self._aggregate_image_score(pca_scores),
             "image_spatial_consistency": float(spatial_consistency),
+            "texture_region_evidence": texture_region_evidence,
         }
         if knn_scores is not None:
             result["knn_anomaly_score"] = self._aggregate_image_score(knn_scores)
@@ -384,6 +471,10 @@ class DefectFusion:
             "fusion_mode": self.fusion_mode,
             "gate_temperature": self.gate_temperature,
             "test_augmentations": list(self.test_augmentations),
+            "texture_evidence": self.texture_evidence,
+            "texture_weight": self.texture_weight,
+            "texture_candidate_ratio": self.texture_candidate_ratio,
+            "texture_model": self.texture_model.to_dict() if self.texture_model is not None else None,
             "knn_center": self.normal_memory.center,
             "knn_scale": self.normal_memory.scale,
             "knn_calibration_scores": self.normal_memory.calibration_scores.tolist() if self.normal_memory.calibration_scores is not None else None,
@@ -414,8 +505,10 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()), texture_evidence=state.get("texture_evidence", False), texture_weight=state.get("texture_weight", 0.25), texture_candidate_ratio=state.get("texture_candidate_ratio", 0.1))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
+        if obj.texture_evidence and state.get("texture_model") is not None:
+            obj.texture_model = NormalTextureModel.from_dict(state["texture_model"])
         if obj.dual_branch and "image_subspace" in state:
             obj.image_subspace = NormalSubspace.from_dict(state["image_subspace"])
         obj.prototype_bank = PrototypeBank.from_dict(state.get("prototype_bank", {}))

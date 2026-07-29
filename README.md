@@ -177,6 +177,9 @@ python -m defectfusion.cli evaluate-mvtec \
 | Per-layer normalization | `--layer-normalization` | `none` | `none, l2` | Multi-layer feature balance |
 | Dual image/pixel branch | `--dual-branch` | off | on/off | Image vs Pixel trade-off |
 | Test-time augmentation | `--test-augmentations` | none | `hflip vflip` | Image and Pixel metrics, 3x inference |
+| Texture evidence | `--texture-evidence` | off | on/off | Region-level candidate verification |
+| Texture weight | `--texture-weight` | `0.25` | `0.1, 0.25, 0.5` | Candidate region adjustment |
+| Texture candidate ratio | `--texture-candidate-ratio` | `0.1` | `0.05, 0.1, 0.2` | DINO proposal coverage |
 
 Flip TTA always includes the identity view. For the first screening run, use
 `--test-augmentations hflip vflip`; image scores are averaged across three

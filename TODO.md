@@ -29,6 +29,7 @@
 - [x] Add optional per-layer L2 normalization before DINOv3 feature fusion.
 - [x] Add optional spatially constrained normal-memory kNN matching.
 - [x] Add canonical coordinate alignment for rotate/flip normal augmentations before spatial kNN.
+- [x] Add optional region-level Reason-and-Reject with handcrafted texture evidence.
 - [x] Fuse PCA residuals with an AnomalyDINO-style normal-patch kNN memory score.
 - [x] Evaluate independent per-layer PCA score fusion (removed after negative MVTec ablation).
 - [x] Add training-free normal-tail-calibrated gating for PCA and kNN fusion.
