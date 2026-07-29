@@ -2,56 +2,6 @@ from __future__ import annotations
 import numpy as np
 
 
-class NormalTextureModel:
-    """Robust normal model for low-dimensional patch texture descriptors."""
-
-    def __init__(self):
-        self.feature_center = None
-        self.feature_scale = None
-        self.score_center = 0.0
-        self.score_scale = 1.0
-
-    def fit(self, descriptors):
-        descriptors = np.asarray(descriptors, dtype=np.float64)
-        if descriptors.ndim != 2 or len(descriptors) < 2:
-            raise ValueError("Texture model requires at least two descriptor vectors")
-        self.feature_center = np.median(descriptors, axis=0)
-        mad = 1.4826 * np.median(np.abs(descriptors - self.feature_center), axis=0)
-        std_floor = descriptors.std(axis=0) * 0.1
-        self.feature_scale = np.maximum(np.maximum(mad, std_floor), 1e-12)
-        raw_scores = self._raw_score(descriptors)
-        self.score_center, self.score_scale = NormalPatchMemory._robust_stats(raw_scores)
-        return self
-
-    def _raw_score(self, descriptors):
-        if self.feature_center is None or self.feature_scale is None:
-            raise ValueError("Texture model has not been fitted")
-        descriptors = np.asarray(descriptors, dtype=np.float64)
-        return np.mean(np.abs((descriptors - self.feature_center) / self.feature_scale), axis=1)
-
-    def score(self, descriptors):
-        return (self._raw_score(descriptors) - self.score_center) / self.score_scale
-
-    def to_dict(self):
-        return {
-            "feature_center": self.feature_center.tolist() if self.feature_center is not None else None,
-            "feature_scale": self.feature_scale.tolist() if self.feature_scale is not None else None,
-            "score_center": self.score_center,
-            "score_scale": self.score_scale,
-        }
-
-    @classmethod
-    def from_dict(cls, state):
-        obj = cls()
-        center = state.get("feature_center")
-        scale = state.get("feature_scale")
-        obj.feature_center = None if center is None else np.asarray(center, dtype=np.float64)
-        obj.feature_scale = None if scale is None else np.asarray(scale, dtype=np.float64)
-        obj.score_center = float(state.get("score_center", 0.0))
-        obj.score_scale = float(state.get("score_scale", 1.0))
-        return obj
-
-
 class NormalPatchMemory:
     def __init__(self, max_patches=50000, query_chunk_size=256, calibration_patches=4096, backend="auto", device=None, dtype="float32", spatial_radius=-1.0):
         self.max_patches = int(max_patches)

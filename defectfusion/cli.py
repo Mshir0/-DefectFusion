@@ -130,9 +130,6 @@ def main(argv=None):
     f.add_argument("--align-training-positions", action="store_true", help="map augmented normal patches back to reference coordinates before spatial kNN")
     f.add_argument("--dual-branch", action="store_true", help="use L2 features for image score and raw features for pixel map")
     f.add_argument("--test-augmentations", nargs="*", choices=["hflip", "vflip"], default=None)
-    f.add_argument("--texture-evidence", action="store_true")
-    f.add_argument("--texture-weight", type=float, default=None)
-    f.add_argument("--texture-candidate-ratio", type=float, default=None)
     f.add_argument("--knn-backend", choices=["auto", "numpy", "torch"], default=None); f.add_argument("--knn-dtype", choices=["float32", "float16"], default=None)
     f.add_argument("--feature-layers", default=None); f.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None); f.add_argument("--layer-normalization", choices=["none", "l2"], default=None)
     f.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); f.add_argument("--gaussian-sigma", type=float, default=None)
@@ -181,9 +178,6 @@ def main(argv=None):
     e.add_argument("--align-training-positions", action="store_true", help="map rotate/flip normal augmentation positions back to canonical coordinates")
     e.add_argument("--dual-branch", action="store_true", help="use L2 features for image score and raw features for pixel map")
     e.add_argument("--test-augmentations", nargs="*", choices=["hflip", "vflip"], default=None, help="flip TTA views; identity is always included")
-    e.add_argument("--texture-evidence", action="store_true", help="region-level reason-and-reject using normal texture statistics")
-    e.add_argument("--texture-weight", type=float, default=None, help="texture evidence contribution to each DINO candidate region")
-    e.add_argument("--texture-candidate-ratio", type=float, default=None, help="top DINO patch fraction proposed as texture candidates")
     e.add_argument("--knn-backend", choices=["auto", "numpy", "torch"], default=None, help="auto uses Torch when the extractor is on CUDA")
     e.add_argument("--knn-dtype", choices=["float32", "float16"], default=None, help="CUDA matrix precision; float16 is faster and uses half the memory")
     e.add_argument("--feature-layers", default=None, help="comma-separated hidden-state indices")
@@ -218,9 +212,6 @@ def main(argv=None):
     dual_branch = bool(getattr(a, "dual_branch", False) or cfg.get("dual_branch", False))
     if anomaly_method == "pca_knn_anoco" and not dual_branch: p.error("--anomaly-method pca_knn_anoco requires --dual-branch")
     test_augmentations = getattr(a, "test_augmentations", None); test_augmentations = test_augmentations if test_augmentations is not None else cfg.get("test_augmentations", [])
-    texture_evidence = bool(getattr(a, "texture_evidence", False) or cfg.get("texture_evidence", False))
-    texture_weight = getattr(a, "texture_weight", None); texture_weight = texture_weight if texture_weight is not None else cfg.get("texture_weight", 0.25)
-    texture_candidate_ratio = getattr(a, "texture_candidate_ratio", None); texture_candidate_ratio = texture_candidate_ratio if texture_candidate_ratio is not None else cfg.get("texture_candidate_ratio", 0.1)
     knn_backend = getattr(a, "knn_backend", None) or cfg.get("knn_backend", "auto")
     knn_dtype = getattr(a, "knn_dtype", None) or cfg.get("knn_dtype", "float32")
     if not 0 <= knn_weight <= 1: p.error("--knn-weight must be in [0, 1]")
@@ -236,8 +227,6 @@ def main(argv=None):
     if knn_spatial_radius != -1 and not 0 <= knn_spatial_radius <= 1: p.error("--knn-spatial-radius must be -1 or in [0, 1]")
     if align_training_positions and knn_spatial_radius < 0: p.error("--align-training-positions requires --knn-spatial-radius in [0, 1]")
     if align_training_positions and resize_mode != "direct": p.error("--align-training-positions currently requires --resize-mode direct")
-    if texture_weight < 0: p.error("--texture-weight must be non-negative")
-    if not 0 < texture_candidate_ratio <= 1: p.error("--texture-candidate-ratio must be in (0, 1]")
     try:
         feature_layers, feature_layer_preset = _feature_layers(a, cfg)
     except ValueError as exc:
@@ -259,7 +248,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, texture_evidence=texture_evidence, texture_weight=texture_weight, texture_candidate_ratio=texture_candidate_ratio).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -299,7 +288,7 @@ def main(argv=None):
             if category.name in no_augment_categories: augment_count = 0
             normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
             print(f"[normal-augment] {category.name}: {len(normal_training_images)} views", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, texture_evidence=texture_evidence, texture_weight=texture_weight, texture_candidate_ratio=texture_candidate_ratio).fit_normal(normal_training_images)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category.name}: backend={fusion.normal_memory.resolved_backend} "
@@ -363,9 +352,6 @@ def main(argv=None):
             metrics["align_training_positions"] = align_training_positions
             metrics["dual_branch"] = dual_branch
             metrics["test_augmentations"] = list(test_augmentations)
-            metrics["texture_evidence"] = texture_evidence
-            metrics["texture_weight"] = texture_weight if texture_evidence else 0
-            metrics["texture_candidate_ratio"] = texture_candidate_ratio if texture_evidence else 0
             metrics["map_postprocess"] = map_postprocess
             metrics["gaussian_sigma"] = gaussian_sigma if map_postprocess == "gaussian" else 0
             metrics["metrics_file"] = str(result_path)

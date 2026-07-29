@@ -29,7 +29,6 @@
 - [x] Add optional per-layer L2 normalization before DINOv3 feature fusion.
 - [x] Add optional spatially constrained normal-memory kNN matching.
 - [x] Add canonical coordinate alignment for rotate/flip normal augmentations before spatial kNN.
-- [x] Add optional region-level Reason-and-Reject with handcrafted texture evidence.
 - [x] Fuse PCA residuals with an AnomalyDINO-style normal-patch kNN memory score.
 - [x] Add an optional ANoCo-inspired anchor-consistent manifold-drift head and PCA/ANoCo fusion.
 - [x] Add a dual head: raw PCA+kNN for localization and L2 PCA+ANoCo for image detection.

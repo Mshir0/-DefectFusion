@@ -6,30 +6,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from defectfusion.model import NormalPatchMemory, NormalSubspace, NormalTextureModel, PrototypeBank
+from defectfusion.model import NormalPatchMemory, NormalSubspace, PrototypeBank
 from defectfusion.pipeline import DefectFusion, NormalTrainingView
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
-    def test_texture_model_scores_outlying_texture_higher(self):
-        normal = np.array([[1.0, 1.0, 1.0], [1.1, 0.9, 1.0], [0.9, 1.1, 1.0], [1.0, 1.0, 0.9]])
-        model = NormalTextureModel().fit(normal)
-        self.assertGreater(model.score([[5.0, 5.0, 5.0]])[0], model.score([[1.0, 1.0, 1.0]])[0])
-
-    def test_texture_model_serialization_preserves_scores(self):
-        normal = np.array([[1.0, 1.0, 1.0], [1.1, 0.9, 1.0], [0.9, 1.1, 1.0], [1.0, 1.0, 0.9]])
-        fitted = NormalTextureModel().fit(normal)
-        loaded = NormalTextureModel.from_dict(fitted.to_dict())
-        np.testing.assert_allclose(loaded.score(normal), fitted.score(normal))
-
-    def test_reason_reject_adjusts_only_candidate_regions(self):
-        fusion = DefectFusion(object(), texture_evidence=True, texture_weight=0.5, texture_candidate_ratio=0.5)
-        scores = np.array([4.0, 3.0, 0.0, 0.0])
-        texture = np.array([2.0, 2.0, -4.0, -4.0])
-        refined, evidence = fusion._reason_reject(scores, texture, (2, 2))
-        np.testing.assert_allclose(refined, [5.0, 4.0, 0.0, 0.0])
-        self.assertEqual(evidence, [2.0])
-
     def test_empty_prototype_bank_skips_duplicate_typing_pca(self):
         class Extractor:
             def extract_dual(self, image):
