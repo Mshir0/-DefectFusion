@@ -122,8 +122,10 @@ class DefectFusion:
         self.prototype_bank.add(label, self._anomaly_patches(patches))
         return self
 
-    def _anomaly_patches(self, patches):
-        scores = self.subspace.score(patches)
+    def _anomaly_patches(self, patches, scores=None):
+        scores = self.subspace.score(patches) if scores is None else np.asarray(scores)
+        if len(scores) != len(patches):
+            raise ValueError("Anomaly score count must match patch count")
         keep = max(1, int(np.ceil(len(scores) * self.top_k_ratio)))
         indices = np.argpartition(scores, -keep)[-keep:]
         return patches[indices]
@@ -281,12 +283,15 @@ class DefectFusion:
         anomaly_scores, pca_scores, knn_scores, knn_gate = self._anomaly_scores(patches, positions)
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         fused_score, spatial_consistency = self._image_anomaly_score(image_patches if self.dual_branch else patches, positions, grid)
-        typing_patches = self._anomaly_patches(patches)
-        if self.type_matching == "rbf_svm":
-            label, label_score = self.prototype_bank.predict_rbf_svm(typing_patches)
+        if not self.prototype_bank.prototypes:
+            label, label_score = "unknown", 0.0
         else:
-            typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
-            label, label_score = self.prototype_bank.predict(typing_features)
+            typing_patches = self._anomaly_patches(patches, pca_scores)
+            if self.type_matching == "rbf_svm":
+                label, label_score = self.prototype_bank.predict_rbf_svm(typing_patches)
+            else:
+                typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
+                label, label_score = self.prototype_bank.predict(typing_features)
         result = {
             "image": str(image_name),
             "grid": list(grid),

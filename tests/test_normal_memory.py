@@ -11,6 +11,36 @@ from defectfusion.pipeline import DefectFusion, NormalTrainingView
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
+    def test_empty_prototype_bank_skips_duplicate_typing_pca(self):
+        class Extractor:
+            def extract_dual(self, image):
+                patches = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0]])
+                return patches, patches.copy(), (2, 2)
+
+        class CountingSubspace:
+            def __init__(self):
+                self.calls = 0
+
+            def score(self, features):
+                self.calls += 1
+                return np.arange(len(features), dtype=np.float64)
+
+        fusion = DefectFusion(Extractor(), anomaly_method="pca", dual_branch=True)
+        fusion.subspace = CountingSubspace()
+        fusion.image_subspace = CountingSubspace()
+        result = fusion._predict_single(Image.new("RGB", (2, 2)), "image.png")
+        self.assertEqual(result["defect_type"], "unknown")
+        self.assertEqual(fusion.subspace.calls, 1)
+        self.assertEqual(fusion.image_subspace.calls, 1)
+
+    def test_typing_reuses_existing_pca_scores(self):
+        patches = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0]])
+        supplied_scores = np.array([0.0, 1.0, 2.0, 3.0])
+        fusion = DefectFusion(object(), top_k_ratio=0.25)
+        fusion.subspace.score = lambda features: self.fail("PCA scores should be reused")
+        selected = fusion._anomaly_patches(patches, supplied_scores)
+        np.testing.assert_array_equal(selected, patches[[3]])
+
     def test_aligned_training_positions_restore_rotation_coordinates(self):
         fusion = DefectFusion(object(), knn_spatial_radius=0.1, align_training_positions=True)
         # A 90-degree counter-clockwise augmentation maps its top-center patch back to right-center.
