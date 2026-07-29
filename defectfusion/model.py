@@ -27,8 +27,6 @@ class NormalPatchMemory:
         self.anoco_center = 0.0
         self.anoco_scale = 1.0
         self.anoco_calibration_scores = None
-        self.anoco_disagreement_center = 0.0
-        self.anoco_disagreement_scale = 1.0
 
     @staticmethod
     def _normalize(features):
@@ -161,7 +159,6 @@ class NormalPatchMemory:
 
     def _anoco_score_numpy(self, query, exclude, positions, neighbor_count, query_weight, temperature):
         scores = np.empty(len(query), dtype=np.float32)
-        disagreements = np.empty(len(query), dtype=np.float32)
         for start in range(0, len(query), self.query_chunk_size):
             end = min(start + self.query_chunk_size, len(query))
             query_chunk = query[start:end]
@@ -193,13 +190,12 @@ class NormalPatchMemory:
             weights = np.where(neighbor_allowed, np.exp(logits), 0.0)
             weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
             normal_target = np.sum(self.features[neighbor_indices] * weights[:, :, None], axis=1)
-            disagreements[start:end] = np.maximum(1.0 - np.sum(normal_target ** 2, axis=1), 0.0)
             updated = (query_weight * query_chunk + normal_target) / (query_weight + 1.0)
             displacement = np.sum((updated - query_chunk) ** 2, axis=1)
             updated_normalized = updated / np.maximum(np.linalg.norm(updated, axis=1, keepdims=True), 1e-12)
             angular = 1.0 - np.sum(updated_normalized * query_chunk, axis=1)
             scores[start:end] = displacement * np.maximum(angular, 0.0)
-        return scores, disagreements
+        return scores
 
     def _anoco_score_torch(self, query, exclude, positions, neighbor_count, query_weight, temperature):
         try:
@@ -215,7 +211,6 @@ class NormalPatchMemory:
         if self.positions is not None and (self._torch_positions is None or self._torch_positions.device != torch.device(device)):
             self._torch_positions = torch.as_tensor(self.positions, device=device, dtype=torch.float32).contiguous()
         scores = np.empty(len(query), dtype=np.float32)
-        disagreements = np.empty(len(query), dtype=np.float32)
         with torch.inference_mode():
             for start in range(0, len(query), self.query_chunk_size):
                 end = min(start + self.query_chunk_size, len(query))
@@ -248,13 +243,12 @@ class NormalPatchMemory:
                 weights = torch.softmax(logits, dim=1)
                 normal_features = self._torch_bank[neighbor_indices].float()
                 normal_target = torch.sum(normal_features * weights[:, :, None], dim=1)
-                disagreements[start:end] = torch.clamp(1.0 - torch.sum(normal_target ** 2, dim=1), min=0.0).cpu().numpy()
                 query_float = query_chunk.float()
                 updated = (query_weight * query_float + normal_target) / (query_weight + 1.0)
                 displacement = torch.sum((updated - query_float) ** 2, dim=1)
                 angular = 1.0 - torch.sum(torch.nn.functional.normalize(updated, p=2, dim=1) * query_float, dim=1)
                 scores[start:end] = (displacement * torch.clamp(angular, min=0.0)).cpu().numpy()
-        return scores, disagreements
+        return scores
 
     def score_anoco(self, features, neighbor_count=16, query_weight=1.0, temperature=0.07, exclude_indices=None, positions=None):
         if self.features is None or len(self.features) == 0:
@@ -274,36 +268,24 @@ class NormalPatchMemory:
         if self.spatial_radius >= 0 and (positions is None or self.positions is None):
             raise ValueError("Spatial ANoCo requires patch positions for normal and query features")
         if self._resolved_backend() == "torch":
-            scores, _ = self._anoco_score_torch(query, exclude, positions, neighbor_count, query_weight, temperature)
-        else:
-            scores, _ = self._anoco_score_numpy(query, exclude, positions, neighbor_count, query_weight, temperature)
-        return scores
-
-    def score_anoco_disagreement(self, features, neighbor_count=16, query_weight=1.0, temperature=0.07, exclude_indices=None, positions=None):
-        query = self._normalize(features)
-        exclude = None if exclude_indices is None else np.asarray(exclude_indices)
-        if self._resolved_backend() == "torch":
-            _, disagreement = self._anoco_score_torch(query, exclude, positions, neighbor_count, query_weight, temperature)
-        else:
-            _, disagreement = self._anoco_score_numpy(query, exclude, positions, neighbor_count, query_weight, temperature)
-        return disagreement
+            return self._anoco_score_torch(query, exclude, positions, neighbor_count, query_weight, temperature)
+        return self._anoco_score_numpy(query, exclude, positions, neighbor_count, query_weight, temperature)
 
     def fit_anoco_calibration(self, neighbor_count=16, query_weight=1.0, temperature=0.07, calibration_patches=1024):
         sample_count = min(len(self.features), max(2, int(calibration_patches)))
         sample_indices = np.linspace(0, len(self.features) - 1, sample_count, dtype=np.int64)
         calibration_positions = None if self.positions is None else self.positions[sample_indices]
-        query = self.features[sample_indices]
-        if self._resolved_backend() == "torch":
-            calibration, disagreement = self._anoco_score_torch(query, sample_indices, calibration_positions, neighbor_count, query_weight, temperature)
-        else:
-            calibration, disagreement = self._anoco_score_numpy(query, sample_indices, calibration_positions, neighbor_count, query_weight, temperature)
+        calibration = self.score_anoco(
+            self.features[sample_indices],
+            neighbor_count=neighbor_count,
+            query_weight=query_weight,
+            temperature=temperature,
+            exclude_indices=sample_indices,
+            positions=calibration_positions,
+        )
         self.anoco_center, self.anoco_scale = self._robust_stats(calibration)
         self.anoco_calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
-        self.anoco_disagreement_center, self.anoco_disagreement_scale = self._robust_stats(disagreement)
         return self
-
-    def calibrated_anoco_disagreement(self, scores):
-        return (np.asarray(scores, dtype=np.float64) - self.anoco_disagreement_center) / self.anoco_disagreement_scale
 
     def calibrated_anoco(self, scores):
         return (np.asarray(scores, dtype=np.float64) - self.anoco_center) / self.anoco_scale

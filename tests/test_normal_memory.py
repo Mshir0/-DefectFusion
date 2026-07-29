@@ -251,30 +251,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertTrue(np.isfinite(memory.anoco_center))
         self.assertGreater(memory.anoco_scale, 0)
         self.assertTrue(np.all(np.isfinite(memory.anoco_calibration_scores)))
-        self.assertTrue(np.isfinite(memory.anoco_disagreement_center))
-        self.assertGreater(memory.anoco_disagreement_scale, 0)
-
-    def test_anoco_disagreement_gate_only_reduces_anoco_weight(self):
-        normal = np.array([[1.0, 0.0], [0.98, 0.2], [0.2, 0.98], [0.0, 1.0]], dtype=np.float32)
-        query = np.array([[0.7, 0.7], [1.0, 0.05]], dtype=np.float32)
-        fusion = DefectFusion(object(), anomaly_method="pca_anoco", anoco_weight=0.25, anoco_disagreement_gate=1.0, anoco_neighbors=3)
-        fusion.subspace.fit(normal)
-        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3)
-        _, _, _, effective_weight = fusion._branch_scores(query, fusion.subspace, fusion.normal_memory)
-        self.assertTrue(np.all(effective_weight >= 0))
-        self.assertTrue(np.all(effective_weight <= 0.25))
-        self.assertTrue(np.any(effective_weight < 0.25))
-
-    def test_zero_anoco_disagreement_gate_preserves_fixed_fusion(self):
-        normal = np.array([[1.0, 0.0], [0.98, 0.2], [0.2, 0.98], [0.0, 1.0]], dtype=np.float32)
-        query = np.array([[0.7, 0.7], [1.0, 0.05]], dtype=np.float32)
-        fusion = DefectFusion(object(), anomaly_method="pca_anoco", anoco_weight=0.25, anoco_neighbors=3)
-        fusion.subspace.fit(normal)
-        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3)
-        fused, pca, anoco, gate = fusion._branch_scores(query, fusion.subspace, fusion.normal_memory)
-        expected = 0.75 * fusion.subspace.calibrated(pca) + 0.25 * fusion.normal_memory.calibrated_anoco(anoco)
-        np.testing.assert_allclose(fused, expected)
-        self.assertIsNone(gate)
 
     def test_fused_weight_endpoints_match_calibrated_components(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
