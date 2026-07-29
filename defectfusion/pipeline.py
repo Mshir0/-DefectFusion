@@ -18,7 +18,7 @@ class NormalTrainingView:
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_weight: float = 0.5, anoco_layer_consensus: bool = False, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=()):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_weight: float = 0.5, anoco_layer_consensus: bool = False, guided_filter_weight: float = 0.0, guided_filter_temperature: float = 0.1, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=()):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -76,6 +76,14 @@ class DefectFusion:
         self.anoco_layer_consensus = bool(anoco_layer_consensus)
         if self.anoco_layer_consensus and (not self.dual_branch or anomaly_method not in {"pca_anoco", "pca_knn_anoco"} or image_fusion_stage != "patch"):
             raise ValueError("anoco_layer_consensus requires dual_branch, a PCA+ANoCo image head, and patch fusion")
+        if not 0 <= guided_filter_weight <= 1:
+            raise ValueError("guided_filter_weight must be in [0, 1]")
+        if guided_filter_temperature <= 0:
+            raise ValueError("guided_filter_temperature must be positive")
+        if guided_filter_weight > 0 and not self.anoco_layer_consensus:
+            raise ValueError("DINO-guided filtering requires anoco_layer_consensus")
+        self.guided_filter_weight = float(guided_filter_weight)
+        self.guided_filter_temperature = float(guided_filter_temperature)
         self.image_layer_memories = []
         if fusion_mode not in {"fixed", "gated"}:
             raise ValueError("fusion_mode must be fixed or gated")
@@ -238,7 +246,31 @@ class DefectFusion:
         method = "pca_knn" if self.anomaly_method == "pca_knn_anoco" else self.anomaly_method
         return self._branch_scores(patches, self.subspace, self.normal_memory, positions, method)
 
-    def _image_score_bundle(self, patches, positions=None, layer_patches=None):
+    @staticmethod
+    def _guided_filter(scores, features, grid, temperature):
+        scores = np.asarray(scores, dtype=np.float64).reshape(grid)
+        features = np.asarray(features, dtype=np.float32).reshape(grid + (-1,))
+        features /= np.maximum(np.linalg.norm(features, axis=2, keepdims=True), 1e-12)
+        numerator = scores.copy()
+        denominator = np.ones(grid, dtype=np.float64)
+        rows, columns = grid
+        for row_offset in (-1, 0, 1):
+            for column_offset in (-1, 0, 1):
+                if row_offset == column_offset == 0:
+                    continue
+                source_rows = slice(max(0, -row_offset), min(rows, rows - row_offset))
+                source_columns = slice(max(0, -column_offset), min(columns, columns - column_offset))
+                target_rows = slice(max(0, row_offset), min(rows, rows + row_offset))
+                target_columns = slice(max(0, column_offset), min(columns, columns + column_offset))
+                source_features = features[source_rows, source_columns]
+                target_features = features[target_rows, target_columns]
+                similarity = np.sum(target_features * source_features, axis=2)
+                weights = np.exp(np.clip((similarity - 1.0) / temperature, -60.0, 0.0))
+                numerator[target_rows, target_columns] += weights * scores[source_rows, source_columns]
+                denominator[target_rows, target_columns] += weights
+        return (numerator / denominator).ravel()
+
+    def _image_score_bundle(self, patches, positions=None, layer_patches=None, grid=None):
         subspace = self.image_subspace if self.dual_branch else self.subspace
         memory = self.image_memory if self.dual_branch else self.normal_memory
         method = "pca_anoco" if self.anomaly_method == "pca_knn_anoco" else self.anomaly_method
@@ -247,12 +279,18 @@ class DefectFusion:
                 raise ValueError("Per-layer image features do not match fitted ANoCo memories")
             pca_scores = subspace.score(patches)
             layer_evidence = []
+            if self.guided_filter_weight > 0 and grid is None:
+                raise ValueError("DINO-guided filtering requires the patch grid")
             for features, layer_memory in zip(layer_patches, self.image_layer_memories):
                 scores = layer_memory.score_anoco(
                     features, self.anoco_neighbors, self.anoco_query_weight,
                     self.anoco_temperature, positions=positions,
                 )
-                layer_evidence.append(layer_memory.calibrated_anoco(scores))
+                evidence = layer_memory.calibrated_anoco(scores)
+                if self.guided_filter_weight > 0:
+                    filtered = self._guided_filter(evidence, features, grid, self.guided_filter_temperature)
+                    evidence = (1.0 - self.guided_filter_weight) * evidence + self.guided_filter_weight * filtered
+                layer_evidence.append(evidence)
             consensus = np.median(np.stack(layer_evidence, axis=0), axis=0)
             pca_calibrated = subspace.calibrated(pca_scores)
             fused = (1.0 - self.anoco_weight) * pca_calibrated + self.anoco_weight * consensus
@@ -360,7 +398,7 @@ class DefectFusion:
         positions = self._patch_positions(grid)
         anomaly_scores, pca_scores, knn_scores, knn_gate = self._anomaly_scores(patches, positions)
         if self.dual_branch:
-            image_score_bundle = self._image_score_bundle(image_patches, positions, image_layers)
+            image_score_bundle = self._image_score_bundle(image_patches, positions, image_layers, grid)
         else:
             image_score_bundle = (anomaly_scores, pca_scores, knn_scores, knn_gate)
         anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
@@ -468,6 +506,8 @@ class DefectFusion:
             "anoco_temperature": self.anoco_temperature,
             "anoco_weight": self.anoco_weight,
             "anoco_layer_consensus": self.anoco_layer_consensus,
+            "guided_filter_weight": self.guided_filter_weight,
+            "guided_filter_temperature": self.guided_filter_temperature,
             "memory_max_patches": self.normal_memory.max_patches,
             "knn_chunk_size": self.normal_memory.query_chunk_size,
             "knn_backend": self.normal_memory.backend,
@@ -527,7 +567,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_weight=state.get("anoco_weight", 0.5), anoco_layer_consensus=state.get("anoco_layer_consensus", False), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_weight=state.get("anoco_weight", 0.5), anoco_layer_consensus=state.get("anoco_layer_consensus", False), guided_filter_weight=state.get("guided_filter_weight", 0.0), guided_filter_temperature=state.get("guided_filter_temperature", 0.1), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         if obj.dual_branch and "image_subspace" in state:
             obj.image_subspace = NormalSubspace.from_dict(state["image_subspace"])

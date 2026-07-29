@@ -337,6 +337,49 @@ class NormalPatchMemoryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             fusion._image_score_bundle(np.eye(3, dtype=np.float32), layer_patches=np.empty((0, 3, 3)))
 
+    def test_dino_guided_filter_respects_feature_boundary(self):
+        scores = np.array([0.0, 1.0, 10.0])
+        same = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
+        boundary = np.array([[1.0, 0.0], [1.0, 0.0], [-1.0, 0.0]])
+        same_filtered = DefectFusion._guided_filter(scores, same, (1, 3), 0.1)
+        boundary_filtered = DefectFusion._guided_filter(scores, boundary, (1, 3), 0.1)
+        self.assertLess(boundary_filtered[1], same_filtered[1])
+        self.assertAlmostEqual(boundary_filtered[0], 0.5, places=5)
+
+    def test_dino_guided_filter_blends_before_layer_consensus(self):
+        normal = np.array([
+            [1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0],
+            [0.1, 0.9, 0.0], [0.0, 0.0, 1.0], [0.1, 0.0, 0.9],
+        ], dtype=np.float32)
+        query = normal[:4]
+        layers = np.stack([query, query[:, [1, 2, 0]]])
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            anoco_layer_consensus=True, guided_filter_weight=0.25,
+            guided_filter_temperature=0.1, anoco_neighbors=2, anoco_weight=0.25,
+        )
+        fusion.image_subspace.fit(normal)
+        for features in (normal, normal[:, [1, 2, 0]]):
+            memory = NormalPatchMemory(backend="numpy").fit(features)
+            memory.fit_anoco_calibration(neighbor_count=2)
+            fusion.image_layer_memories.append(memory)
+        fused, pca_scores, consensus, _ = fusion._image_score_bundle(
+            query, layer_patches=layers, grid=(2, 2),
+        )
+        expected_layers = []
+        for features, memory in zip(layers, fusion.image_layer_memories):
+            evidence = memory.calibrated_anoco(memory.score_anoco(features, neighbor_count=2))
+            filtered = fusion._guided_filter(evidence, features, (2, 2), 0.1)
+            expected_layers.append(0.75 * evidence + 0.25 * filtered)
+        expected_consensus = np.median(np.stack(expected_layers), axis=0)
+        expected = 0.75 * fusion.image_subspace.calibrated(pca_scores) + 0.25 * expected_consensus
+        np.testing.assert_allclose(consensus, expected_consensus)
+        np.testing.assert_allclose(fused, expected)
+
+    def test_dino_guided_filter_requires_layer_consensus(self):
+        with self.assertRaisesRegex(ValueError, "requires anoco_layer_consensus"):
+            DefectFusion(object(), guided_filter_weight=0.25)
+
     def test_hybrid_head_requires_dual_branch(self):
         with self.assertRaisesRegex(ValueError, "requires dual_branch"):
             DefectFusion(object(), anomaly_method="pca_knn_anoco")
@@ -394,7 +437,8 @@ class NormalPatchMemoryTest(unittest.TestCase):
         normal = np.eye(5, dtype=np.float32)
         fusion = DefectFusion(
             object(), anomaly_method="pca_knn_anoco", dual_branch=True,
-            anoco_layer_consensus=True, anoco_neighbors=2,
+            anoco_layer_consensus=True, guided_filter_weight=0.25,
+            guided_filter_temperature=0.2, anoco_neighbors=2,
         )
         fusion.subspace.fit(normal)
         fusion.image_subspace.fit(normal)
@@ -409,6 +453,8 @@ class NormalPatchMemoryTest(unittest.TestCase):
             fusion.save(state_path)
             loaded = DefectFusion.load(state_path, object())
             self.assertTrue(loaded.anoco_layer_consensus)
+            self.assertEqual(loaded.guided_filter_weight, 0.25)
+            self.assertEqual(loaded.guided_filter_temperature, 0.2)
             self.assertEqual(len(loaded.image_layer_memories), 2)
             for expected, actual in zip(fusion.image_layer_memories, loaded.image_layer_memories):
                 np.testing.assert_allclose(actual.features, expected.features, atol=5e-4)
