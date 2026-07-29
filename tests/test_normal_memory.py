@@ -4,12 +4,44 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from defectfusion.model import NormalPatchMemory, NormalSubspace, PrototypeBank
-from defectfusion.pipeline import DefectFusion
+from defectfusion.pipeline import DefectFusion, NormalTrainingView
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
+    def test_aligned_training_positions_restore_rotation_coordinates(self):
+        fusion = DefectFusion(object(), knn_spatial_radius=0.1, align_training_positions=True)
+        # A 90-degree counter-clockwise augmentation maps its top-center patch back to right-center.
+        matrix = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+        positions, valid = fusion._training_positions((2, 2), matrix)
+        self.assertTrue(valid.all())
+        np.testing.assert_allclose(positions[0], [0.25, 0.75])
+
+    def test_aligned_training_positions_drop_rotated_padding(self):
+        fusion = DefectFusion(object(), knn_spatial_radius=0.1, align_training_positions=True)
+        radians = np.deg2rad(45)
+        cosine, sine = np.cos(radians), np.sin(radians)
+        matrix = np.array([[cosine, sine, 0.0], [-sine, cosine, 0.0], [0.0, 0.0, 1.0]])
+        matrix[:2, 2] = 0.5 - matrix[:2, :2] @ np.array([0.5, 0.5])
+        _, valid = fusion._training_positions((4, 4), matrix)
+        self.assertLess(valid.sum(), len(valid))
+
+    def test_aligned_positions_are_used_by_spatial_memory(self):
+        class Extractor:
+            resize_mode = "direct"
+            device = None
+
+            def extract(self, image):
+                return np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0]]), (2, 2)
+
+        rotation = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+        image = Image.new("RGB", (2, 2))
+        fusion = DefectFusion(Extractor(), anomaly_method="knn", knn_spatial_radius=0.1, align_training_positions=True)
+        fusion.fit_normal([NormalTrainingView(image, rotation)])
+        np.testing.assert_allclose(fusion.normal_memory.positions[0], [0.25, 0.75])
+
     def test_tta_map_inverse_restores_flip_coordinates(self):
         anomaly_map = np.array([[1.0, 2.0], [3.0, 4.0]])
         np.testing.assert_array_equal(
@@ -34,7 +66,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         fusion._predict_single = lambda image, image_name: results.pop(0)
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / "image.png"
-            from PIL import Image
             Image.new("RGB", (2, 2)).save(image_path)
             result = fusion.predict(image_path)
         self.assertEqual(result["anomaly_score"], 3.0)

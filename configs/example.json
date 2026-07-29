@@ -17,6 +17,7 @@
   "memory_max_patches": 50000,
   "knn_chunk_size": 256,
   "knn_spatial_radius": -1,
+  "align_training_positions": false,
   "dual_branch": false,
   "test_augmentations": [],
   "knn_backend": "auto",

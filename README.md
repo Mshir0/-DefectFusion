@@ -168,6 +168,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Normal patch memory | `--memory-max-patches` | `50000` | `10000, 25000, 50000, 0` | kNN accuracy, memory, runtime |
 | kNN query chunk | `--knn-chunk-size` | `256` | `64, 128, 256` | Runtime/memory only |
 | kNN spatial radius | `--knn-spatial-radius` | `-1` | `-1, 0.05, 0.10, 0.20` | Local structural matching |
+| Align train positions | `--align-training-positions` | off | on/off | Canonical coordinates for rotate/flip normal views |
 | kNN backend | `--knn-backend` | `auto` | `auto, torch, numpy` | Runtime only |
 | kNN CUDA dtype | `--knn-dtype` | `float32` | `float32, float16` | Speed, memory, small numeric differences |
 | Feature layers | `--feature-layers` | `-1,-3,-5,-7` | `-1`, `-1,-2,-3,-4`, `-1,-3,-5,-7` | All metrics |

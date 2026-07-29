@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -9,8 +10,15 @@ from PIL import Image
 from .model import NormalPatchMemory, NormalSubspace, PrototypeBank
 
 
+@dataclass(frozen=True)
+class NormalTrainingView:
+    """A normal training image with an augmented-to-canonical position map."""
+    image: Image.Image
+    inverse_position_matrix: np.ndarray | None = None
+
+
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=()):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=()):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -19,6 +27,11 @@ class DefectFusion:
         self.alpha = alpha
         self.subspace = NormalSubspace(residual_metric=pca_residual_metric)
         self.normal_memory = NormalPatchMemory(memory_max_patches, knn_chunk_size, backend=knn_backend, device=knn_device, dtype=knn_dtype, spatial_radius=knn_spatial_radius)
+        self.align_training_positions = bool(align_training_positions)
+        if self.align_training_positions and knn_spatial_radius < 0:
+            raise ValueError("align_training_positions requires a non-negative knn_spatial_radius")
+        if self.align_training_positions and getattr(extractor, "resize_mode", "direct") != "direct":
+            raise ValueError("align_training_positions currently requires resize_mode=direct")
         self.prototype_bank = PrototypeBank()
         self.prototype_bank.unknown_threshold = unknown_threshold
         if not 0 < top_k_ratio <= 1:
@@ -65,27 +78,41 @@ class DefectFusion:
 
     def fit_normal(self, image_paths):
         patch_batches, image_patch_batches, position_batches = [], [], []
+        memory_patch_batches, image_memory_patch_batches, memory_position_batches = [], [], []
         for path in image_paths:
-            image = path.copy() if isinstance(path, Image.Image) else Image.open(path)
+            if isinstance(path, NormalTrainingView):
+                image = path.image.copy()
+                inverse_position_matrix = path.inverse_position_matrix
+            else:
+                image = path.copy() if isinstance(path, Image.Image) else Image.open(path)
+                inverse_position_matrix = None
             if self.dual_branch:
                 patches, image_patches, grid = self.extractor.extract_dual(image)
                 image_patch_batches.append(image_patches)
             else:
                 patches, grid = self.extractor.extract(image)
             patch_batches.append(patches)
-            position_batches.append(self._patch_positions(grid))
+            positions, valid = self._training_positions(grid, inverse_position_matrix)
+            position_batches.append(positions)
+            memory_patch_batches.append(patches[valid])
+            if self.dual_branch:
+                image_memory_patch_batches.append(image_patches[valid])
+            memory_position_batches.append(positions)
             self.reference_shape = grid
         if not patch_batches:
             raise ValueError("No normal images were provided")
         features = np.concatenate(patch_batches, axis=0)
         self.subspace.fit(features)
         if self.anomaly_method in {"knn", "pca_knn"}:
-            self.normal_memory.fit(features, np.concatenate(position_batches, axis=0))
+            memory_features = np.concatenate(memory_patch_batches, axis=0) if self.align_training_positions else features
+            memory_positions = np.concatenate(memory_position_batches if self.align_training_positions else position_batches, axis=0)
+            self.normal_memory.fit(memory_features, memory_positions)
         if self.dual_branch:
             image_features = np.concatenate(image_patch_batches, axis=0)
             self.image_subspace.fit(image_features)
             if self.anomaly_method in {"knn", "pca_knn"}:
-                self.image_memory.fit(image_features, np.concatenate(position_batches, axis=0))
+                image_memory_features = np.concatenate(image_memory_patch_batches, axis=0) if self.align_training_positions else image_features
+                self.image_memory.fit(image_memory_features, memory_positions)
         self.reference_grid = features.shape[1]
         return self
 
@@ -105,6 +132,21 @@ class DefectFusion:
     def _patch_positions(grid):
         rows, columns = np.indices(grid, dtype=np.float32)
         return np.stack([(rows.ravel() + 0.5) / grid[0], (columns.ravel() + 0.5) / grid[1]], axis=1)
+
+    def _training_positions(self, grid, inverse_position_matrix):
+        positions = self._patch_positions(grid)
+        if not self.align_training_positions or inverse_position_matrix is None:
+            return positions, np.ones(len(positions), dtype=bool)
+        matrix = np.asarray(inverse_position_matrix, dtype=np.float64)
+        if matrix.shape != (3, 3):
+            raise ValueError("inverse_position_matrix must have shape (3, 3)")
+        homogeneous = np.concatenate([positions, np.ones((len(positions), 1))], axis=1)
+        canonical = homogeneous @ matrix.T
+        canonical = canonical[:, :2] / np.maximum(canonical[:, 2:], 1e-12)
+        valid = np.all((canonical >= 0.0) & (canonical <= 1.0), axis=1)
+        if not np.any(valid):
+            raise ValueError("Training augmentation has no valid canonical patch positions")
+        return canonical[valid].astype(np.float32), valid
 
     def _aggregate_image_score(self, scores):
         scores = np.asarray(scores, dtype=np.float64)
@@ -332,6 +374,7 @@ class DefectFusion:
             "knn_backend": self.normal_memory.backend,
             "knn_dtype": self.normal_memory.dtype,
             "knn_spatial_radius": self.normal_memory.spatial_radius,
+            "align_training_positions": self.align_training_positions,
             "dual_branch": self.dual_branch,
             "fusion_mode": self.fusion_mode,
             "gate_temperature": self.gate_temperature,
@@ -366,7 +409,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         if obj.dual_branch and "image_subspace" in state:
             obj.image_subspace = NormalSubspace.from_dict(state["image_subspace"])

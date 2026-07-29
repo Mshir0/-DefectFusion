@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import random
 from pathlib import Path
+
+import numpy as np
 from PIL import Image
 
 from .features import DinoFeatureExtractor
-from .pipeline import DefectFusion
+from .pipeline import DefectFusion, NormalTrainingView
 from .mvtec import evaluate_mvtec
 
 
@@ -65,13 +68,25 @@ def _augment_normal_images(paths, count, augmentations, seed):
     result = []
     for path in paths:
         image = Image.open(path).convert("RGB")
-        result.append(image)
+        result.append(NormalTrainingView(image))
         for _ in range(count):
             augmented = image.copy()
+            inverse_position_matrix = np.eye(3, dtype=np.float64)
             for name in augmentations:
-                if name == "rotate": augmented = TF.rotate(augmented, rng.uniform(0, 345))
-                elif name == "hflip" and rng.random() < 0.5: augmented = TF.hflip(augmented)
-                elif name == "vflip" and rng.random() < 0.5: augmented = TF.vflip(augmented)
+                if name == "rotate":
+                    angle = rng.uniform(0, 345)
+                    augmented = TF.rotate(augmented, angle)
+                    radians = math.radians(angle)
+                    cosine, sine = math.cos(radians), math.sin(radians)
+                    inverse_rotation = np.array([[cosine, sine, 0.0], [-sine, cosine, 0.0], [0.0, 0.0, 1.0]])
+                    inverse_rotation[:2, 2] = 0.5 - inverse_rotation[:2, :2] @ np.array([0.5, 0.5])
+                    inverse_position_matrix = inverse_position_matrix @ inverse_rotation
+                elif name == "hflip" and rng.random() < 0.5:
+                    augmented = TF.hflip(augmented)
+                    inverse_position_matrix = inverse_position_matrix @ np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 1.0], [0.0, 0.0, 1.0]])
+                elif name == "vflip" and rng.random() < 0.5:
+                    augmented = TF.vflip(augmented)
+                    inverse_position_matrix = inverse_position_matrix @ np.array([[-1.0, 0.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
                 elif name == "color_jitter":
                     augmented = TF.adjust_brightness(augmented, rng.uniform(0.8, 1.2))
                     augmented = TF.adjust_contrast(augmented, rng.uniform(0.8, 1.2))
@@ -80,9 +95,10 @@ def _augment_normal_images(paths, count, augmentations, seed):
                 elif name == "affine":
                     translate = [round(rng.uniform(-0.15, 0.15) * image.width), round(rng.uniform(-0.15, 0.15) * image.height)]
                     augmented = TF.affine(augmented, angle=0, translate=translate, scale=1.0, shear=rng.uniform(-10, 10))
+                    inverse_position_matrix = None
                 elif name not in {"hflip", "vflip"}:
                     raise ValueError(f"Unknown normal augmentation: {name}")
-            result.append(augmented)
+            result.append(NormalTrainingView(augmented, inverse_position_matrix))
     return result
 
 
@@ -109,6 +125,7 @@ def main(argv=None):
     f.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None); f.add_argument("--gate-temperature", type=float, default=None)
     f.add_argument("--memory-max-patches", type=int, default=None); f.add_argument("--knn-chunk-size", type=int, default=None)
     f.add_argument("--knn-spatial-radius", type=float, default=None)
+    f.add_argument("--align-training-positions", action="store_true", help="map augmented normal patches back to reference coordinates before spatial kNN")
     f.add_argument("--dual-branch", action="store_true", help="use L2 features for image score and raw features for pixel map")
     f.add_argument("--test-augmentations", nargs="*", choices=["hflip", "vflip"], default=None)
     f.add_argument("--knn-backend", choices=["auto", "numpy", "torch"], default=None); f.add_argument("--knn-dtype", choices=["float32", "float16"], default=None)
@@ -152,6 +169,7 @@ def main(argv=None):
     e.add_argument("--memory-max-patches", type=int, default=None, help="maximum normal patches retained for kNN; 0 keeps all")
     e.add_argument("--knn-chunk-size", type=int, default=None, help="query patches per kNN matrix chunk")
     e.add_argument("--knn-spatial-radius", type=float, default=None, help="normalized local kNN radius; -1 searches globally")
+    e.add_argument("--align-training-positions", action="store_true", help="map rotate/flip normal augmentation positions back to canonical coordinates")
     e.add_argument("--dual-branch", action="store_true", help="use L2 features for image score and raw features for pixel map")
     e.add_argument("--test-augmentations", nargs="*", choices=["hflip", "vflip"], default=None, help="flip TTA views; identity is always included")
     e.add_argument("--knn-backend", choices=["auto", "numpy", "torch"], default=None, help="auto uses Torch when the extractor is on CUDA")
@@ -180,6 +198,7 @@ def main(argv=None):
     memory_max_patches = getattr(a, "memory_max_patches", None); memory_max_patches = memory_max_patches if memory_max_patches is not None else cfg.get("memory_max_patches", 50000)
     knn_chunk_size = getattr(a, "knn_chunk_size", None); knn_chunk_size = knn_chunk_size if knn_chunk_size is not None else cfg.get("knn_chunk_size", 256)
     knn_spatial_radius = getattr(a, "knn_spatial_radius", None); knn_spatial_radius = knn_spatial_radius if knn_spatial_radius is not None else cfg.get("knn_spatial_radius", -1.0)
+    align_training_positions = bool(getattr(a, "align_training_positions", False) or cfg.get("align_training_positions", False))
     dual_branch = bool(getattr(a, "dual_branch", False) or cfg.get("dual_branch", False))
     test_augmentations = getattr(a, "test_augmentations", None); test_augmentations = test_augmentations if test_augmentations is not None else cfg.get("test_augmentations", [])
     knn_backend = getattr(a, "knn_backend", None) or cfg.get("knn_backend", "auto")
@@ -191,6 +210,8 @@ def main(argv=None):
     if memory_max_patches < 0: p.error("--memory-max-patches must be non-negative")
     if knn_chunk_size <= 0: p.error("--knn-chunk-size must be positive")
     if knn_spatial_radius != -1 and not 0 <= knn_spatial_radius <= 1: p.error("--knn-spatial-radius must be -1 or in [0, 1]")
+    if align_training_positions and knn_spatial_radius < 0: p.error("--align-training-positions requires --knn-spatial-radius in [0, 1]")
+    if align_training_positions and resize_mode != "direct": p.error("--align-training-positions currently requires --resize-mode direct")
     try:
         feature_layers, feature_layer_preset = _feature_layers(a, cfg)
     except ValueError as exc:
@@ -212,7 +233,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -231,6 +252,8 @@ def main(argv=None):
         if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
         if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
         normal_augmentations = a.normal_augmentations or cfg.get("normal_augmentations", ["rotate"])
+        if align_training_positions and "affine" in normal_augmentations:
+            p.error("--align-training-positions does not yet support affine normal augmentation")
         no_augment_categories = a.no_augment_categories or cfg.get("no_augment_categories", ["transistor"])
         categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
         all_metrics = []
@@ -247,7 +270,7 @@ def main(argv=None):
             if category.name in no_augment_categories: augment_count = 0
             normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
             print(f"[normal-augment] {category.name}: {len(normal_training_images)} views", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category.name}: backend={fusion.normal_memory.resolved_backend} "
@@ -304,6 +327,7 @@ def main(argv=None):
             metrics["knn_backend"] = fusion.normal_memory.resolved_backend if anomaly_method != "pca" else "none"
             metrics["knn_dtype"] = knn_dtype if anomaly_method != "pca" else "none"
             metrics["knn_spatial_radius"] = knn_spatial_radius if anomaly_method != "pca" else -1
+            metrics["align_training_positions"] = align_training_positions
             metrics["dual_branch"] = dual_branch
             metrics["test_augmentations"] = list(test_augmentations)
             metrics["map_postprocess"] = map_postprocess
