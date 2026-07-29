@@ -122,7 +122,7 @@ def main(argv=None):
     f.add_argument("--image-spatial-weight", type=float, default=None)
     f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch", "rbf_svm"], default=None)
     f.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco"], default=None); f.add_argument("--knn-weight", type=float, default=None)
-    f.add_argument("--anoco-neighbors", type=int, default=None); f.add_argument("--anoco-query-weight", type=float, default=None); f.add_argument("--anoco-temperature", type=float, default=None); f.add_argument("--anoco-weight", type=float, default=None)
+    f.add_argument("--anoco-neighbors", type=int, default=None); f.add_argument("--anoco-query-weight", type=float, default=None); f.add_argument("--anoco-temperature", type=float, default=None); f.add_argument("--anoco-weight", type=float, default=None); f.add_argument("--anoco-layer-consensus", action="store_true")
     f.add_argument("--pca-residual-metric", choices=["squared_l2", "mahalanobis"], default=None)
     f.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None); f.add_argument("--gate-temperature", type=float, default=None)
     f.add_argument("--memory-max-patches", type=int, default=None); f.add_argument("--knn-chunk-size", type=int, default=None)
@@ -170,6 +170,7 @@ def main(argv=None):
     e.add_argument("--anoco-query-weight", type=float, default=None, help="query fidelity weight in closed-form manifold pull")
     e.add_argument("--anoco-temperature", type=float, default=None, help="normal-neighbor softmax temperature")
     e.add_argument("--anoco-weight", type=float, default=None, help="ANoCo contribution in calibrated pca_anoco fusion")
+    e.add_argument("--anoco-layer-consensus", action="store_true", help="replace aggregate-layer ANoCo with the median calibrated drift across selected layers")
     e.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None, help="fixed weight or normal-tail-calibrated patch gate")
     e.add_argument("--gate-temperature", type=float, default=None, help="soft gate temperature; lower values select one expert more strongly")
     e.add_argument("--memory-max-patches", type=int, default=None, help="maximum normal patches retained for kNN; 0 keeps all")
@@ -203,6 +204,7 @@ def main(argv=None):
     anoco_query_weight = getattr(a, "anoco_query_weight", None); anoco_query_weight = anoco_query_weight if anoco_query_weight is not None else cfg.get("anoco_query_weight", 1.0)
     anoco_temperature = getattr(a, "anoco_temperature", None); anoco_temperature = anoco_temperature if anoco_temperature is not None else cfg.get("anoco_temperature", 0.07)
     anoco_weight = getattr(a, "anoco_weight", None); anoco_weight = anoco_weight if anoco_weight is not None else cfg.get("anoco_weight", 0.5)
+    anoco_layer_consensus = bool(getattr(a, "anoco_layer_consensus", False) or cfg.get("anoco_layer_consensus", False))
     fusion_mode = getattr(a, "fusion_mode", None) or cfg.get("fusion_mode", "fixed")
     gate_temperature = getattr(a, "gate_temperature", None); gate_temperature = gate_temperature if gate_temperature is not None else cfg.get("gate_temperature", 1.0)
     memory_max_patches = getattr(a, "memory_max_patches", None); memory_max_patches = memory_max_patches if memory_max_patches is not None else cfg.get("memory_max_patches", 50000)
@@ -211,6 +213,7 @@ def main(argv=None):
     align_training_positions = bool(getattr(a, "align_training_positions", False) or cfg.get("align_training_positions", False))
     dual_branch = bool(getattr(a, "dual_branch", False) or cfg.get("dual_branch", False))
     if anomaly_method == "pca_knn_anoco" and not dual_branch: p.error("--anomaly-method pca_knn_anoco requires --dual-branch")
+    if anoco_layer_consensus and (not dual_branch or anomaly_method not in {"pca_anoco", "pca_knn_anoco"} or image_fusion_stage != "patch"): p.error("--anoco-layer-consensus requires --dual-branch, a PCA+ANoCo method, and --image-fusion-stage patch")
     test_augmentations = getattr(a, "test_augmentations", None); test_augmentations = test_augmentations if test_augmentations is not None else cfg.get("test_augmentations", [])
     knn_backend = getattr(a, "knn_backend", None) or cfg.get("knn_backend", "auto")
     knn_dtype = getattr(a, "knn_dtype", None) or cfg.get("knn_dtype", "float32")
@@ -248,7 +251,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -288,7 +291,7 @@ def main(argv=None):
             if category.name in no_augment_categories: augment_count = 0
             normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
             print(f"[normal-augment] {category.name}: {len(normal_training_images)} views", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category.name}: backend={fusion.normal_memory.resolved_backend} "
@@ -342,6 +345,7 @@ def main(argv=None):
             metrics["anoco_query_weight"] = anoco_query_weight if anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"} else 0
             metrics["anoco_temperature"] = anoco_temperature if anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"} else 0
             metrics["anoco_weight"] = anoco_weight if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else 0
+            metrics["anoco_layer_consensus"] = anoco_layer_consensus if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else False
             metrics["fusion_mode"] = fusion_mode if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} else "none"
             metrics["gate_temperature"] = gate_temperature if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} and fusion_mode == "gated" else 0
             metrics["memory_max_patches"] = memory_max_patches if anomaly_method != "pca" else 0

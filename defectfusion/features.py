@@ -61,13 +61,14 @@ class DinoFeatureExtractor:
             do_center_crop=False,
         ).to(self.device)
 
-    def _patch_tokens(self, inputs, layer_normalization=None, output=None):
+    def _patch_tokens(self, inputs, layer_normalization=None, output=None, feature_layers=None):
         out = self.model(**inputs, output_hidden_states=True) if output is None else output
         n_register = int(getattr(self.model.config, "num_register_tokens", 0) or 0)
+        layers = self.feature_layers if feature_layers is None else tuple(feature_layers)
         try:
-            selected = [out.hidden_states[index][:, 1 + n_register :, :] for index in self.feature_layers]
+            selected = [out.hidden_states[index][:, 1 + n_register :, :] for index in layers]
         except IndexError as exc:
-            raise ValueError(f"Invalid feature layer in {self.feature_layers}; model returned {len(out.hidden_states)} states") from exc
+            raise ValueError(f"Invalid feature layer in {layers}; model returned {len(out.hidden_states)} states") from exc
         normalization = self.layer_normalization if layer_normalization is None else layer_normalization
         if normalization == "l2":
             selected = [F.normalize(tokens.float(), p=2, dim=-1) for tokens in selected]
@@ -144,3 +145,30 @@ class DinoFeatureExtractor:
             raw = self._debias(raw)
             normalized = self._debias(normalized)
         return raw[0].float().cpu().numpy(), normalized[0].float().cpu().numpy(), grid
+
+    @torch.inference_mode()
+    def extract_dual_layers(self, image: Image.Image):
+        """Return dual aggregate features plus individual L2-normalized layers."""
+        image = image.convert("RGB")
+        inputs = self._prepare(image)
+        output = self.model(**inputs, output_hidden_states=True)
+        raw, grid = self._patch_tokens(inputs, layer_normalization="none", output=output)
+        normalized, normalized_grid = self._patch_tokens(inputs, layer_normalization="l2", output=output)
+        layers = []
+        for index in self.feature_layers:
+            layer, layer_grid = self._patch_tokens(
+                inputs, layer_normalization="l2", output=output, feature_layers=(index,),
+            )
+            if layer_grid != grid:
+                raise ValueError(f"Per-layer feature grid differs: aggregate={grid}, layer={layer_grid}")
+            layers.append(layer)
+        if normalized_grid != grid:
+            raise ValueError(f"Dual feature grids differ: raw={grid}, l2={normalized_grid}")
+        if self.debias:
+            raw = self._debias(raw)
+            normalized = self._debias(normalized)
+            layers = [self._debias(layer) for layer in layers]
+        return (
+            raw[0].float().cpu().numpy(), normalized[0].float().cpu().numpy(),
+            np.stack([layer[0].float().cpu().numpy() for layer in layers], axis=0), grid,
+        )

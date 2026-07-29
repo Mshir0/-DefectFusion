@@ -299,6 +299,44 @@ class NormalPatchMemoryTest(unittest.TestCase):
         expected_image = 0.75 * fusion.image_subspace.calibrated(image_pca) + 0.25 * fusion.image_memory.calibrated_anoco(image_anoco)
         np.testing.assert_allclose(image_fused, expected_image)
 
+    def test_anoco_layer_consensus_uses_median_calibrated_drift(self):
+        normal = np.array([
+            [1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0],
+            [0.1, 0.9, 0.0], [0.0, 0.0, 1.0], [0.1, 0.0, 0.9],
+        ], dtype=np.float32)
+        query = np.array([[0.8, 0.2, 0.1], [0.1, 0.7, 0.3]], dtype=np.float32)
+        layer_queries = np.stack([query, query[:, [1, 2, 0]]], axis=0)
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            anoco_layer_consensus=True, anoco_neighbors=2, anoco_weight=0.25,
+        )
+        fusion.image_subspace.fit(normal)
+        layer_normal = [normal, normal[:, [1, 2, 0]]]
+        for features in layer_normal:
+            memory = NormalPatchMemory(backend="numpy").fit(features)
+            memory.fit_anoco_calibration(neighbor_count=2)
+            fusion.image_layer_memories.append(memory)
+        fused, pca_scores, consensus, gate = fusion._image_score_bundle(query, layer_patches=layer_queries)
+        expected_layers = []
+        for features, memory in zip(layer_queries, fusion.image_layer_memories):
+            scores = memory.score_anoco(features, neighbor_count=2)
+            expected_layers.append(memory.calibrated_anoco(scores))
+        expected_consensus = np.median(np.stack(expected_layers), axis=0)
+        expected = 0.75 * fusion.image_subspace.calibrated(pca_scores) + 0.25 * expected_consensus
+        np.testing.assert_allclose(consensus, expected_consensus)
+        np.testing.assert_allclose(fused, expected)
+        self.assertIsNone(gate)
+
+    def test_anoco_layer_consensus_requires_matching_layers(self):
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            anoco_layer_consensus=True,
+        )
+        fusion.image_subspace.fit(np.eye(3, dtype=np.float32))
+        fusion.image_layer_memories = [NormalPatchMemory(backend="numpy").fit(np.eye(3, dtype=np.float32))]
+        with self.assertRaises(ValueError):
+            fusion._image_score_bundle(np.eye(3, dtype=np.float32), layer_patches=np.empty((0, 3, 3)))
+
     def test_hybrid_head_requires_dual_branch(self):
         with self.assertRaisesRegex(ValueError, "requires dual_branch"):
             DefectFusion(object(), anomaly_method="pca_knn_anoco")
@@ -351,6 +389,30 @@ class NormalPatchMemoryTest(unittest.TestCase):
             self.assertEqual(loaded.anoco_neighbors, 3)
             self.assertEqual(loaded.anoco_temperature, 0.2)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
+
+    def test_pipeline_save_load_preserves_anoco_layer_consensus(self):
+        normal = np.eye(5, dtype=np.float32)
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            anoco_layer_consensus=True, anoco_neighbors=2,
+        )
+        fusion.subspace.fit(normal)
+        fusion.image_subspace.fit(normal)
+        fusion.normal_memory.fit(normal)
+        fusion.image_memory.fit(normal).fit_anoco_calibration(neighbor_count=2)
+        for features in (normal, normal[::-1].copy()):
+            memory = NormalPatchMemory(backend="numpy").fit(features)
+            memory.fit_anoco_calibration(neighbor_count=2)
+            fusion.image_layer_memories.append(memory)
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "model.json"
+            fusion.save(state_path)
+            loaded = DefectFusion.load(state_path, object())
+            self.assertTrue(loaded.anoco_layer_consensus)
+            self.assertEqual(len(loaded.image_layer_memories), 2)
+            for expected, actual in zip(fusion.image_layer_memories, loaded.image_layer_memories):
+                np.testing.assert_allclose(actual.features, expected.features, atol=5e-4)
+                np.testing.assert_allclose(actual.anoco_calibration_scores, expected.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
         fusion = DefectFusion(object(), pca_residual_metric="mahalanobis", test_augmentations=["hflip"])
