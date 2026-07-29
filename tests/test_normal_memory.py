@@ -244,6 +244,19 @@ class NormalPatchMemoryTest(unittest.TestCase):
         scores = memory.score_anoco(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32), neighbor_count=4)
         self.assertGreater(scores[1], scores[0])
 
+    def test_view_index_selects_closest_normal_view(self):
+        normal = np.array([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0], [0.1, 0.9]], dtype=np.float32)
+        view_ids = np.array([0, 0, 1, 1], dtype=np.int32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal, view_ids=view_ids)
+        memory.fit_view_index(top_k=1)
+        query = memory._normalize([[1.0, 0.0], [0.8, 0.2]])
+        mask = memory._selected_view_mask(query)
+        np.testing.assert_array_equal(mask, [True, True, False, False])
+
+    def test_view_selection_requires_layer_consensus(self):
+        with self.assertRaisesRegex(ValueError, "requires layer consensus"):
+            DefectFusion(object(), normal_view_top_k=4)
+
     def test_anoco_calibration_is_finite(self):
         features = np.eye(6, dtype=np.float32)
         memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(features)

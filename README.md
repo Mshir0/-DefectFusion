@@ -309,6 +309,12 @@ two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
 unchanged; screen `anoco` on seed 42 before running `pca_anoco` or five seeds.
 
+`--normal-view-top-k K` restricts each per-layer ANoCo query to the K normal
+augmentation views whose mean L2 patch descriptor is most similar to the test
+image. This tests whether excluding poorly aligned rotation views reduces
+matching noise while retaining the 1-shot protocol. `0` disables view
+selection and preserves the validated baseline.
+
 For the dual-head configuration, use `--anomaly-method pca_knn_anoco` together
 with `--dual-branch`. The raw pixel branch uses calibrated PCA+kNN with
 `--knn-weight`, while the L2 image branch uses calibrated PCA+ANoCo with
