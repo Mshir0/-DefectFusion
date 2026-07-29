@@ -252,27 +252,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertGreater(memory.anoco_scale, 0)
         self.assertTrue(np.all(np.isfinite(memory.anoco_calibration_scores)))
 
-    def test_anoco_active_references_at_bank_size_preserves_full_graph(self):
-        normal = np.array([[1.0, 0.0], [0.95, 0.1], [0.7, 0.7], [0.1, 0.95], [0.0, 1.0]], dtype=np.float32)
-        query = np.array([[0.9, 0.2], [0.2, 0.9]], dtype=np.float32)
-        memory = NormalPatchMemory(backend="numpy").fit(normal)
-        expected = memory.score_anoco(query, neighbor_count=3, active_references=0)
-        actual = memory.score_anoco(query, neighbor_count=3, active_references=len(normal))
-        np.testing.assert_allclose(actual, expected)
-
-    def test_anoco_compact_active_graph_scores_are_finite(self):
-        angles = np.linspace(0.0, np.pi, 24, endpoint=False)
-        normal = np.stack([np.cos(angles), np.sin(angles)], axis=1).astype(np.float32)
-        query = np.array([[1.0, 0.1], [0.1, 1.0]], dtype=np.float32)
-        memory = NormalPatchMemory(backend="numpy").fit(normal)
-        scores = memory.score_anoco(query, neighbor_count=4, active_references=8)
-        self.assertTrue(np.all(np.isfinite(scores)))
-
-    def test_anoco_active_references_cannot_be_smaller_than_neighbors(self):
-        memory = NormalPatchMemory(backend="numpy").fit(np.eye(4, dtype=np.float32))
-        with self.assertRaises(ValueError):
-            memory.score_anoco(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), neighbor_count=3, active_references=2)
-
     def test_fused_weight_endpoints_match_calibrated_components(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
@@ -361,7 +340,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             )
 
     def test_pipeline_save_load_preserves_anoco_state(self):
-        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_active_references=8)
+        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2)
         normal = np.eye(5, dtype=np.float32)
         fusion.subspace.fit(normal)
         fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2)
@@ -371,7 +350,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
             loaded = DefectFusion.load(state_path, object())
             self.assertEqual(loaded.anoco_neighbors, 3)
             self.assertEqual(loaded.anoco_temperature, 0.2)
-            self.assertEqual(loaded.anoco_active_references, 8)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
