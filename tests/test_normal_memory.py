@@ -10,6 +10,37 @@ from defectfusion.pipeline import DefectFusion
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
+    def test_tta_map_inverse_restores_flip_coordinates(self):
+        anomaly_map = np.array([[1.0, 2.0], [3.0, 4.0]])
+        np.testing.assert_array_equal(
+            DefectFusion._restore_test_map(np.fliplr(anomaly_map), "hflip"),
+            anomaly_map,
+        )
+        np.testing.assert_array_equal(
+            DefectFusion._restore_test_map(np.flipud(anomaly_map), "vflip"),
+            anomaly_map,
+        )
+
+    def test_tta_rejects_unknown_transforms(self):
+        with self.assertRaises(ValueError):
+            DefectFusion(object(), test_augmentations=["rotate45"])
+
+    def test_tta_averages_scores_and_aligned_maps(self):
+        fusion = DefectFusion(object(), test_augmentations=["hflip"])
+        results = [
+            {"image": "image.png", "anomaly_score": 2.0, "anomaly_map": [[1.0, 2.0], [3.0, 4.0]], "defect_type": "unknown", "defect_type_score": 0.0, "fused_score": 1.0, "pca_anomaly_score": 2.0, "image_spatial_consistency": 0.0},
+            {"image": "image.png", "anomaly_score": 4.0, "anomaly_map": [[6.0, 5.0], [8.0, 7.0]], "defect_type": "unknown", "defect_type_score": 0.0, "fused_score": 2.0, "pca_anomaly_score": 4.0, "image_spatial_consistency": 0.0},
+        ]
+        fusion._predict_single = lambda image, image_name: results.pop(0)
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "image.png"
+            from PIL import Image
+            Image.new("RGB", (2, 2)).save(image_path)
+            result = fusion.predict(image_path)
+        self.assertEqual(result["anomaly_score"], 3.0)
+        np.testing.assert_allclose(result["anomaly_map"], [[3.0, 4.0], [5.0, 6.0]])
+        self.assertEqual(result["tta_view_scores"], [2.0, 4.0])
+
     def test_mahalanobis_residual_emphasizes_low_variance_dimensions(self):
         training = np.array([
             [-4.0, -0.1, 0.0], [-2.0, 0.1, 0.0], [0.0, -0.1, 0.0],
@@ -159,7 +190,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             )
 
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
-        fusion = DefectFusion(object(), pca_residual_metric="mahalanobis")
+        fusion = DefectFusion(object(), pca_residual_metric="mahalanobis", test_augmentations=["hflip"])
         normal = np.array([[0.0, 0.0], [1.0, 0.1], [2.0, -0.1]])
         fusion.subspace.fit(normal)
         with tempfile.TemporaryDirectory() as directory:
@@ -168,6 +199,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             loaded = DefectFusion.load(state_path, object())
             self.assertEqual(loaded.pca_residual_metric, "mahalanobis")
             self.assertEqual(loaded.subspace.residual_metric, "mahalanobis")
+            self.assertEqual(loaded.test_augmentations, ("hflip",))
 
 
 if __name__ == "__main__":

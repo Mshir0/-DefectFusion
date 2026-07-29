@@ -175,6 +175,11 @@ python -m defectfusion.cli evaluate-mvtec \
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
 | Per-layer normalization | `--layer-normalization` | `none` | `none, l2` | Multi-layer feature balance |
 | Dual image/pixel branch | `--dual-branch` | off | on/off | Image vs Pixel trade-off |
+| Test-time augmentation | `--test-augmentations` | none | `hflip vflip` | Image and Pixel metrics, 3x inference |
+
+Flip TTA always includes the identity view. For the first screening run, use
+`--test-augmentations hflip vflip`; image scores are averaged across three
+views and patch maps are inverse-aligned before averaging.
 | Map post-process | `--map-postprocess` | `none` | `none, gaussian, crf` | Pixel AUROC |
 | Gaussian sigma | `--gaussian-sigma` | `1.0` | `0.5, 1.0, 2.0` | Pixel AUROC |
 | Positional debiasing | `--debias` | off | off/on | All metrics |

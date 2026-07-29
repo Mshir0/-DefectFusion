@@ -22,6 +22,7 @@
 - [x] Add training-free normal-tail-calibrated gating for PCA and kNN fusion.
 - [ ] Apply INSID3 positional debiasing only to cross-image defect matching.
 - [x] Add a shrinkage diagonal-Mahalanobis PCA residual ablation.
+- [x] Add flip test-time augmentation with inverse-aligned anomaly-map averaging.
 - [ ] Score each normal reference independently and robustly aggregate scores (deferred until the 2/4-shot extension).
 - [ ] Calibrate uncertainty from agreement across multiple normal references.
 - [x] Evaluate Shrinkage LDA defect typing (removed after negative MVTec ablation).

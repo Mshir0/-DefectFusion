@@ -10,7 +10,7 @@ from .model import NormalPatchMemory, NormalSubspace, PrototypeBank
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=()):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -56,6 +56,10 @@ class DefectFusion:
             raise ValueError("gate_temperature must be positive")
         self.fusion_mode = fusion_mode
         self.gate_temperature = float(gate_temperature)
+        invalid_augmentations = set(test_augmentations) - {"hflip", "vflip"}
+        if invalid_augmentations:
+            raise ValueError(f"Unknown test augmentations: {sorted(invalid_augmentations)}")
+        self.test_augmentations = tuple(dict.fromkeys(test_augmentations))
         self.reference_grid = None
         self.reference_shape = None
 
@@ -224,8 +228,7 @@ class DefectFusion:
         refined = np.asarray(crf.inference(5), dtype=np.float32)[1].reshape(image.height, image.width)
         return np.asarray(Image.fromarray(refined, mode="F").resize(anomaly_map.shape[::-1], Image.Resampling.BILINEAR))
 
-    def predict(self, image_path):
-        image = Image.open(image_path)
+    def _predict_single(self, image, image_name):
         if self.dual_branch:
             patches, image_patches, grid = self.extractor.extract_dual(image)
         else:
@@ -243,7 +246,7 @@ class DefectFusion:
             typing_features = typing_patches if self.type_matching == "bidirectional_patch" else typing_patches.mean(axis=0)
             label, label_score = self.prototype_bank.predict(typing_features)
         result = {
-            "image": str(image_path),
+            "image": str(image_name),
             "grid": list(grid),
             "anomaly_score": fused_score,
             "anomaly_map": anomaly_map,
@@ -262,6 +265,50 @@ class DefectFusion:
             result["knn_gate_mean"] = float(np.mean(knn_gate))
             result["knn_gate_top1p_mean"] = self._aggregate_image_score(knn_gate)
         return result
+
+    @staticmethod
+    def _test_view(image, augmentation):
+        if augmentation == "hflip":
+            return image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if augmentation == "vflip":
+            return image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        return image
+
+    @staticmethod
+    def _restore_test_map(anomaly_map, augmentation):
+        anomaly_map = np.asarray(anomaly_map, dtype=np.float64)
+        if augmentation == "hflip":
+            return np.fliplr(anomaly_map)
+        if augmentation == "vflip":
+            return np.flipud(anomaly_map)
+        return anomaly_map
+
+    def predict(self, image_path):
+        image = Image.open(image_path).convert("RGB")
+        base = self._predict_single(image, image_path)
+        if not self.test_augmentations:
+            base["test_augmentations"] = []
+            base["tta_view_scores"] = [float(base["anomaly_score"])]
+            return base
+
+        views = [("identity", base)]
+        for augmentation in self.test_augmentations:
+            transformed = self._test_view(image, augmentation)
+            views.append((augmentation, self._predict_single(transformed, image_path)))
+        view_scores = [float(result["anomaly_score"]) for _, result in views]
+        maps = [self._restore_test_map(result["anomaly_map"], name) for name, result in views]
+        base["anomaly_map"] = np.mean(maps, axis=0).tolist()
+        averaged_fields = ["anomaly_score", "pca_anomaly_score", "image_spatial_consistency"]
+        if all("knn_anomaly_score" in result for _, result in views):
+            averaged_fields.append("knn_anomaly_score")
+        if all("knn_gate_mean" in result for _, result in views):
+            averaged_fields.extend(["knn_gate_mean", "knn_gate_top1p_mean"])
+        for field in averaged_fields:
+            base[field] = float(np.mean([result[field] for _, result in views]))
+        base["fused_score"] = base["anomaly_score"] * self.alpha + float(base["defect_type_score"]) * (1.0 - self.alpha)
+        base["test_augmentations"] = list(self.test_augmentations)
+        base["tta_view_scores"] = view_scores
+        return base
 
     def save(self, path):
         state = {
@@ -288,6 +335,7 @@ class DefectFusion:
             "dual_branch": self.dual_branch,
             "fusion_mode": self.fusion_mode,
             "gate_temperature": self.gate_temperature,
+            "test_augmentations": list(self.test_augmentations),
             "knn_center": self.normal_memory.center,
             "knn_scale": self.normal_memory.scale,
             "knn_calibration_scores": self.normal_memory.calibration_scores.tolist() if self.normal_memory.calibration_scores is not None else None,
@@ -318,7 +366,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         if obj.dual_branch and "image_subspace" in state:
             obj.image_subspace = NormalSubspace.from_dict(state["image_subspace"])
