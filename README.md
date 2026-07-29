@@ -309,6 +309,14 @@ two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
 unchanged; screen `anoco` on seed 42 before running `pca_anoco` or five seeds.
 
+`--raid-cost-neighbors K` optionally retains the Top-K aggregate-feature
+retrieval costs in the layer-consensus image head. For `K > 1`, the retrieval
+score equally mixes the nearest distance and the mean of the best 75% of the
+Top-K distances, independently calibrated with leave-one-out normal patches.
+It is then averaged with the per-layer ANoCo consensus before the existing
+PCA/normal-evidence fusion. `1` disables this experiment and preserves the
+validated layer-consensus result. Test `8`, `16`, and `32` independently.
+
 For the dual-head configuration, use `--anomaly-method pca_knn_anoco` together
 with `--dual-branch`. The raw pixel branch uses calibrated PCA+kNN with
 `--knn-weight`, while the L2 image branch uses calibrated PCA+ANoCo with

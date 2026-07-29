@@ -337,6 +337,47 @@ class NormalPatchMemoryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             fusion._image_score_bundle(np.eye(3, dtype=np.float32), layer_patches=np.empty((0, 3, 3)))
 
+    def test_raid_cost_uses_nearest_and_trimmed_topk_mean(self):
+        normal = np.array([[1.0, 0.0], [0.8, 0.6], [0.6, 0.8], [0.0, 1.0]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        score = memory.score_raid(np.array([[1.0, 0.0]], dtype=np.float32), neighbor_count=4)
+        # Top-4 distances are 0, 0.2, 0.4, 1.0; trimming 25% leaves a mean of 0.2.
+        np.testing.assert_allclose(score, [0.1], atol=1e-6)
+
+    def test_raid_cost_blends_with_layer_consensus(self):
+        normal = np.array([
+            [1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0],
+            [0.1, 0.9, 0.0], [0.0, 0.0, 1.0], [0.1, 0.0, 0.9],
+        ], dtype=np.float32)
+        query = np.array([[0.8, 0.2, 0.1], [0.1, 0.7, 0.3]], dtype=np.float32)
+        layer_queries = np.stack([query, query[:, [1, 2, 0]]], axis=0)
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            anoco_layer_consensus=True, raid_cost_neighbors=3,
+            anoco_neighbors=2, anoco_weight=0.25,
+        )
+        fusion.image_subspace.fit(normal)
+        fusion.image_memory.fit(normal).fit_raid_calibration(neighbor_count=3)
+        for features in (normal, normal[:, [1, 2, 0]]):
+            memory = NormalPatchMemory(backend="numpy").fit(features)
+            memory.fit_anoco_calibration(neighbor_count=2)
+            fusion.image_layer_memories.append(memory)
+        fused, pca_scores, evidence, _ = fusion._image_score_bundle(query, layer_patches=layer_queries)
+        layer_evidence = []
+        for features, memory in zip(layer_queries, fusion.image_layer_memories):
+            drift = memory.score_anoco(features, neighbor_count=2)
+            layer_evidence.append(memory.calibrated_anoco(drift))
+        drift_consensus = np.median(np.stack(layer_evidence), axis=0)
+        raid = fusion.image_memory.calibrated_raid(fusion.image_memory.score_raid(query, 3))
+        expected_evidence = 0.5 * drift_consensus + 0.5 * raid
+        expected = 0.75 * fusion.image_subspace.calibrated(pca_scores) + 0.25 * expected_evidence
+        np.testing.assert_allclose(evidence, expected_evidence)
+        np.testing.assert_allclose(fused, expected)
+
+    def test_raid_cost_requires_layer_consensus(self):
+        with self.assertRaisesRegex(ValueError, "requires anoco_layer_consensus"):
+            DefectFusion(object(), raid_cost_neighbors=8)
+
     def test_hybrid_head_requires_dual_branch(self):
         with self.assertRaisesRegex(ValueError, "requires dual_branch"):
             DefectFusion(object(), anomaly_method="pca_knn_anoco")
@@ -394,12 +435,12 @@ class NormalPatchMemoryTest(unittest.TestCase):
         normal = np.eye(5, dtype=np.float32)
         fusion = DefectFusion(
             object(), anomaly_method="pca_knn_anoco", dual_branch=True,
-            anoco_layer_consensus=True, anoco_neighbors=2,
+            anoco_layer_consensus=True, raid_cost_neighbors=3, anoco_neighbors=2,
         )
         fusion.subspace.fit(normal)
         fusion.image_subspace.fit(normal)
         fusion.normal_memory.fit(normal)
-        fusion.image_memory.fit(normal).fit_anoco_calibration(neighbor_count=2)
+        fusion.image_memory.fit(normal).fit_anoco_calibration(neighbor_count=2).fit_raid_calibration(neighbor_count=3)
         for features in (normal, normal[::-1].copy()):
             memory = NormalPatchMemory(backend="numpy").fit(features)
             memory.fit_anoco_calibration(neighbor_count=2)
@@ -409,6 +450,8 @@ class NormalPatchMemoryTest(unittest.TestCase):
             fusion.save(state_path)
             loaded = DefectFusion.load(state_path, object())
             self.assertTrue(loaded.anoco_layer_consensus)
+            self.assertEqual(loaded.raid_cost_neighbors, 3)
+            np.testing.assert_allclose(loaded.image_memory.raid_calibration_scores, fusion.image_memory.raid_calibration_scores)
             self.assertEqual(len(loaded.image_layer_memories), 2)
             for expected, actual in zip(fusion.image_layer_memories, loaded.image_layer_memories):
                 np.testing.assert_allclose(actual.features, expected.features, atol=5e-4)
