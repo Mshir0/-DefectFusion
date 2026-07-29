@@ -121,7 +121,7 @@ def main(argv=None):
     f.add_argument("--image-fusion-stage", choices=["patch", "score"], default=None)
     f.add_argument("--image-spatial-weight", type=float, default=None)
     f.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch", "rbf_svm"], default=None)
-    f.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco", "pca_knn_anoco_exact"], default=None); f.add_argument("--knn-weight", type=float, default=None)
+    f.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco"], default=None); f.add_argument("--knn-weight", type=float, default=None)
     f.add_argument("--anoco-neighbors", type=int, default=None); f.add_argument("--anoco-query-weight", type=float, default=None); f.add_argument("--anoco-temperature", type=float, default=None); f.add_argument("--anoco-weight", type=float, default=None)
     f.add_argument("--pca-residual-metric", choices=["squared_l2", "mahalanobis"], default=None)
     f.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None); f.add_argument("--gate-temperature", type=float, default=None)
@@ -166,7 +166,7 @@ def main(argv=None):
     e.add_argument("--image-fusion-stage", choices=["patch", "score"], default=None, help="fuse PCA/kNN before or after image aggregation")
     e.add_argument("--image-spatial-weight", type=float, default=None, help="relative image-score boost from connected Top-K patches")
     e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch", "rbf_svm"], default=None)
-    e.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco", "pca_knn_anoco_exact"], default=None, help="normal anomaly detector; *_exact uses the paper's prefix retrieval and norm-compatible Laplacian edges")
+    e.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco"], default=None, help="normal anomaly detector; pca_knn_anoco uses PCA+kNN for pixels and PCA+ANoCo for images")
     e.add_argument("--pca-residual-metric", choices=["squared_l2", "mahalanobis"], default=None, help="PCA orthogonal-residual metric")
     e.add_argument("--knn-weight", type=float, default=None, help="kNN contribution in calibrated pca_knn fusion")
     e.add_argument("--anoco-neighbors", type=int, default=None, help="anchor-consistent normal neighbors")
@@ -216,7 +216,7 @@ def main(argv=None):
     knn_spatial_radius = getattr(a, "knn_spatial_radius", None); knn_spatial_radius = knn_spatial_radius if knn_spatial_radius is not None else cfg.get("knn_spatial_radius", -1.0)
     align_training_positions = bool(getattr(a, "align_training_positions", False) or cfg.get("align_training_positions", False))
     dual_branch = bool(getattr(a, "dual_branch", False) or cfg.get("dual_branch", False))
-    if anomaly_method in {"pca_knn_anoco", "pca_knn_anoco_exact"} and not dual_branch: p.error(f"--anomaly-method {anomaly_method} requires --dual-branch")
+    if anomaly_method == "pca_knn_anoco" and not dual_branch: p.error("--anomaly-method pca_knn_anoco requires --dual-branch")
     test_augmentations = getattr(a, "test_augmentations", None); test_augmentations = test_augmentations if test_augmentations is not None else cfg.get("test_augmentations", [])
     texture_evidence = bool(getattr(a, "texture_evidence", False) or cfg.get("texture_evidence", False))
     texture_weight = getattr(a, "texture_weight", None); texture_weight = texture_weight if texture_weight is not None else cfg.get("texture_weight", 0.25)
@@ -348,14 +348,13 @@ def main(argv=None):
             metrics["type_matching"] = type_matching
             metrics["anomaly_method"] = anomaly_method
             metrics["pca_residual_metric"] = pca_residual_metric
-            hybrid_methods = {"pca_knn_anoco", "pca_knn_anoco_exact"}
-            metrics["knn_weight"] = knn_weight if anomaly_method == "pca_knn" or anomaly_method in hybrid_methods else 0
-            metrics["anoco_neighbors"] = anoco_neighbors if anomaly_method in {"anoco", "pca_anoco"} or anomaly_method in hybrid_methods else 0
-            metrics["anoco_query_weight"] = anoco_query_weight if anomaly_method in {"anoco", "pca_anoco"} or anomaly_method in hybrid_methods else 0
+            metrics["knn_weight"] = knn_weight if anomaly_method in {"pca_knn", "pca_knn_anoco"} else 0
+            metrics["anoco_neighbors"] = anoco_neighbors if anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"} else 0
+            metrics["anoco_query_weight"] = anoco_query_weight if anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"} else 0
             metrics["anoco_temperature"] = anoco_temperature if anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"} else 0
-            metrics["anoco_weight"] = anoco_weight if anomaly_method == "pca_anoco" or anomaly_method in hybrid_methods else 0
-            metrics["fusion_mode"] = fusion_mode if anomaly_method in {"pca_knn", "pca_anoco"} or anomaly_method in hybrid_methods else "none"
-            metrics["gate_temperature"] = gate_temperature if metrics["fusion_mode"] == "gated" else 0
+            metrics["anoco_weight"] = anoco_weight if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else 0
+            metrics["fusion_mode"] = fusion_mode if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} else "none"
+            metrics["gate_temperature"] = gate_temperature if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} and fusion_mode == "gated" else 0
             metrics["memory_max_patches"] = memory_max_patches if anomaly_method != "pca" else 0
             metrics["knn_chunk_size"] = knn_chunk_size if anomaly_method != "pca" else 0
             metrics["knn_backend"] = fusion.normal_memory.resolved_backend if anomaly_method != "pca" else "none"

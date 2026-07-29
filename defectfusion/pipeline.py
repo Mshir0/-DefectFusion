@@ -56,11 +56,10 @@ class DefectFusion:
             raise ValueError("map_postprocess must be none, gaussian, or crf")
         self.map_postprocess = map_postprocess
         self.gaussian_sigma = gaussian_sigma
-        valid_methods = {"pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco", "pca_knn_anoco_exact"}
-        if anomaly_method not in valid_methods:
-            raise ValueError(f"anomaly_method must be one of: {', '.join(sorted(valid_methods))}")
-        if anomaly_method in {"pca_knn_anoco", "pca_knn_anoco_exact"} and not self.dual_branch:
-            raise ValueError(f"{anomaly_method} requires dual_branch=true")
+        if anomaly_method not in {"pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco"}:
+            raise ValueError("anomaly_method must be pca, knn, pca_knn, anoco, pca_anoco, or pca_knn_anoco")
+        if anomaly_method == "pca_knn_anoco" and not self.dual_branch:
+            raise ValueError("pca_knn_anoco requires dual_branch=true")
         if not 0 <= knn_weight <= 1:
             raise ValueError("knn_weight must be in [0, 1]")
         self.anomaly_method = anomaly_method
@@ -140,8 +139,6 @@ class DefectFusion:
                 self.image_memory.fit(image_memory_features, memory_positions)
                 if self.anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"}:
                     self.image_memory.fit_anoco_calibration(self.anoco_neighbors, self.anoco_query_weight, self.anoco_temperature)
-                elif self.anomaly_method == "pca_knn_anoco_exact":
-                    self.image_memory.fit_anoco_exact_calibration(self.anoco_neighbors, self.anoco_query_weight)
         self.reference_grid = features.shape[1]
         return self
 
@@ -274,13 +271,6 @@ class DefectFusion:
             fused = ((1.0 - self.anoco_weight) * subspace.calibrated(pca_scores)
                      + self.anoco_weight * memory.calibrated_anoco(normal_scores))
             return fused, pca_scores, normal_scores, None
-        if method == "pca_anoco_exact":
-            normal_scores = memory.score_anoco_exact(
-                patches, self.anoco_neighbors, self.anoco_query_weight, positions=positions
-            )
-            fused = ((1.0 - self.anoco_weight) * subspace.calibrated(pca_scores)
-                     + self.anoco_weight * memory.calibrated_anoco_exact(normal_scores))
-            return fused, pca_scores, normal_scores, None
         knn_scores = memory.score(patches, positions=positions)
         if method == "knn":
             return knn_scores, pca_scores, knn_scores, None
@@ -297,16 +287,13 @@ class DefectFusion:
         return fused, pca_scores, knn_scores, None
 
     def _anomaly_scores(self, patches, positions=None):
-        method = "pca_knn" if self.anomaly_method in {"pca_knn_anoco", "pca_knn_anoco_exact"} else self.anomaly_method
+        method = "pca_knn" if self.anomaly_method == "pca_knn_anoco" else self.anomaly_method
         return self._branch_scores(patches, self.subspace, self.normal_memory, positions, method)
 
     def _image_score_bundle(self, patches, positions=None):
         subspace = self.image_subspace if self.dual_branch else self.subspace
         memory = self.image_memory if self.dual_branch else self.normal_memory
-        method = {
-            "pca_knn_anoco": "pca_anoco",
-            "pca_knn_anoco_exact": "pca_anoco_exact",
-        }.get(self.anomaly_method, self.anomaly_method)
+        method = "pca_anoco" if self.anomaly_method == "pca_knn_anoco" else self.anomaly_method
         return self._branch_scores(patches, subspace, memory, positions, method)
 
     def _image_scores(self, patches, positions=None):
@@ -347,11 +334,8 @@ class DefectFusion:
         if score_bundle is None:
             score_bundle = self._image_score_bundle(patches, positions)
         fused_scores, pca_scores, knn_scores, _ = score_bundle
-        image_method = {
-            "pca_knn_anoco": "pca_anoco",
-            "pca_knn_anoco_exact": "pca_anoco_exact",
-        }.get(self.anomaly_method, self.anomaly_method)
-        if self.image_fusion_stage == "patch" or image_method not in {"pca_knn", "pca_anoco", "pca_anoco_exact"} or self.fusion_mode != "fixed":
+        image_method = "pca_anoco" if self.anomaly_method == "pca_knn_anoco" else self.anomaly_method
+        if self.image_fusion_stage == "patch" or image_method not in {"pca_knn", "pca_anoco"} or self.fusion_mode != "fixed":
             patch_scores = fused_scores
             base_score = self._aggregate_image_score(patch_scores)
         else:
@@ -360,9 +344,6 @@ class DefectFusion:
             pca = subspace.calibrated(pca_scores)
             if image_method == "pca_anoco":
                 normal = memory.calibrated_anoco(knn_scores)
-                weight = self.anoco_weight
-            elif image_method == "pca_anoco_exact":
-                normal = memory.calibrated_anoco_exact(knn_scores)
                 weight = self.anoco_weight
             else:
                 normal = memory.calibrated(knn_scores)
@@ -549,9 +530,6 @@ class DefectFusion:
             "anoco_center": self.normal_memory.anoco_center,
             "anoco_scale": self.normal_memory.anoco_scale,
             "anoco_calibration_scores": self.normal_memory.anoco_calibration_scores.tolist() if self.normal_memory.anoco_calibration_scores is not None else None,
-            "anoco_exact_center": self.normal_memory.anoco_exact_center,
-            "anoco_exact_scale": self.normal_memory.anoco_exact_scale,
-            "anoco_exact_calibration_scores": self.normal_memory.anoco_exact_calibration_scores.tolist() if self.normal_memory.anoco_exact_calibration_scores is not None else None,
             "reference_grid": self.reference_grid,
             "reference_shape": self.reference_shape,
         }
@@ -563,20 +541,15 @@ class DefectFusion:
             state["image_anoco_center"] = self.image_memory.anoco_center
             state["image_anoco_scale"] = self.image_memory.anoco_scale
             state["image_anoco_calibration_scores"] = self.image_memory.anoco_calibration_scores.tolist() if self.image_memory.anoco_calibration_scores is not None else None
-            state["image_anoco_exact_center"] = self.image_memory.anoco_exact_center
-            state["image_anoco_exact_scale"] = self.image_memory.anoco_exact_scale
-            state["image_anoco_exact_calibration_scores"] = self.image_memory.anoco_exact_calibration_scores.tolist() if self.image_memory.anoco_exact_calibration_scores is not None else None
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if self.normal_memory.features is not None:
             memory_path = path.with_suffix(path.suffix + ".normal-memory.npz")
             memory_data = {"features": self.normal_memory.features.astype(np.float16)}
-            memory_data["raw_features"] = self.normal_memory.raw_features.astype(np.float16)
             if self.normal_memory.positions is not None:
                 memory_data["positions"] = self.normal_memory.positions
             if self.dual_branch and self.image_memory.features is not None:
                 memory_data["image_features"] = self.image_memory.features.astype(np.float16)
-                memory_data["image_raw_features"] = self.image_memory.raw_features.astype(np.float16)
                 if self.image_memory.positions is not None:
                     memory_data["image_positions"] = self.image_memory.positions
             np.savez_compressed(memory_path, **memory_data)
@@ -600,7 +573,6 @@ class DefectFusion:
             memory_path = Path(path).parent / memory_file
             memory = np.load(memory_path)
             obj.normal_memory.features = memory["features"].astype(np.float32)
-            obj.normal_memory.raw_features = memory["raw_features"].astype(np.float32) if "raw_features" in memory else obj.normal_memory.features.copy()
             obj.normal_memory.positions = memory["positions"].astype(np.float32) if "positions" in memory else None
             obj.normal_memory.center = float(state.get("knn_center", 0.0))
             obj.normal_memory.scale = float(state.get("knn_scale", 1.0))
@@ -610,13 +582,8 @@ class DefectFusion:
             obj.normal_memory.anoco_scale = float(state.get("anoco_scale", 1.0))
             anoco_calibration = state.get("anoco_calibration_scores")
             obj.normal_memory.anoco_calibration_scores = None if anoco_calibration is None else np.asarray(anoco_calibration, dtype=np.float64)
-            obj.normal_memory.anoco_exact_center = float(state.get("anoco_exact_center", 0.0))
-            obj.normal_memory.anoco_exact_scale = float(state.get("anoco_exact_scale", 1.0))
-            exact_calibration = state.get("anoco_exact_calibration_scores")
-            obj.normal_memory.anoco_exact_calibration_scores = None if exact_calibration is None else np.asarray(exact_calibration, dtype=np.float64)
             if obj.dual_branch and "image_features" in memory:
                 obj.image_memory.features = memory["image_features"].astype(np.float32)
-                obj.image_memory.raw_features = memory["image_raw_features"].astype(np.float32) if "image_raw_features" in memory else obj.image_memory.features.copy()
                 obj.image_memory.positions = memory["image_positions"].astype(np.float32) if "image_positions" in memory else None
                 obj.image_memory.center = float(state.get("image_knn_center", 0.0))
                 obj.image_memory.scale = float(state.get("image_knn_scale", 1.0))
@@ -626,10 +593,6 @@ class DefectFusion:
                 obj.image_memory.anoco_scale = float(state.get("image_anoco_scale", 1.0))
                 image_anoco_calibration = state.get("image_anoco_calibration_scores")
                 obj.image_memory.anoco_calibration_scores = None if image_anoco_calibration is None else np.asarray(image_anoco_calibration, dtype=np.float64)
-                obj.image_memory.anoco_exact_center = float(state.get("image_anoco_exact_center", 0.0))
-                obj.image_memory.anoco_exact_scale = float(state.get("image_anoco_exact_scale", 1.0))
-                image_exact_calibration = state.get("image_anoco_exact_calibration_scores")
-                obj.image_memory.anoco_exact_calibration_scores = None if image_exact_calibration is None else np.asarray(image_exact_calibration, dtype=np.float64)
         obj.reference_grid = state.get("reference_grid")
         obj.reference_shape = state.get("reference_shape")
         return obj

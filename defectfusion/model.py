@@ -68,10 +68,8 @@ class NormalPatchMemory:
         self.dtype = dtype
         self.spatial_radius = float(spatial_radius)
         self.features = None
-        self.raw_features = None
         self.positions = None
         self._torch_bank = None
-        self._torch_raw_bank = None
         self._torch_positions = None
         self.center = 0.0
         self.scale = 1.0
@@ -79,9 +77,6 @@ class NormalPatchMemory:
         self.anoco_center = 0.0
         self.anoco_scale = 1.0
         self.anoco_calibration_scores = None
-        self.anoco_exact_center = 0.0
-        self.anoco_exact_scale = 1.0
-        self.anoco_exact_calibration_scores = None
 
     @staticmethod
     def _normalize(features):
@@ -97,8 +92,7 @@ class NormalPatchMemory:
         return center, max(mad_scale, std_floor, 1e-12)
 
     def fit(self, features, positions=None):
-        raw_bank = np.asarray(features, dtype=np.float32)
-        bank = self._normalize(raw_bank)
+        bank = self._normalize(features)
         if len(bank) < 2:
             raise ValueError("Normal patch kNN requires at least two reference patches")
         if positions is not None:
@@ -108,14 +102,11 @@ class NormalPatchMemory:
         if self.max_patches > 0 and len(bank) > self.max_patches:
             indices = np.linspace(0, len(bank) - 1, self.max_patches, dtype=np.int64)
             bank = bank[indices]
-            raw_bank = raw_bank[indices]
             if positions is not None:
                 positions = positions[indices]
         self.features = np.ascontiguousarray(bank)
-        self.raw_features = np.ascontiguousarray(raw_bank)
         self.positions = None if positions is None else np.ascontiguousarray(positions)
         self._torch_bank = None
-        self._torch_raw_bank = None
         self._torch_positions = None
         sample_count = min(len(bank), max(2, self.calibration_patches))
         sample_indices = np.linspace(0, len(bank) - 1, sample_count, dtype=np.int64)
@@ -345,140 +336,6 @@ class NormalPatchMemory:
         self.anoco_center, self.anoco_scale = self._robust_stats(calibration)
         self.anoco_calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
         return self
-
-    def _anoco_exact_score_numpy(self, raw_query, query, exclude, positions, neighbor_count, query_weight):
-        scores = np.empty(len(query), dtype=np.float32)
-        bank_norms = np.linalg.norm(self.raw_features, axis=1)
-        for start in range(0, len(query), self.query_chunk_size):
-            end = min(start + self.query_chunk_size, len(query))
-            similarity = query[start:end] @ self.features.T
-            if self.spatial_radius >= 0 and positions is not None and self.positions is not None:
-                distance = np.max(np.abs(positions[start:end, None, :] - self.positions[None, :, :]), axis=2)
-                allowed = distance <= self.spatial_radius
-            else:
-                allowed = np.ones_like(similarity, dtype=bool)
-            if exclude is not None:
-                rows = np.arange(end - start)
-                allowed[rows, exclude[start:end]] = False
-            empty = ~allowed.any(axis=1)
-            if np.any(empty):
-                allowed[empty] = True
-                if exclude is not None:
-                    allowed[np.where(empty)[0], exclude[start:end][empty]] = False
-            masked = np.where(allowed, similarity, -np.inf)
-            keep = min(neighbor_count, masked.shape[1])
-            candidate_indices = np.argpartition(masked, -keep, axis=1)[:, -keep:]
-            candidate_similarity = np.take_along_axis(similarity, candidate_indices, axis=1)
-            order = np.argsort(candidate_similarity, axis=1)[:, ::-1]
-            candidate_indices = np.take_along_axis(candidate_indices, order, axis=1)
-            candidate_similarity = np.take_along_axis(candidate_similarity, order, axis=1)
-            candidate_allowed = np.take_along_axis(allowed, candidate_indices, axis=1)
-            anchors = candidate_indices[:, 0]
-            anchor_similarity = np.sum(
-                self.features[anchors, None, :] * self.features[candidate_indices], axis=2
-            )
-            prefix_condition = candidate_allowed & (anchor_similarity > candidate_similarity[:, :1])
-            prefix_condition[:, 0] = candidate_allowed[:, 0]
-            prefix = np.logical_and.accumulate(prefix_condition, axis=1)
-            query_norms = np.linalg.norm(raw_query[start:end], axis=1, keepdims=True)
-            candidate_norms = bank_norms[candidate_indices]
-            compatibility = 2.0 * query_norms * candidate_norms / np.maximum(query_norms + candidate_norms, 1e-12)
-            weights = np.where(prefix, candidate_similarity * compatibility, 0.0)
-            degree = weights.sum(axis=1, keepdims=True)
-            target = np.sum(self.raw_features[candidate_indices] * weights[:, :, None], axis=1)
-            updated = (query_weight * raw_query[start:end] + target) / np.maximum(query_weight + degree, 1e-12)
-            displacement = np.sum((updated - raw_query[start:end]) ** 2, axis=1)
-            updated_normalized = self._normalize(updated)
-            angular = 1.0 - np.sum(updated_normalized * query[start:end], axis=1)
-            scores[start:end] = displacement * np.maximum(angular, 0.0)
-        return scores
-
-    def _anoco_exact_score_torch(self, raw_query, query, exclude, positions, neighbor_count, query_weight):
-        import torch
-        device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        if device.startswith("cuda") and not torch.cuda.is_available():
-            raise RuntimeError("Torch exact ANoCo backend requested CUDA, but CUDA is unavailable")
-        dtype = torch.float16 if self.dtype == "float16" else torch.float32
-        if self._torch_bank is None or self._torch_bank.device != torch.device(device) or self._torch_bank.dtype != dtype:
-            self._torch_bank = torch.as_tensor(self.features, device=device, dtype=dtype).contiguous()
-        if self._torch_raw_bank is None or self._torch_raw_bank.device != torch.device(device):
-            self._torch_raw_bank = torch.as_tensor(self.raw_features, device=device, dtype=torch.float32).contiguous()
-        if self.positions is not None and (self._torch_positions is None or self._torch_positions.device != torch.device(device)):
-            self._torch_positions = torch.as_tensor(self.positions, device=device, dtype=torch.float32).contiguous()
-        bank_norms = torch.linalg.vector_norm(self._torch_raw_bank, dim=1)
-        scores = np.empty(len(query), dtype=np.float32)
-        with torch.inference_mode():
-            for start in range(0, len(query), self.query_chunk_size):
-                end = min(start + self.query_chunk_size, len(query))
-                query_chunk = torch.as_tensor(query[start:end], device=device, dtype=dtype)
-                raw_chunk = torch.as_tensor(raw_query[start:end], device=device, dtype=torch.float32)
-                similarity = query_chunk @ self._torch_bank.T
-                if self.spatial_radius >= 0 and positions is not None and self.positions is not None:
-                    query_positions = torch.as_tensor(positions[start:end], device=device, dtype=torch.float32)
-                    distance = torch.amax(torch.abs(query_positions[:, None, :] - self._torch_positions[None, :, :]), dim=2)
-                    allowed = distance <= self.spatial_radius
-                else:
-                    allowed = torch.ones_like(similarity, dtype=torch.bool)
-                if exclude is not None:
-                    rows = torch.arange(end - start, device=device)
-                    columns = torch.as_tensor(exclude[start:end], device=device)
-                    allowed[rows, columns] = False
-                empty = ~allowed.any(dim=1)
-                if empty.any():
-                    allowed[empty] = True
-                    if exclude is not None:
-                        allowed[rows[empty], columns[empty]] = False
-                keep = min(neighbor_count, similarity.shape[1])
-                candidate_similarity, candidate_indices = torch.topk(similarity.masked_fill(~allowed, -torch.inf), keep, dim=1)
-                candidate_allowed = torch.gather(allowed, 1, candidate_indices)
-                anchors = candidate_indices[:, 0]
-                anchor_similarity = torch.sum(
-                    self._torch_bank[anchors, None, :].float() * self._torch_bank[candidate_indices].float(), dim=2
-                )
-                prefix_condition = candidate_allowed & (anchor_similarity > candidate_similarity[:, :1].float())
-                prefix_condition[:, 0] = candidate_allowed[:, 0]
-                prefix = torch.cumprod(prefix_condition.to(torch.int32), dim=1).bool()
-                query_norms = torch.linalg.vector_norm(raw_chunk, dim=1, keepdim=True)
-                candidate_norms = bank_norms[candidate_indices]
-                compatibility = 2.0 * query_norms * candidate_norms / torch.clamp(query_norms + candidate_norms, min=1e-12)
-                weights = torch.where(prefix, candidate_similarity.float() * compatibility, 0.0)
-                degree = weights.sum(dim=1, keepdim=True)
-                target = torch.sum(self._torch_raw_bank[candidate_indices] * weights[:, :, None], dim=1)
-                updated = (query_weight * raw_chunk + target) / torch.clamp(query_weight + degree, min=1e-12)
-                displacement = torch.sum((updated - raw_chunk) ** 2, dim=1)
-                angular = 1.0 - torch.sum(torch.nn.functional.normalize(updated, dim=1) * query_chunk.float(), dim=1)
-                scores[start:end] = (displacement * torch.clamp(angular, min=0.0)).cpu().numpy()
-        return scores
-
-    def score_anoco_exact(self, features, neighbor_count=16, query_weight=1.0, exclude_indices=None, positions=None):
-        if self.raw_features is None:
-            raise ValueError("Exact ANoCo requires an unnormalized normal feature bank")
-        if neighbor_count <= 0 or query_weight <= 0:
-            raise ValueError("Exact ANoCo neighbor_count and query_weight must be positive")
-        raw_query = np.asarray(features, dtype=np.float32)
-        query = self._normalize(raw_query)
-        exclude = None if exclude_indices is None else np.asarray(exclude_indices)
-        positions = None if positions is None else np.asarray(positions, dtype=np.float32)
-        if self.spatial_radius >= 0 and (positions is None or self.positions is None):
-            raise ValueError("Spatial exact ANoCo requires normal and query positions")
-        if self._resolved_backend() == "torch":
-            return self._anoco_exact_score_torch(raw_query, query, exclude, positions, neighbor_count, query_weight)
-        return self._anoco_exact_score_numpy(raw_query, query, exclude, positions, neighbor_count, query_weight)
-
-    def fit_anoco_exact_calibration(self, neighbor_count=16, query_weight=1.0, calibration_patches=1024):
-        sample_count = min(len(self.raw_features), max(2, int(calibration_patches)))
-        sample_indices = np.linspace(0, len(self.raw_features) - 1, sample_count, dtype=np.int64)
-        sample_positions = None if self.positions is None else self.positions[sample_indices]
-        calibration = self.score_anoco_exact(
-            self.raw_features[sample_indices], neighbor_count, query_weight,
-            exclude_indices=sample_indices, positions=sample_positions,
-        )
-        self.anoco_exact_center, self.anoco_exact_scale = self._robust_stats(calibration)
-        self.anoco_exact_calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
-        return self
-
-    def calibrated_anoco_exact(self, scores):
-        return (np.asarray(scores, dtype=np.float64) - self.anoco_exact_center) / self.anoco_exact_scale
 
     def calibrated_anoco(self, scores):
         return (np.asarray(scores, dtype=np.float64) - self.anoco_center) / self.anoco_scale
