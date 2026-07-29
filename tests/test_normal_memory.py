@@ -263,18 +263,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         scores = memory.score_anoco(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32), neighbor_count=4)
         self.assertGreater(scores[1], scores[0])
 
-    def test_anoco_soft_anchor_weight_changes_manifold_pull(self):
-        normal = np.array([
-            [1.0, 0.0, 0.0], [0.9, 0.4, 0.0], [0.7, 0.0, 0.7], [0.6, 0.6, 0.2],
-        ], dtype=np.float32)
-        query = np.array([[0.8, 0.2, 0.5]], dtype=np.float32)
-        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
-        default = memory.score_anoco(query, neighbor_count=4)
-        zero = memory.score_anoco(query, neighbor_count=4, anchor_weight=0.0)
-        weighted = memory.score_anoco(query, neighbor_count=4, anchor_weight=0.25)
-        np.testing.assert_allclose(default, zero)
-        self.assertFalse(np.allclose(default, weighted, rtol=1e-5, atol=1e-12))
-
     def test_anoco_calibration_is_finite(self):
         features = np.eye(6, dtype=np.float32)
         memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(features)
@@ -417,7 +405,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             )
 
     def test_pipeline_save_load_preserves_anoco_state(self):
-        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_anchor_weight=0.25)
+        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2)
         normal = np.eye(5, dtype=np.float32)
         fusion.subspace.fit(normal)
         fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2)
@@ -427,7 +415,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
             loaded = DefectFusion.load(state_path, object())
             self.assertEqual(loaded.anoco_neighbors, 3)
             self.assertEqual(loaded.anoco_temperature, 0.2)
-            self.assertEqual(loaded.anoco_anchor_weight, 0.25)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
