@@ -21,6 +21,12 @@
 
 ## Paper-derived next steps
 
+### ANoCo-inspired follow-ups
+
+- [x] Remove soft anchor, adaptive lambda, calibrated drift, exact ANoCo, disagreement gating, and view balancing after neutral or negative ablations.
+- [x] Add an optional compact active reference graph for the second anchor pass.
+- [ ] Evaluate per-layer drift consensus only if the compact graph is insufficient.
+
 - [x] Add raw/L2 dual-branch scoring: L2 for image AUROC, raw for pixel maps.
 - [x] Add configurable Top-K image aggregation ratios (0.5/1/2/5%).
 - [x] Compare patch-first and image-score-first PCA/kNN fusion (score-first was negative).
