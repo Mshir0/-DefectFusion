@@ -309,14 +309,6 @@ two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
 unchanged; screen `anoco` on seed 42 before running `pca_anoco` or five seeds.
 
-`--guided-filter-weight` enables a training-free RAID-inspired filter before
-the per-layer drift maps are reduced to their median. Within each 3x3 patch
-neighborhood, evidence is averaged with weights
-`exp((cosine(query_i, query_j) - 1) / temperature)`, so propagation stops at
-DINO feature boundaries. The filtered and original evidence are blended by
-the requested weight. `--guided-filter-temperature` defaults to `0.1`; the
-filter is disabled by default and requires `--anoco-layer-consensus`.
-
 For the dual-head configuration, use `--anomaly-method pca_knn_anoco` together
 with `--dual-branch`. The raw pixel branch uses calibrated PCA+kNN with
 `--knn-weight`, while the L2 image branch uses calibrated PCA+ANoCo with
