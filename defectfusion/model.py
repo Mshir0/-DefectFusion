@@ -19,6 +19,8 @@ class NormalPatchMemory:
         self.spatial_radius = float(spatial_radius)
         self.features = None
         self.positions = None
+        self.view_ids = None
+        self._view_groups = ()
         self._torch_bank = None
         self._torch_positions = None
         self.center = 0.0
@@ -41,7 +43,13 @@ class NormalPatchMemory:
         std_floor = float(scores.std() * 0.1)
         return center, max(mad_scale, std_floor, 1e-12)
 
-    def fit(self, features, positions=None):
+    def set_view_ids(self, view_ids):
+        self.view_ids = None if view_ids is None else np.ascontiguousarray(view_ids, dtype=np.int32)
+        self._view_groups = () if self.view_ids is None else tuple(
+            np.flatnonzero(self.view_ids == view_id) for view_id in np.unique(self.view_ids)
+        )
+
+    def fit(self, features, positions=None, view_ids=None):
         bank = self._normalize(features)
         if len(bank) < 2:
             raise ValueError("Normal patch kNN requires at least two reference patches")
@@ -49,13 +57,20 @@ class NormalPatchMemory:
             positions = np.asarray(positions, dtype=np.float32)
             if positions.shape != (len(bank), 2):
                 raise ValueError("Normal patch positions must have shape (patches, 2)")
+        if view_ids is not None:
+            view_ids = np.asarray(view_ids, dtype=np.int32)
+            if view_ids.shape != (len(bank),):
+                raise ValueError("Normal patch view_ids must have shape (patches,)")
         if self.max_patches > 0 and len(bank) > self.max_patches:
             indices = np.linspace(0, len(bank) - 1, self.max_patches, dtype=np.int64)
             bank = bank[indices]
             if positions is not None:
                 positions = positions[indices]
+            if view_ids is not None:
+                view_ids = view_ids[indices]
         self.features = np.ascontiguousarray(bank)
         self.positions = None if positions is None else np.ascontiguousarray(positions)
+        self.set_view_ids(view_ids)
         self._torch_bank = None
         self._torch_positions = None
         sample_count = min(len(bank), max(2, self.calibration_patches))
@@ -157,7 +172,7 @@ class NormalPatchMemory:
             return self._score_torch(query, exclude, positions)
         return self._score_numpy(query, exclude, positions)
 
-    def _anoco_score_numpy(self, query, exclude, positions, neighbor_count, query_weight, temperature):
+    def _anoco_score_numpy(self, query, exclude, positions, neighbor_count, query_weight, temperature, view_balance=False):
         scores = np.empty(len(query), dtype=np.float32)
         for start in range(0, len(query), self.query_chunk_size):
             end = min(start + self.query_chunk_size, len(query))
@@ -180,8 +195,19 @@ class NormalPatchMemory:
             anchors = np.argmax(masked_similarity, axis=1)
             anchor_similarity = self.features[anchors] @ self.features.T
             joint = np.where(allowed, 0.5 * (similarity + anchor_similarity), -np.inf)
-            keep = min(neighbor_count, joint.shape[1])
-            neighbor_indices = np.argpartition(joint, -keep, axis=1)[:, -keep:]
+            if view_balance and len(self._view_groups) > 1:
+                candidates = []
+                for columns in self._view_groups:
+                    local = np.argmax(joint[:, columns], axis=1)
+                    candidates.append(columns[local])
+                candidate_indices = np.stack(candidates, axis=1)
+                candidate_scores = np.take_along_axis(joint, candidate_indices, axis=1)
+                keep = min(neighbor_count, candidate_scores.shape[1])
+                selected = np.argpartition(candidate_scores, -keep, axis=1)[:, -keep:]
+                neighbor_indices = np.take_along_axis(candidate_indices, selected, axis=1)
+            else:
+                keep = min(neighbor_count, joint.shape[1])
+                neighbor_indices = np.argpartition(joint, -keep, axis=1)[:, -keep:]
             neighbor_similarity = np.take_along_axis(similarity, neighbor_indices, axis=1)
             neighbor_allowed = np.take_along_axis(allowed, neighbor_indices, axis=1)
             logits = neighbor_similarity / temperature
@@ -197,7 +223,7 @@ class NormalPatchMemory:
             scores[start:end] = displacement * np.maximum(angular, 0.0)
         return scores
 
-    def _anoco_score_torch(self, query, exclude, positions, neighbor_count, query_weight, temperature):
+    def _anoco_score_torch(self, query, exclude, positions, neighbor_count, query_weight, temperature, view_balance=False):
         try:
             import torch
         except ImportError as exc:
@@ -235,8 +261,20 @@ class NormalPatchMemory:
                 anchors = masked_similarity.argmax(dim=1)
                 anchor_similarity = self._torch_bank[anchors] @ self._torch_bank.T
                 joint = (0.5 * (similarity + anchor_similarity)).masked_fill(~allowed, -torch.inf)
-                keep = min(neighbor_count, joint.shape[1])
-                neighbor_indices = torch.topk(joint, keep, dim=1).indices
+                if view_balance and len(self._view_groups) > 1:
+                    candidates = []
+                    for group in self._view_groups:
+                        columns = torch.as_tensor(group, device=device)
+                        local = torch.argmax(joint[:, columns], dim=1)
+                        candidates.append(columns[local])
+                    candidate_indices = torch.stack(candidates, dim=1)
+                    candidate_scores = torch.gather(joint, 1, candidate_indices)
+                    keep = min(neighbor_count, candidate_scores.shape[1])
+                    selected = torch.topk(candidate_scores, keep, dim=1).indices
+                    neighbor_indices = torch.gather(candidate_indices, 1, selected)
+                else:
+                    keep = min(neighbor_count, joint.shape[1])
+                    neighbor_indices = torch.topk(joint, keep, dim=1).indices
                 neighbor_similarity = torch.gather(similarity, 1, neighbor_indices)
                 neighbor_allowed = torch.gather(allowed, 1, neighbor_indices)
                 logits = (neighbor_similarity.float() / temperature).masked_fill(~neighbor_allowed, -torch.inf)
@@ -250,7 +288,7 @@ class NormalPatchMemory:
                 scores[start:end] = (displacement * torch.clamp(angular, min=0.0)).cpu().numpy()
         return scores
 
-    def score_anoco(self, features, neighbor_count=16, query_weight=1.0, temperature=0.07, exclude_indices=None, positions=None):
+    def score_anoco(self, features, neighbor_count=16, query_weight=1.0, temperature=0.07, view_balance=False, exclude_indices=None, positions=None):
         if self.features is None or len(self.features) == 0:
             raise ValueError("Normal patch memory has not been fitted")
         if neighbor_count <= 0:
@@ -268,10 +306,10 @@ class NormalPatchMemory:
         if self.spatial_radius >= 0 and (positions is None or self.positions is None):
             raise ValueError("Spatial ANoCo requires patch positions for normal and query features")
         if self._resolved_backend() == "torch":
-            return self._anoco_score_torch(query, exclude, positions, neighbor_count, query_weight, temperature)
-        return self._anoco_score_numpy(query, exclude, positions, neighbor_count, query_weight, temperature)
+            return self._anoco_score_torch(query, exclude, positions, neighbor_count, query_weight, temperature, view_balance)
+        return self._anoco_score_numpy(query, exclude, positions, neighbor_count, query_weight, temperature, view_balance)
 
-    def fit_anoco_calibration(self, neighbor_count=16, query_weight=1.0, temperature=0.07, calibration_patches=1024):
+    def fit_anoco_calibration(self, neighbor_count=16, query_weight=1.0, temperature=0.07, view_balance=False, calibration_patches=1024):
         sample_count = min(len(self.features), max(2, int(calibration_patches)))
         sample_indices = np.linspace(0, len(self.features) - 1, sample_count, dtype=np.int64)
         calibration_positions = None if self.positions is None else self.positions[sample_indices]
@@ -280,6 +318,7 @@ class NormalPatchMemory:
             neighbor_count=neighbor_count,
             query_weight=query_weight,
             temperature=temperature,
+            view_balance=view_balance,
             exclude_indices=sample_indices,
             positions=calibration_positions,
         )

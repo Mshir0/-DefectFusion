@@ -252,6 +252,26 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertGreater(memory.anoco_scale, 0)
         self.assertTrue(np.all(np.isfinite(memory.anoco_calibration_scores)))
 
+    def test_anoco_view_balance_prevents_one_view_from_filling_neighborhood(self):
+        normal = np.array([
+            [1.0, 0.0], [0.999, 0.01], [0.998, 0.02],
+            [0.8, 0.6], [0.6, 0.8],
+        ], dtype=np.float32)
+        view_ids = np.array([0, 0, 0, 1, 2], dtype=np.int32)
+        memory = NormalPatchMemory(backend="numpy").fit(normal, view_ids=view_ids)
+        query = np.array([[1.0, 0.0]], dtype=np.float32)
+        unbalanced = memory.score_anoco(query, neighbor_count=3, view_balance=False)
+        balanced = memory.score_anoco(query, neighbor_count=3, view_balance=True)
+        self.assertFalse(np.allclose(unbalanced, balanced))
+
+    def test_anoco_view_balance_is_noop_with_one_view(self):
+        normal = np.array([[1.0, 0.0], [0.9, 0.1], [0.8, 0.2]], dtype=np.float32)
+        memory = NormalPatchMemory(backend="numpy").fit(normal, view_ids=np.zeros(3, dtype=np.int32))
+        query = np.array([[0.95, 0.05]], dtype=np.float32)
+        expected = memory.score_anoco(query, neighbor_count=2, view_balance=False)
+        actual = memory.score_anoco(query, neighbor_count=2, view_balance=True)
+        np.testing.assert_allclose(actual, expected)
+
     def test_fused_weight_endpoints_match_calibrated_components(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
@@ -340,16 +360,19 @@ class NormalPatchMemoryTest(unittest.TestCase):
             )
 
     def test_pipeline_save_load_preserves_anoco_state(self):
-        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2)
+        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_view_balance=True)
         normal = np.eye(5, dtype=np.float32)
         fusion.subspace.fit(normal)
-        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2)
+        view_ids = np.array([0, 0, 1, 1, 2], dtype=np.int32)
+        fusion.normal_memory.fit(normal, view_ids=view_ids).fit_anoco_calibration(neighbor_count=3, temperature=0.2)
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "model.json"
             fusion.save(state_path)
             loaded = DefectFusion.load(state_path, object())
             self.assertEqual(loaded.anoco_neighbors, 3)
             self.assertEqual(loaded.anoco_temperature, 0.2)
+            self.assertTrue(loaded.anoco_view_balance)
+            np.testing.assert_array_equal(loaded.normal_memory.view_ids, view_ids)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
