@@ -27,9 +27,6 @@ class NormalPatchMemory:
         self.anoco_center = 0.0
         self.anoco_scale = 1.0
         self.anoco_calibration_scores = None
-        self.raid_center = 0.0
-        self.raid_scale = 1.0
-        self.raid_calibration_scores = None
 
     @staticmethod
     def _normalize(features):
@@ -159,123 +156,6 @@ class NormalPatchMemory:
         if self._resolved_backend() == "torch":
             return self._score_torch(query, exclude, positions)
         return self._score_numpy(query, exclude, positions)
-
-    @staticmethod
-    def _raid_aggregate(similarity, allowed, neighbor_count):
-        """Mix nearest distance with a 25%-trimmed mean of Top-K distances."""
-        keep = min(int(neighbor_count), similarity.shape[1])
-        masked = np.where(allowed, similarity, -np.inf)
-        indices = np.argpartition(masked, -keep, axis=1)[:, -keep:]
-        selected = np.take_along_axis(masked, indices, axis=1)
-        selected.sort(axis=1)
-        selected = selected[:, ::-1]
-        valid = np.isfinite(selected)
-        counts = valid.sum(axis=1)
-        trimmed_counts = np.maximum(1, np.ceil(0.75 * counts).astype(np.int64))
-        ranks = np.arange(keep)[None, :]
-        trimmed = valid & (ranks < trimmed_counts[:, None])
-        nearest_distance = 1.0 - selected[:, 0]
-        mean_distance = np.sum(np.where(trimmed, 1.0 - selected, 0.0), axis=1) / trimmed_counts
-        return (0.5 * nearest_distance + 0.5 * mean_distance).astype(np.float32)
-
-    def _score_raid_numpy(self, query, exclude, positions, neighbor_count):
-        scores = np.empty(len(query), dtype=np.float32)
-        for start in range(0, len(query), self.query_chunk_size):
-            end = min(start + self.query_chunk_size, len(query))
-            similarity = query[start:end] @ self.features.T
-            if self.spatial_radius >= 0 and positions is not None and self.positions is not None:
-                distance = np.max(np.abs(positions[start:end, None, :] - self.positions[None, :, :]), axis=2)
-                allowed = distance <= self.spatial_radius
-            else:
-                allowed = np.ones_like(similarity, dtype=bool)
-            if exclude is not None:
-                rows = np.arange(end - start)
-                allowed[rows, exclude[start:end]] = False
-            empty = ~allowed.any(axis=1)
-            if np.any(empty):
-                allowed[empty] = True
-                if exclude is not None:
-                    allowed[np.where(empty)[0], exclude[start:end][empty]] = False
-            scores[start:end] = self._raid_aggregate(similarity, allowed, neighbor_count)
-        return scores
-
-    def _score_raid_torch(self, query, exclude, positions, neighbor_count):
-        try:
-            import torch
-        except ImportError as exc:
-            raise RuntimeError("Torch RAID cost backend requires PyTorch") from exc
-        device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        if device.startswith("cuda") and not torch.cuda.is_available():
-            raise RuntimeError("Torch RAID cost backend requested CUDA, but CUDA is unavailable")
-        dtype = torch.float16 if self.dtype == "float16" else torch.float32
-        if self._torch_bank is None or self._torch_bank.device != torch.device(device) or self._torch_bank.dtype != dtype:
-            self._torch_bank = torch.as_tensor(self.features, device=device, dtype=dtype).contiguous()
-        if self.positions is not None and (self._torch_positions is None or self._torch_positions.device != torch.device(device)):
-            self._torch_positions = torch.as_tensor(self.positions, device=device, dtype=torch.float32).contiguous()
-        scores = np.empty(len(query), dtype=np.float32)
-        with torch.inference_mode():
-            for start in range(0, len(query), self.query_chunk_size):
-                end = min(start + self.query_chunk_size, len(query))
-                query_chunk = torch.as_tensor(query[start:end], device=device, dtype=dtype)
-                similarity = query_chunk @ self._torch_bank.T
-                if self.spatial_radius >= 0 and positions is not None and self.positions is not None:
-                    query_positions = torch.as_tensor(positions[start:end], device=device, dtype=torch.float32)
-                    distance = torch.amax(torch.abs(query_positions[:, None, :] - self._torch_positions[None, :, :]), dim=2)
-                    allowed = distance <= self.spatial_radius
-                else:
-                    allowed = torch.ones_like(similarity, dtype=torch.bool)
-                if exclude is not None:
-                    rows = torch.arange(end - start, device=device)
-                    columns = torch.as_tensor(exclude[start:end], device=device)
-                    allowed[rows, columns] = False
-                empty = ~allowed.any(dim=1)
-                if empty.any():
-                    allowed[empty] = True
-                    if exclude is not None:
-                        allowed[rows[empty], columns[empty]] = False
-                keep = min(int(neighbor_count), similarity.shape[1])
-                selected = torch.topk(similarity.masked_fill(~allowed, -torch.inf), keep, dim=1).values.float()
-                valid = torch.isfinite(selected)
-                counts = valid.sum(dim=1)
-                trimmed_counts = torch.clamp(torch.ceil(0.75 * counts.float()).long(), min=1)
-                ranks = torch.arange(keep, device=device)[None, :]
-                trimmed = valid & (ranks < trimmed_counts[:, None])
-                nearest_distance = 1.0 - selected[:, 0]
-                mean_distance = torch.where(trimmed, 1.0 - selected, 0.0).sum(dim=1) / trimmed_counts
-                scores[start:end] = (0.5 * nearest_distance + 0.5 * mean_distance).cpu().numpy()
-        return scores
-
-    def score_raid(self, features, neighbor_count=16, exclude_indices=None, positions=None):
-        if self.features is None or len(self.features) == 0:
-            raise ValueError("Normal patch memory has not been fitted")
-        if neighbor_count <= 1:
-            raise ValueError("RAID cost neighbor_count must be greater than one")
-        query = self._normalize(features)
-        exclude = None if exclude_indices is None else np.asarray(exclude_indices)
-        if positions is not None:
-            positions = np.asarray(positions, dtype=np.float32)
-            if positions.shape != (len(query), 2):
-                raise ValueError("Query patch positions must have shape (patches, 2)")
-        if self.spatial_radius >= 0 and (positions is None or self.positions is None):
-            raise ValueError("Spatial RAID cost requires patch positions for normal and query features")
-        if self._resolved_backend() == "torch":
-            return self._score_raid_torch(query, exclude, positions, neighbor_count)
-        return self._score_raid_numpy(query, exclude, positions, neighbor_count)
-
-    def fit_raid_calibration(self, neighbor_count=16, calibration_patches=1024):
-        sample_count = min(len(self.features), max(2, int(calibration_patches)))
-        sample_indices = np.linspace(0, len(self.features) - 1, sample_count, dtype=np.int64)
-        calibration_positions = None if self.positions is None else self.positions[sample_indices]
-        calibration = self.score_raid(
-            self.features[sample_indices], neighbor_count=neighbor_count,
-            exclude_indices=sample_indices, positions=calibration_positions,
-        )
-        self.raid_center, self.raid_scale = self._robust_stats(calibration)
-        self.raid_calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
-        return self
-
-    def calibrated_raid(self, scores):
-        return (np.asarray(scores, dtype=np.float64) - self.raid_center) / self.raid_scale
 
     def _anoco_score_numpy(self, query, exclude, positions, neighbor_count, query_weight, temperature):
         scores = np.empty(len(query), dtype=np.float32)
