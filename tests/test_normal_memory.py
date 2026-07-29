@@ -244,15 +244,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         scores = memory.score_anoco(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32), neighbor_count=4)
         self.assertGreater(scores[1], scores[0])
 
-    def test_semantic_index_restricts_queries_to_top_prototype_groups(self):
-        normal = np.array([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0], [0.1, 0.9]], dtype=np.float32)
-        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
-        memory.fit_semantic_index(prototype_count=2, top_prototypes=1, iterations=3)
-        allowed = memory._semantic_allowed_numpy(memory._normalize([[1.0, 0.0]]))
-        self.assertTrue(allowed[0, 0])
-        self.assertFalse(allowed[0, 2])
-        self.assertEqual(len(np.unique(memory.semantic_assignments)), 2)
-
     def test_anoco_calibration_is_finite(self):
         features = np.eye(6, dtype=np.float32)
         memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(features)

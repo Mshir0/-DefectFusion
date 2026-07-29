@@ -26,12 +26,6 @@
 - [x] Remove soft anchor, adaptive lambda, calibrated drift, exact ANoCo, disagreement gating, view balancing, and active graph after neutral or negative ablations.
 - [x] Add optional median consensus across independently calibrated per-layer ANoCo drift.
 
-### RAID-inspired follow-ups
-
-- [x] Remove robust Top-K cost, guided filtering, and retrieval entropy after negative or neutral Seed 42 ablations.
-- [x] Add semantic-prototype-to-instance hierarchical retrieval for per-layer ANoCo.
-- [ ] Select normal augmentation views with global feature similarity.
-
 - [x] Add raw/L2 dual-branch scoring: L2 for image AUROC, raw for pixel maps.
 - [x] Add configurable Top-K image aggregation ratios (0.5/1/2/5%).
 - [x] Compare patch-first and image-score-first PCA/kNN fusion (score-first was negative).

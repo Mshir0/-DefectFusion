@@ -27,11 +27,6 @@ class NormalPatchMemory:
         self.anoco_center = 0.0
         self.anoco_scale = 1.0
         self.anoco_calibration_scores = None
-        self.semantic_prototypes = None
-        self.semantic_assignments = None
-        self.semantic_top_prototypes = 0
-        self._torch_semantic_prototypes = None
-        self._torch_semantic_assignments = None
 
     @staticmethod
     def _normalize(features):
@@ -70,37 +65,6 @@ class NormalPatchMemory:
         self.center, self.scale = self._robust_stats(calibration)
         self.calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
         return self
-
-    def fit_semantic_index(self, prototype_count=50, top_prototypes=5, iterations=5, sample_patches=4096):
-        if self.features is None:
-            raise ValueError("Normal patch memory has not been fitted")
-        count = min(int(prototype_count), len(self.features))
-        if count < 2 or not 0 < top_prototypes <= count:
-            raise ValueError("Semantic index requires at least two prototypes and a valid Top-K")
-        sample_count = min(len(self.features), max(count, int(sample_patches)))
-        sample = self.features[np.linspace(0, len(self.features) - 1, sample_count, dtype=np.int64)]
-        centers = sample[np.linspace(0, sample_count - 1, count, dtype=np.int64)].copy()
-        for _ in range(max(1, int(iterations))):
-            assignments = np.argmax(sample @ centers.T, axis=1)
-            for index in range(count):
-                members = sample[assignments == index]
-                if len(members):
-                    center = members.mean(axis=0)
-                    centers[index] = center / max(np.linalg.norm(center), 1e-12)
-        self.semantic_prototypes = np.ascontiguousarray(centers.astype(np.float32))
-        self.semantic_assignments = np.argmax(self.features @ centers.T, axis=1).astype(np.int32)
-        self.semantic_top_prototypes = int(top_prototypes)
-        self._torch_semantic_prototypes = None
-        self._torch_semantic_assignments = None
-        return self
-
-    def _semantic_allowed_numpy(self, query):
-        if self.semantic_prototypes is None:
-            return None
-        top = np.argpartition(
-            query @ self.semantic_prototypes.T, -self.semantic_top_prototypes, axis=1,
-        )[:, -self.semantic_top_prototypes:]
-        return np.any(self.semantic_assignments[None, :, None] == top[:, None, :], axis=2)
 
     def _resolved_backend(self):
         if self.backend != "auto":
@@ -204,9 +168,6 @@ class NormalPatchMemory:
                 allowed = distance <= self.spatial_radius
             else:
                 allowed = np.ones_like(similarity, dtype=bool)
-            semantic_allowed = self._semantic_allowed_numpy(query_chunk)
-            if semantic_allowed is not None:
-                allowed &= semantic_allowed
             if exclude is not None:
                 rows = np.arange(end - start)
                 allowed[rows, exclude[start:end]] = False
@@ -261,13 +222,6 @@ class NormalPatchMemory:
                     allowed = distance <= self.spatial_radius
                 else:
                     allowed = torch.ones_like(similarity, dtype=torch.bool)
-                if self.semantic_prototypes is not None:
-                    if self._torch_semantic_prototypes is None or self._torch_semantic_prototypes.device != torch.device(device):
-                        self._torch_semantic_prototypes = torch.as_tensor(self.semantic_prototypes, device=device, dtype=dtype)
-                        self._torch_semantic_assignments = torch.as_tensor(self.semantic_assignments, device=device)
-                    prototype_similarity = query_chunk @ self._torch_semantic_prototypes.T
-                    top = torch.topk(prototype_similarity, self.semantic_top_prototypes, dim=1).indices
-                    allowed &= torch.any(self._torch_semantic_assignments[None, :, None] == top[:, None, :], dim=2)
                 if exclude is not None:
                     rows = torch.arange(end - start, device=device)
                     columns = torch.as_tensor(exclude[start:end], device=device)

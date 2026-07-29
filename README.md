@@ -309,12 +309,6 @@ two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
 unchanged; screen `anoco` on seed 42 before running `pca_anoco` or five seeds.
 
-`--semantic-prototypes 50 --semantic-top-prototypes 5` enables RAID-inspired
-two-level retrieval for per-layer ANoCo. A deterministic spherical K-means
-index groups normal instance tokens; each query searches only instances owned
-by its five closest semantic prototypes. The index is training-free, saved
-with the layer memories, and disabled by default.
-
 For the dual-head configuration, use `--anomaly-method pca_knn_anoco` together
 with `--dual-branch`. The raw pixel branch uses calibrated PCA+kNN with
 `--knn-weight`, while the L2 image branch uses calibrated PCA+ANoCo with
