@@ -21,6 +21,16 @@
 
 ## Paper-derived next steps
 
+### ANoCo-inspired follow-ups
+
+- [x] Remove soft anchor weighting after a neutral ablation.
+- [x] Remove adaptive query fidelity and calibrated drift fusion after negative ablations.
+- [x] Remove the exact paper-reproduction head after a negative ablation.
+- [x] Add an optional normal-neighborhood disagreement gate for PCA/ANoCo fusion.
+- [ ] Measure anchor stability across independently augmented normal views.
+- [ ] Compact each query image's active reference graph to avoid a second bank pass.
+- [ ] Evaluate per-layer drift consensus only if lighter changes are insufficient.
+
 - [x] Add raw/L2 dual-branch scoring: L2 for image AUROC, raw for pixel maps.
 - [x] Add configurable Top-K image aggregation ratios (0.5/1/2/5%).
 - [x] Compare patch-first and image-score-first PCA/kNN fusion (score-first was negative).
