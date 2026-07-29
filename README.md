@@ -301,9 +301,7 @@ the squared feature displacement times its angular displacement.
 `--anomaly-method pca_anoco` robustly calibrates and fuses this score with the
 PCA residual using `--anoco-weight` (default `0.5`). The main controls are
 `--anoco-neighbors 16`, `--anoco-query-weight 1.0`, and
-`--anoco-temperature 0.07`. `--anoco-view-balance` first keeps the best
-query-anchor candidate from each augmented normal view, preventing one
-rotation from filling the complete neighborhood. The implementation reuses the normal memory,
+`--anoco-temperature 0.07`. The implementation reuses the normal memory,
 spatial candidate mask, CUDA backend, and chunk size used by kNN. It performs
 two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
