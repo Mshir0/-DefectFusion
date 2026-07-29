@@ -13,6 +13,7 @@ from PIL import Image
 from .features import DinoFeatureExtractor
 from .pipeline import DefectFusion, NormalTrainingView
 from .mvtec import evaluate_mvtec
+from .reporting import experiment_output_dir, write_metrics_csv
 
 
 def _images(root: str, recursive: bool = True) -> list[str]:
@@ -156,7 +157,7 @@ def main(argv=None):
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
     e.add_argument("--image-size", type=int, default=None)
     e.add_argument("--resize-mode", choices=["direct", "longest_pad"], default=None)
-    e.add_argument("--output", default="outputs/mvtec-results.jsonl")
+    e.add_argument("--output", default="outputs/mvtec-results", help="experiment output directory; a filename is converted to a same-stem directory")
     e.add_argument("--debias", action="store_true", help="apply INSID3 positional debiasing")
     e.add_argument("--svd-components", type=int, default=20, help="INSID3 positional basis rank")
     e.add_argument("--top-k-ratio", type=float, default=None, help="highest PCA-residual patch ratio for typing")
@@ -281,6 +282,9 @@ def main(argv=None):
             p.error("--align-training-positions does not yet support affine normal augmentation")
         no_augment_categories = a.no_augment_categories or cfg.get("no_augment_categories", ["transistor"])
         categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
+        output_dir = experiment_output_dir(a.output)
+        category_output_dir = output_dir / "categories"
+        category_output_dir.mkdir(parents=True, exist_ok=True)
         all_metrics = []
         for category in categories:
             normal_dir = str(category / "train" / "good")
@@ -318,7 +322,7 @@ def main(argv=None):
                         fusion.add_prototype(defect_dir.name, image)
                         selected.append(image)
                         print(f"[defect-shot] {category.name}/{defect_dir.name}: {Path(image).name}", flush=True)
-            result_path = a.output if len(categories) == 1 else str(Path(a.output).with_name(f"{Path(a.output).stem}-{category.name}.jsonl"))
+            result_path = category_output_dir / f"{category.name}.jsonl"
             metrics = evaluate_mvtec(fusion, category, result_path, excluded_images=selected)
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]
@@ -365,24 +369,29 @@ def main(argv=None):
             metrics["texture_candidate_ratio"] = texture_candidate_ratio if texture_evidence else 0
             metrics["map_postprocess"] = map_postprocess
             metrics["gaussian_sigma"] = gaussian_sigma if map_postprocess == "gaussian" else 0
+            category_metrics_path = category_output_dir / f"{category.name}.json"
+            metrics["metrics_file"] = str(category_metrics_path)
+            category_metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             all_metrics.append(metrics)
-        if len(all_metrics) == 1:
-            summary = all_metrics[0]
-        else:
-            metric_names = (
-                "image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "pixel_aupro",
-                "defect_type_accuracy", "defect_type_macro_f1",
-            )
-            macro = {}
-            for name in metric_names:
-                values = [float(item[name]) for item in all_metrics if name in item]
-                if values:
-                    macro[name] = sum(values) / len(values)
-            summary = {"macro_average": macro, "categories": all_metrics}
-            summary_path = Path(a.output)
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary["summary_file"] = str(summary_path)
-            summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        metric_names = (
+            "image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "pixel_aupro",
+            "defect_type_accuracy", "defect_type_macro_f1",
+        )
+        macro = {}
+        for name in metric_names:
+            values = [float(item[name]) for item in all_metrics if name in item]
+            if values:
+                macro[name] = sum(values) / len(values)
+        summary_path = output_dir / "results.json"
+        csv_path = output_dir / "summary.csv"
+        summary = {
+            "macro_average": macro,
+            "categories": all_metrics,
+            "summary_file": str(summary_path),
+            "summary_csv": str(csv_path),
+        }
+        summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_metrics_csv(csv_path, all_metrics, macro)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

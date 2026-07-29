@@ -57,8 +57,11 @@ per-region overlap curve over `FPR <= 0.3`.
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSONL file per
 category. For a multi-category run, `--output` stores the final combined JSON
-summary, including macro averages and every category result; per-image files
-use `<output-stem>-<category>.jsonl`. Add `--prototype-dir` (subdirectories are defect labels) to enable
+summary, including macro averages and every category result. Evaluation output
+is organized under the `--output` directory as `results.json`, `summary.csv`,
+and `categories/<category>.json`; per-image predictions are stored in
+`categories/<category>.jsonl`. If `--output` has a file suffix, its stem becomes
+the experiment directory name. Add `--prototype-dir` (subdirectories are defect labels) to enable
 defect-type accuracy, macro-F1, and a confusion matrix.
 
 `--normal-shots 1/2/4` samples that many images from `train/good`; `-1` uses
