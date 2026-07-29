@@ -126,7 +126,7 @@ def _images(path):
 
 
 def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_images=None):
-    """Evaluate a fitted model on one MVTec category and write JSONL results."""
+    """Evaluate a fitted model on one MVTec category and write JSON predictions."""
     root = Path(category_dir)
     excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
     rows, image_y, image_s, pixel_masks, pixel_maps = [], [], [], [], []
@@ -163,7 +163,7 @@ def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_imag
                 print(f"[{len(rows):04d}] {image.name} anomaly={result['anomaly_score']:.5f} type={result['defect_type']}", flush=True)
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
     output_started = time.perf_counter()
-    output.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    output.write_text(json.dumps(rows, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     output_seconds = time.perf_counter() - output_started
     metrics = {"category": root.name, "images": len(rows), "results": str(output)}
     metrics_started = time.perf_counter()

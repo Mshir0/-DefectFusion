@@ -1,11 +1,36 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
-from defectfusion.mvtec import compute_aupro, compute_binary_auroc_aupr
+from defectfusion.mvtec import compute_aupro, compute_binary_auroc_aupr, evaluate_mvtec
 
 
 class AuproTest(unittest.TestCase):
+    def test_evaluation_writes_json_array_not_jsonl(self):
+        class Fusion:
+            def predict(self, image):
+                return {
+                    "image": image, "anomaly_score": 0.0,
+                    "anomaly_map": [[0.0, 0.0], [0.0, 0.0]],
+                    "defect_type": "unknown", "defect_type_score": 0.0,
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "bottle"
+            image_dir = root / "test" / "good"
+            image_dir.mkdir(parents=True)
+            Image.new("RGB", (4, 4)).save(image_dir / "001.png")
+            output = Path(directory) / "bottle.json"
+            evaluate_mvtec(Fusion(), root, output, progress=False)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+        self.assertIsInstance(payload, list)
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["category"], "bottle")
+
     def test_shared_binary_metrics_are_exact_for_perfect_ranking(self):
         auroc, aupr = compute_binary_auroc_aupr([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9])
         self.assertEqual(auroc, 1.0)

@@ -328,7 +328,7 @@ def main(argv=None):
                         fusion.add_prototype(defect_dir.name, image)
                         selected.append(image)
                         print(f"[defect-shot] {category.name}/{defect_dir.name}: {Path(image).name}", flush=True)
-            result_path = category_output_dir / f"{category.name}.jsonl"
+            result_path = category_output_dir / f"{category.name}.json"
             metrics = evaluate_mvtec(fusion, category, result_path, excluded_images=selected)
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]
@@ -377,9 +377,10 @@ def main(argv=None):
             metrics["texture_candidate_ratio"] = texture_candidate_ratio if texture_evidence else 0
             metrics["map_postprocess"] = map_postprocess
             metrics["gaussian_sigma"] = gaussian_sigma if map_postprocess == "gaussian" else 0
-            category_metrics_path = category_output_dir / f"{category.name}.json"
-            metrics["metrics_file"] = str(category_metrics_path)
-            category_metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            metrics["metrics_file"] = str(result_path)
+            predictions = json.loads(result_path.read_text(encoding="utf-8"))
+            category_payload = {"metrics": metrics, "predictions": predictions}
+            result_path.write_text(json.dumps(category_payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
             all_metrics.append(metrics)
         metric_names = (
             "image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "pixel_aupro",

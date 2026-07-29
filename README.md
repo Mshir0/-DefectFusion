@@ -55,12 +55,13 @@ and reports Image AUROC/AUPR plus Pixel AUROC/AUPR/AUPRO when ground-truth
 masks are available. AUPRO follows the MVTec convention and integrates the
 per-region overlap curve over `FPR <= 0.3`.
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
-the CLI prints each image as it is processed and writes one JSONL file per
+the CLI prints each image as it is processed and writes one JSON file per
 category. For a multi-category run, `--output` stores the final combined JSON
 summary, including macro averages and every category result. Evaluation output
 is organized under the `--output` directory as `results.json`, `summary.csv`,
-and `categories/<category>.json`; per-image predictions are stored in
-`categories/<category>.jsonl`. If `--output` has a file suffix, its stem becomes
+and `categories/<category>.json`. Each category file contains both its metrics
+and a `predictions` array with all per-image results. No JSONL files are
+generated. If `--output` has a file suffix, its stem becomes
 the experiment directory name. Add `--prototype-dir` (subdirectories are defect labels) to enable
 defect-type accuracy, macro-F1, and a confusion matrix.
 
@@ -78,7 +79,7 @@ those selected images are excluded from classification evaluation:
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots 1 --defect-shots 1 --seed 42 \
-  --output outputs/mvtec-all.jsonl
+  --output outputs/mvtec-all
 ```
 
 Enable INSID3 positional debiasing for an ablation with the same split:
@@ -86,7 +87,7 @@ Enable INSID3 positional debiasing for an ablation with the same split:
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots -1 --defect-shots 1 --seed 42 --debias --svd-components 20 \
-  --output outputs/mvtec-all-debiased.jsonl
+  --output outputs/mvtec-all-debiased
 ```
 
 Defect typing uses the highest PCA-reconstruction-residual patches instead of
@@ -145,7 +146,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --layer-aggregation mean --image-size 672 \
   --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
   --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
-  --output outputs/ablation-recommended.jsonl
+  --output outputs/ablation-recommended
 ```
 
 ### Parameters
@@ -405,7 +406,7 @@ python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --model facebook/dinov3-vit7b16-pretrain-lvd1689m \
   --normal-shots -1 --defect-shots 1 --seed 42 --top-k-ratio 1.0 --image-score mean \
   --feature-layers=-1 --layer-aggregation mean \
-  --output outputs/ablation-original.jsonl
+  --output outputs/ablation-original
 ```
 
 Compare PCA-residual Top-K typing ratios:
@@ -414,7 +415,7 @@ Compare PCA-residual Top-K typing ratios:
 for ratio in 0.05 0.10 0.20 0.30 1.0; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots -1 --defect-shots 1 --seed 42 --top-k-ratio "$ratio" \
-    --output "outputs/ablation-topk-${ratio}.jsonl"
+    --output "outputs/ablation-topk-${ratio}"
 done
 ```
 
@@ -425,7 +426,7 @@ unchanged:
 for score in mean mtop1p p99 max; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots -1 --defect-shots 1 --seed 42 --image-score "$score" \
-    --output "outputs/ablation-image-${score}.jsonl"
+    --output "outputs/ablation-image-${score}"
 done
 ```
 
@@ -434,15 +435,15 @@ Compare single-layer and multi-layer features:
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots -1 --defect-shots 1 --seed 42 --feature-layers=-1 \
-  --output outputs/ablation-layer-last.jsonl
+  --output outputs/ablation-layer-last
 
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots -1 --defect-shots 1 --seed 42 --feature-layers=-1,-2,-3,-4 \
-  --layer-aggregation mean --output outputs/ablation-layer-last4-mean.jsonl
+  --layer-aggregation mean --output outputs/ablation-layer-last4-mean
 
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots -1 --defect-shots 1 --seed 42 --feature-layer-preset middle7 \
-  --layer-aggregation mean --output outputs/ablation-layer-middle7-mean.jsonl
+  --layer-aggregation mean --output outputs/ablation-layer-middle7-mean
 ```
 
 For the paper-protocol anomaly-detection comparison, keep defect references
@@ -462,7 +463,7 @@ deviation across runs rather than selecting the best seed:
 for seed in 0 1 2; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots 4 --defect-shots 1 --seed "$seed" \
-    --output "outputs/ablation-seed-${seed}.jsonl"
+    --output "outputs/ablation-seed-${seed}"
 done
 ```
 
