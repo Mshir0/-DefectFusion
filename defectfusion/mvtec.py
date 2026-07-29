@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 import numpy as np
 
@@ -88,6 +89,38 @@ def compute_aupro(anomaly_maps, gt_masks, fpr_limit=0.3, num_thresholds=300, con
     return float(integrate(pros, fprs) / fpr_limit)
 
 
+def compute_binary_auroc_aupr(labels, scores):
+    """Compute exact binary AUROC and average precision from one shared sort."""
+    labels = np.asarray(labels, dtype=np.uint8).ravel()
+    scores = np.asarray(scores).ravel()
+    if labels.shape != scores.shape:
+        raise ValueError(f"Binary metric shape mismatch: {labels.shape} vs {scores.shape}")
+    positives = int(labels.sum())
+    negatives = len(labels) - positives
+    if positives == 0 or negatives == 0:
+        return float("nan"), float("nan")
+    if not np.isfinite(scores).all():
+        return float("nan"), float("nan")
+
+    order = np.argsort(scores, kind="stable")[::-1]
+    sorted_scores = scores[order]
+    sorted_labels = labels[order]
+    threshold_ends = np.r_[sorted_scores[1:] != sorted_scores[:-1], True]
+    cumulative_true = np.cumsum(sorted_labels, dtype=np.int64)[threshold_ends]
+    cumulative_count = np.arange(1, len(labels) + 1, dtype=np.int64)[threshold_ends]
+    cumulative_false = cumulative_count - cumulative_true
+
+    true_positive_rate = np.r_[0.0, cumulative_true / positives]
+    false_positive_rate = np.r_[0.0, cumulative_false / negatives]
+    integrate = getattr(np, "trapezoid", np.trapz)
+    auroc = float(integrate(true_positive_rate, false_positive_rate))
+
+    precision = cumulative_true / cumulative_count
+    recall = cumulative_true / positives
+    aupr = float(np.sum(np.diff(np.r_[0.0, recall]) * precision))
+    return auroc, aupr
+
+
 def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
@@ -97,45 +130,53 @@ def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_imag
     root = Path(category_dir)
     excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
     rows, image_y, image_s, pixel_masks, pixel_maps = [], [], [], [], []
+    started = time.perf_counter()
+    prediction_seconds = 0.0
+    pixel_preparation_seconds = 0.0
     test = root / "test"
     for defect_dir in sorted(p for p in test.iterdir() if p.is_dir()):
         defect = defect_dir.name
         for image in _images(defect_dir):
             if str(image.resolve()) in excluded_images:
                 continue
+            prediction_started = time.perf_counter()
             result = fusion.predict(str(image))
+            prediction_seconds += time.perf_counter() - prediction_started
             truth = defect != "good"
             result.update({"category": root.name, "ground_truth_type": defect, "ground_truth_anomaly": truth})
             mask_path = root / "ground_truth" / defect / f"{image.stem}_mask.png"
             if mask_path.exists() or not truth:
+                pixel_started = time.perf_counter()
                 from PIL import Image as PILImage
                 if mask_path.exists():
                     mask = np.asarray(PILImage.open(mask_path).convert("L")) > 0
                 else:
                     with PILImage.open(image) as source:
                         mask = np.zeros((source.height, source.width), dtype=bool)
-                score = np.asarray(result["anomaly_map"], dtype=float)
+                score = np.asarray(result["anomaly_map"], dtype=np.float32)
                 # Resize the coarse patch map to the mask resolution for pixel metrics.
                 score = np.asarray(PILImage.fromarray(score.astype("float32"), mode="F").resize(mask.shape[::-1], PILImage.Resampling.BILINEAR))
                 pixel_masks.append(mask); pixel_maps.append(score)
+                pixel_preparation_seconds += time.perf_counter() - pixel_started
             image_y.append(int(truth)); image_s.append(float(result["anomaly_score"])); rows.append(result)
             if progress:
                 print(f"[{len(rows):04d}] {image.name} anomaly={result['anomaly_score']:.5f} type={result['defect_type']}", flush=True)
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
+    output_started = time.perf_counter()
     output.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    output_seconds = time.perf_counter() - output_started
     metrics = {"category": root.name, "images": len(rows), "results": str(output)}
+    metrics_started = time.perf_counter()
+    if len(set(image_y)) > 1:
+        metrics["image_auroc"], metrics["image_aupr"] = compute_binary_auroc_aupr(image_y, image_s)
+    if pixel_masks:
+        pixel_y = np.concatenate([item.ravel() for item in pixel_masks]).astype(np.uint8)
+        pixel_s = np.concatenate([item.ravel() for item in pixel_maps]).astype(np.float32, copy=False)
+        if pixel_y.min() == 0 and pixel_y.max() == 1:
+            metrics["pixel_auroc"], metrics["pixel_aupr"] = compute_binary_auroc_aupr(pixel_y, pixel_s)
+            del pixel_y, pixel_s
+            metrics["pixel_aupro"] = compute_aupro(pixel_maps, pixel_masks)
     try:
-        from sklearn.metrics import average_precision_score, roc_auc_score
-        if len(set(image_y)) > 1:
-            metrics["image_auroc"] = float(roc_auc_score(image_y, image_s))
-            metrics["image_aupr"] = float(average_precision_score(image_y, image_s))
-        if pixel_masks:
-            pixel_y = np.concatenate([item.ravel() for item in pixel_masks]).astype(np.uint8)
-            pixel_s = np.concatenate([item.ravel() for item in pixel_maps])
-            if len(np.unique(pixel_y)) > 1:
-                metrics["pixel_auroc"] = float(roc_auc_score(pixel_y, pixel_s))
-                metrics["pixel_aupr"] = float(average_precision_score(pixel_y, pixel_s))
-                metrics["pixel_aupro"] = compute_aupro(pixel_maps, pixel_masks)
         from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
         defect_rows = [r for r in rows if r["ground_truth_anomaly"]]
         true_types = [r["ground_truth_type"] for r in defect_rows]
@@ -149,5 +190,13 @@ def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_imag
         else:
             metrics["defect_type_note"] = "No prototypes supplied; type metrics are unavailable"
     except ImportError:
-        metrics["metrics_note"] = "Install scikit-learn to compute evaluation metrics"
+        metrics["type_metrics_note"] = "Install scikit-learn to compute defect-type metrics"
+    metrics_seconds = time.perf_counter() - metrics_started
+    metrics["timing_seconds"] = {
+        "prediction": prediction_seconds,
+        "pixel_preparation": pixel_preparation_seconds,
+        "json_output": output_seconds,
+        "metrics": metrics_seconds,
+        "total": time.perf_counter() - started,
+    }
     return metrics

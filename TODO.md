@@ -8,7 +8,7 @@
 - [ ] Keep patch features and PCA residual scoring on GPU to remove DINO -> CPU PCA -> GPU kNN transfers.
 - [ ] Index spatial kNN memory by canonical position so local radius queries avoid full-bank similarity and mask construction.
 - [ ] Batch DINO test-image extraction within available VRAM and profile processor/PIL preprocessing separately.
-- [ ] Reduce exact metric overhead: retain pixel maps as float32 and share ranking work between Pixel AUROC and AUPR without changing reported values.
+- [x] Reduce exact metric overhead: retain pixel maps as float32 and share ranking work between Pixel AUROC and AUPR without changing reported values.
 - [ ] Add stage-level timing (normal augmentation, feature extraction, PCA fit, kNN calibration, per-image scoring, metric evaluation) to validate each optimization.
 
 - [x] Add configurable Top-K patch aggregation for the image anomaly score.
