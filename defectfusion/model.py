@@ -216,7 +216,7 @@ class NormalPatchMemory:
             return self._score_torch(query, exclude, positions)
         return self._score_numpy(query, exclude, positions)
 
-    def _anoco_score_numpy(self, query, exclude, positions, neighbor_count, query_weight, temperature, anchor_weight):
+    def _anoco_score_numpy(self, query, exclude, positions, neighbor_count, query_weight, temperature, anchor_weight, adaptive_lambda):
         scores = np.empty(len(query), dtype=np.float32)
         for start in range(0, len(query), self.query_chunk_size):
             end = min(start + self.query_chunk_size, len(query))
@@ -250,14 +250,16 @@ class NormalPatchMemory:
             weights = np.where(neighbor_allowed, np.exp(logits), 0.0)
             weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
             normal_target = np.sum(self.features[neighbor_indices] * weights[:, :, None], axis=1)
-            updated = (query_weight * query_chunk + normal_target) / (query_weight + 1.0)
+            confidence = np.sum(weights * np.clip(neighbor_anchor_similarity, 0.0, 1.0), axis=1, keepdims=True)
+            query_weights = query_weight * (1.0 + adaptive_lambda * (1.0 - confidence))
+            updated = (query_weights * query_chunk + normal_target) / (query_weights + 1.0)
             displacement = np.sum((updated - query_chunk) ** 2, axis=1)
             updated_normalized = updated / np.maximum(np.linalg.norm(updated, axis=1, keepdims=True), 1e-12)
             angular = 1.0 - np.sum(updated_normalized * query_chunk, axis=1)
             scores[start:end] = displacement * np.maximum(angular, 0.0)
         return scores
 
-    def _anoco_score_torch(self, query, exclude, positions, neighbor_count, query_weight, temperature, anchor_weight):
+    def _anoco_score_torch(self, query, exclude, positions, neighbor_count, query_weight, temperature, anchor_weight, adaptive_lambda):
         try:
             import torch
         except ImportError as exc:
@@ -305,13 +307,15 @@ class NormalPatchMemory:
                 normal_features = self._torch_bank[neighbor_indices].float()
                 normal_target = torch.sum(normal_features * weights[:, :, None], dim=1)
                 query_float = query_chunk.float()
-                updated = (query_weight * query_float + normal_target) / (query_weight + 1.0)
+                confidence = torch.sum(weights * torch.clamp(neighbor_anchor_similarity.float(), 0.0, 1.0), dim=1, keepdim=True)
+                query_weights = query_weight * (1.0 + adaptive_lambda * (1.0 - confidence))
+                updated = (query_weights * query_float + normal_target) / (query_weights + 1.0)
                 displacement = torch.sum((updated - query_float) ** 2, dim=1)
                 angular = 1.0 - torch.sum(torch.nn.functional.normalize(updated, p=2, dim=1) * query_float, dim=1)
                 scores[start:end] = (displacement * torch.clamp(angular, min=0.0)).cpu().numpy()
         return scores
 
-    def score_anoco(self, features, neighbor_count=16, query_weight=1.0, temperature=0.07, anchor_weight=0.0, exclude_indices=None, positions=None):
+    def score_anoco(self, features, neighbor_count=16, query_weight=1.0, temperature=0.07, anchor_weight=0.0, adaptive_lambda=0.0, exclude_indices=None, positions=None):
         if self.features is None or len(self.features) == 0:
             raise ValueError("Normal patch memory has not been fitted")
         if neighbor_count <= 0:
@@ -322,6 +326,8 @@ class NormalPatchMemory:
             raise ValueError("ANoCo temperature must be positive")
         if anchor_weight < 0:
             raise ValueError("ANoCo anchor_weight must be non-negative")
+        if adaptive_lambda < 0:
+            raise ValueError("ANoCo adaptive_lambda must be non-negative")
         query = self._normalize(features)
         exclude = None if exclude_indices is None else np.asarray(exclude_indices)
         if positions is not None:
@@ -331,10 +337,10 @@ class NormalPatchMemory:
         if self.spatial_radius >= 0 and (positions is None or self.positions is None):
             raise ValueError("Spatial ANoCo requires patch positions for normal and query features")
         if self._resolved_backend() == "torch":
-            return self._anoco_score_torch(query, exclude, positions, neighbor_count, query_weight, temperature, anchor_weight)
-        return self._anoco_score_numpy(query, exclude, positions, neighbor_count, query_weight, temperature, anchor_weight)
+            return self._anoco_score_torch(query, exclude, positions, neighbor_count, query_weight, temperature, anchor_weight, adaptive_lambda)
+        return self._anoco_score_numpy(query, exclude, positions, neighbor_count, query_weight, temperature, anchor_weight, adaptive_lambda)
 
-    def fit_anoco_calibration(self, neighbor_count=16, query_weight=1.0, temperature=0.07, anchor_weight=0.0, calibration_patches=1024):
+    def fit_anoco_calibration(self, neighbor_count=16, query_weight=1.0, temperature=0.07, anchor_weight=0.0, adaptive_lambda=0.0, calibration_patches=1024):
         sample_count = min(len(self.features), max(2, int(calibration_patches)))
         sample_indices = np.linspace(0, len(self.features) - 1, sample_count, dtype=np.int64)
         calibration_positions = None if self.positions is None else self.positions[sample_indices]
@@ -344,6 +350,7 @@ class NormalPatchMemory:
             query_weight=query_weight,
             temperature=temperature,
             anchor_weight=anchor_weight,
+            adaptive_lambda=adaptive_lambda,
             exclude_indices=sample_indices,
             positions=calibration_positions,
         )
