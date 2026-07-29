@@ -305,6 +305,12 @@ spatial candidate mask, CUDA backend, and chunk size used by kNN. It performs
 two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
 unchanged; screen `anoco` on seed 42 before running `pca_anoco` or five seeds.
+
+For the dual-head configuration, use `--anomaly-method pca_knn_anoco` together
+with `--dual-branch`. The raw pixel branch uses calibrated PCA+kNN with
+`--knn-weight`, while the L2 image branch uses calibrated PCA+ANoCo with
+`--anoco-weight`. Each branch computes its PCA residual once and reuses it for
+fusion and aggregation.
 Set `--knn-spatial-radius 0.10` to restrict kNN candidates to a local window
 in normalized patch coordinates. `-1` retains global matching. If leave-one-out
 calibration finds no candidate in the local window, it falls back to the global

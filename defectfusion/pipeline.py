@@ -56,8 +56,10 @@ class DefectFusion:
             raise ValueError("map_postprocess must be none, gaussian, or crf")
         self.map_postprocess = map_postprocess
         self.gaussian_sigma = gaussian_sigma
-        if anomaly_method not in {"pca", "knn", "pca_knn", "anoco", "pca_anoco"}:
-            raise ValueError("anomaly_method must be pca, knn, pca_knn, anoco, or pca_anoco")
+        if anomaly_method not in {"pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco"}:
+            raise ValueError("anomaly_method must be pca, knn, pca_knn, anoco, pca_anoco, or pca_knn_anoco")
+        if anomaly_method == "pca_knn_anoco" and not self.dual_branch:
+            raise ValueError("pca_knn_anoco requires dual_branch=true")
         if not 0 <= knn_weight <= 1:
             raise ValueError("knn_weight must be in [0, 1]")
         self.anomaly_method = anomaly_method
@@ -135,7 +137,7 @@ class DefectFusion:
             if self.anomaly_method != "pca":
                 image_memory_features = np.concatenate(image_memory_patch_batches, axis=0) if self.align_training_positions else image_features
                 self.image_memory.fit(image_memory_features, memory_positions)
-                if self.anomaly_method in {"anoco", "pca_anoco"}:
+                if self.anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"}:
                     self.image_memory.fit_anoco_calibration(self.anoco_neighbors, self.anoco_query_weight, self.anoco_temperature)
         self.reference_grid = features.shape[1]
         return self
@@ -251,13 +253,14 @@ class DefectFusion:
             evidences.append(evidence)
         return refined.ravel(), evidences
 
-    def _branch_scores(self, patches, subspace, memory, positions=None):
+    def _branch_scores(self, patches, subspace, memory, positions=None, method=None):
+        method = self.anomaly_method if method is None else method
         pca_scores = subspace.score(patches)
-        if self.anomaly_method == "pca":
+        if method == "pca":
             return pca_scores, pca_scores, None, None
-        if self.anomaly_method in {"anoco", "pca_anoco"}:
+        if method in {"anoco", "pca_anoco"}:
             normal_scores = memory.score_anoco(patches, self.anoco_neighbors, self.anoco_query_weight, self.anoco_temperature, positions=positions)
-            if self.anomaly_method == "anoco":
+            if method == "anoco":
                 return normal_scores, pca_scores, normal_scores, None
             if self.fusion_mode == "gated":
                 pca_evidence = subspace.tail_evidence(pca_scores)
@@ -269,7 +272,7 @@ class DefectFusion:
                      + self.anoco_weight * memory.calibrated_anoco(normal_scores))
             return fused, pca_scores, normal_scores, None
         knn_scores = memory.score(patches, positions=positions)
-        if self.anomaly_method == "knn":
+        if method == "knn":
             return knn_scores, pca_scores, knn_scores, None
         if self.fusion_mode == "gated":
             pca_evidence = subspace.tail_evidence(pca_scores)
@@ -284,12 +287,14 @@ class DefectFusion:
         return fused, pca_scores, knn_scores, None
 
     def _anomaly_scores(self, patches, positions=None):
-        return self._branch_scores(patches, self.subspace, self.normal_memory, positions)
+        method = "pca_knn" if self.anomaly_method == "pca_knn_anoco" else self.anomaly_method
+        return self._branch_scores(patches, self.subspace, self.normal_memory, positions, method)
 
     def _image_score_bundle(self, patches, positions=None):
         subspace = self.image_subspace if self.dual_branch else self.subspace
         memory = self.image_memory if self.dual_branch else self.normal_memory
-        return self._branch_scores(patches, subspace, memory, positions)
+        method = "pca_anoco" if self.anomaly_method == "pca_knn_anoco" else self.anomaly_method
+        return self._branch_scores(patches, subspace, memory, positions, method)
 
     def _image_scores(self, patches, positions=None):
         return self._image_score_bundle(patches, positions)[0]
@@ -329,14 +334,15 @@ class DefectFusion:
         if score_bundle is None:
             score_bundle = self._image_score_bundle(patches, positions)
         fused_scores, pca_scores, knn_scores, _ = score_bundle
-        if self.image_fusion_stage == "patch" or self.anomaly_method not in {"pca_knn", "pca_anoco"} or self.fusion_mode != "fixed":
+        image_method = "pca_anoco" if self.anomaly_method == "pca_knn_anoco" else self.anomaly_method
+        if self.image_fusion_stage == "patch" or image_method not in {"pca_knn", "pca_anoco"} or self.fusion_mode != "fixed":
             patch_scores = fused_scores
             base_score = self._aggregate_image_score(patch_scores)
         else:
             subspace = self.image_subspace if self.dual_branch else self.subspace
             memory = self.image_memory if self.dual_branch else self.normal_memory
             pca = subspace.calibrated(pca_scores)
-            if self.anomaly_method == "pca_anoco":
+            if image_method == "pca_anoco":
                 normal = memory.calibrated_anoco(knn_scores)
                 weight = self.anoco_weight
             else:

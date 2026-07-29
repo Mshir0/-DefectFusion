@@ -298,6 +298,30 @@ class NormalPatchMemoryTest(unittest.TestCase):
             expected = fusion.subspace.calibrated(pca) if weight == 0 else fusion.normal_memory.calibrated_anoco(anoco)
             np.testing.assert_allclose(fused, expected)
 
+    def test_hybrid_head_uses_knn_for_pixels_and_anoco_for_images(self):
+        normal = np.array([[1, 0], [0, 1], [1, 1], [-1, 1]], dtype=np.float32)
+        query = np.array([[1, -1], [-1, -1]], dtype=np.float32)
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            knn_weight=0.5, anoco_weight=0.25, anoco_neighbors=2,
+        )
+        fusion.subspace.fit(normal)
+        fusion.normal_memory.fit(normal)
+        fusion.image_subspace.fit(normal)
+        fusion.image_memory.fit(normal).fit_anoco_calibration(neighbor_count=2)
+
+        pixel_fused, pixel_pca, pixel_knn, _ = fusion._anomaly_scores(query)
+        expected_pixel = 0.5 * fusion.subspace.calibrated(pixel_pca) + 0.5 * fusion.normal_memory.calibrated(pixel_knn)
+        np.testing.assert_allclose(pixel_fused, expected_pixel)
+
+        image_fused, image_pca, image_anoco, _ = fusion._image_score_bundle(query)
+        expected_image = 0.75 * fusion.image_subspace.calibrated(image_pca) + 0.25 * fusion.image_memory.calibrated_anoco(image_anoco)
+        np.testing.assert_allclose(image_fused, expected_image)
+
+    def test_hybrid_head_requires_dual_branch(self):
+        with self.assertRaisesRegex(ValueError, "requires dual_branch"):
+            DefectFusion(object(), anomaly_method="pca_knn_anoco")
+
     def test_tail_evidence_is_monotonic(self):
         calibration = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float64)
         evidence = NormalPatchMemory._tail_evidence([0.05, 0.25, 0.5, 0.6], calibration)
