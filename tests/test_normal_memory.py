@@ -275,18 +275,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         np.testing.assert_allclose(default, zero)
         self.assertFalse(np.allclose(default, weighted, rtol=1e-5, atol=1e-12))
 
-    def test_anoco_adaptive_lambda_reduces_low_confidence_drift(self):
-        normal = np.array([
-            [1.0, 0.0, 0.0], [0.5, 0.8, 0.0], [0.5, 0.0, 0.8], [0.4, 0.6, 0.6],
-        ], dtype=np.float32)
-        query = np.array([[0.7, 0.4, 0.5]], dtype=np.float32)
-        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
-        default = memory.score_anoco(query, neighbor_count=4)
-        disabled = memory.score_anoco(query, neighbor_count=4, adaptive_lambda=0.0)
-        adaptive = memory.score_anoco(query, neighbor_count=4, adaptive_lambda=1.0)
-        np.testing.assert_allclose(default, disabled)
-        self.assertLess(adaptive[0], default[0])
-
     def test_anoco_calibration_is_finite(self):
         features = np.eye(6, dtype=np.float32)
         memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(features)
@@ -294,6 +282,21 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertTrue(np.isfinite(memory.anoco_center))
         self.assertGreater(memory.anoco_scale, 0)
         self.assertTrue(np.all(np.isfinite(memory.anoco_calibration_scores)))
+
+    def test_anoco_calibrated_sum_matches_component_z_scores(self):
+        normal = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0]], dtype=np.float32)
+        query = np.array([[1, -1, 0]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        memory.fit_anoco_calibration(neighbor_count=3, drift_mode="calibrated_sum", drift_weight=0.6)
+        _, distance, angle = memory._anoco_score_numpy(
+            memory._normalize(query), None, None, 3, 1.0, 0.07, 0.0
+        )
+        expected = (
+            0.6 * (distance - memory.anoco_distance_center) / memory.anoco_distance_scale
+            + 0.4 * (angle - memory.anoco_angle_center) / memory.anoco_angle_scale
+        )
+        actual = memory.score_anoco(query, neighbor_count=3, drift_mode="calibrated_sum", drift_weight=0.6)
+        np.testing.assert_allclose(actual, expected)
 
     def test_exact_anoco_matches_prefix_and_norm_weight_formula(self):
         normal = np.array([[2.0, 0.0], [1.9, 0.1], [1.0, 1.0]], dtype=np.float32)
@@ -429,10 +432,10 @@ class NormalPatchMemoryTest(unittest.TestCase):
             )
 
     def test_pipeline_save_load_preserves_anoco_state(self):
-        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_anchor_weight=0.25, anoco_adaptive_lambda=1.0)
+        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_anchor_weight=0.25, anoco_drift_mode="calibrated_sum", anoco_drift_weight=0.6)
         normal = np.eye(5, dtype=np.float32)
         fusion.subspace.fit(normal)
-        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2)
+        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2, anchor_weight=0.25, drift_mode="calibrated_sum", drift_weight=0.6)
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "model.json"
             fusion.save(state_path)
@@ -440,7 +443,8 @@ class NormalPatchMemoryTest(unittest.TestCase):
             self.assertEqual(loaded.anoco_neighbors, 3)
             self.assertEqual(loaded.anoco_temperature, 0.2)
             self.assertEqual(loaded.anoco_anchor_weight, 0.25)
-            self.assertEqual(loaded.anoco_adaptive_lambda, 1.0)
+            self.assertEqual(loaded.anoco_drift_mode, "calibrated_sum")
+            self.assertEqual(loaded.anoco_drift_weight, 0.6)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
