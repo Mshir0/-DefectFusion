@@ -21,6 +21,16 @@
 
 ## Paper-derived next steps
 
+### ANoCo-inspired follow-ups
+
+- [x] Add soft anchor-consistency weighting to the approximate ANoCo neighbor logits (`beta=0.25` screening value).
+- [ ] Add neighborhood-confidence-adaptive query fidelity (`lambda_i`).
+- [ ] Compare multiplicative drift with separately calibrated distance/angle evidence.
+- [ ] Use normal-neighborhood disagreement as a PCA/ANoCo gate.
+- [ ] Measure anchor stability across independently augmented normal views.
+- [ ] Compact each query image's active reference graph to reduce the second bank pass.
+- [ ] Evaluate per-layer drift consensus only if the lighter changes are insufficient.
+
 - [x] Add raw/L2 dual-branch scoring: L2 for image AUROC, raw for pixel maps.
 - [x] Add configurable Top-K image aggregation ratios (0.5/1/2/5%).
 - [x] Compare patch-first and image-score-first PCA/kNN fusion (score-first was negative).
