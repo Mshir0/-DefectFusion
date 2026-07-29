@@ -5,11 +5,28 @@ from pathlib import Path
 
 import numpy as np
 
-from defectfusion.model import NormalPatchMemory, PrototypeBank
+from defectfusion.model import NormalPatchMemory, NormalSubspace, PrototypeBank
 from defectfusion.pipeline import DefectFusion
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
+    def test_mahalanobis_residual_emphasizes_low_variance_dimensions(self):
+        training = np.array([
+            [-4.0, -0.1, 0.0], [-2.0, 0.1, 0.0], [0.0, -0.1, 0.0],
+            [2.0, 0.1, 0.0], [4.0, -0.1, 0.0],
+        ])
+        subspace = NormalSubspace(explained_variance=0.8, residual_metric="mahalanobis").fit(training)
+        high_variance_score = subspace.score([[0.0, 1.0, 0.0]])[0]
+        low_variance_score = subspace.score([[0.0, 0.0, 1.0]])[0]
+        self.assertGreater(low_variance_score, high_variance_score)
+
+    def test_subspace_serialization_preserves_residual_metric(self):
+        training = np.array([[0.0, 0.0], [1.0, 0.1], [2.0, -0.1]])
+        fitted = NormalSubspace(explained_variance=0.8, residual_metric="mahalanobis").fit(training)
+        loaded = NormalSubspace.from_dict(fitted.to_dict())
+        self.assertEqual(loaded.residual_metric, "mahalanobis")
+        np.testing.assert_allclose(loaded.score(training), fitted.score(training))
+
     def test_image_top_ratio_controls_aggregation(self):
         scores = np.arange(1, 101, dtype=np.float64)
         top_one = DefectFusion(object(), image_top_ratio=0.01)._aggregate_image_score(scores)
@@ -140,6 +157,17 @@ class NormalPatchMemoryTest(unittest.TestCase):
                 loaded.normal_memory.calibration_scores,
                 fusion.normal_memory.calibration_scores,
             )
+
+    def test_pipeline_save_load_preserves_mahalanobis_residual(self):
+        fusion = DefectFusion(object(), pca_residual_metric="mahalanobis")
+        normal = np.array([[0.0, 0.0], [1.0, 0.1], [2.0, -0.1]])
+        fusion.subspace.fit(normal)
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "model.json"
+            fusion.save(state_path)
+            loaded = DefectFusion.load(state_path, object())
+            self.assertEqual(loaded.pca_residual_metric, "mahalanobis")
+            self.assertEqual(loaded.subspace.residual_metric, "mahalanobis")
 
 
 if __name__ == "__main__":

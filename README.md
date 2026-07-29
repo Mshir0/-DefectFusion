@@ -161,6 +161,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Image spatial weight | `--image-spatial-weight` | `0.0` | `0, 0.25, 0.5` | Connected Top-K image evidence |
 | Type matching | `--type-matching` | `bidirectional_patch` | `prototype_mean, bidirectional_patch, rbf_svm` | Type Accuracy, Macro-F1 |
 | Anomaly detector | `--anomaly-method` | `pca` | `pca, knn, pca_knn` | Image/Pixel AUROC |
+| PCA residual metric | `--pca-residual-metric` | `squared_l2` | `squared_l2, mahalanobis` | PCA anomaly evidence |
 | kNN fusion weight | `--knn-weight` | `0.5` | `0.25, 0.5, 0.75` | Active with `pca_knn` |
 | PCA-kNN fusion | `--fusion-mode` | `fixed` | `fixed, gated` | Image/Pixel AUROC |
 | Gate temperature | `--gate-temperature` | `1.0` | `0.5, 1.0, 2.0` | Active with gated fusion |
@@ -268,7 +269,9 @@ reduced macro pixel AUROC; it remains available only for explicit experiments.
 
 `--anomaly-method knn` uses the AnomalyDINO normal-patch memory score: cosine
 distance to the closest normalized normal patch. `pca_knn` combines it with
-the PCA reconstruction residual. `--fusion-mode fixed` reproduces robust
+the PCA reconstruction residual. `--pca-residual-metric mahalanobis` weights
+each orthogonal residual dimension by its shrinkage-regularized normal variance;
+the default `squared_l2` preserves the existing unweighted residual. `--fusion-mode fixed` reproduces robust
 z-score calibration with the global `--knn-weight`. `gated` maps both raw
 scores to empirical normal-tail evidence and assigns a soft kNN weight to
 every patch. `--gate-temperature` controls how decisively the gate selects

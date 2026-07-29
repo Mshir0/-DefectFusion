@@ -21,8 +21,8 @@
 - [x] Evaluate independent per-layer PCA score fusion (removed after negative MVTec ablation).
 - [x] Add training-free normal-tail-calibrated gating for PCA and kNN fusion.
 - [ ] Apply INSID3 positional debiasing only to cross-image defect matching.
-- [ ] Add PCA score ablations: cosine residual, dropped PCs, and Mahalanobis residual.
-- [ ] Score each defect reference independently and robustly aggregate reference scores.
+- [x] Add a shrinkage diagonal-Mahalanobis PCA residual ablation.
+- [ ] Score each normal reference independently and robustly aggregate scores (deferred until the 2/4-shot extension).
 - [ ] Calibrate uncertainty from agreement across multiple normal references.
 - [x] Evaluate Shrinkage LDA defect typing (removed after negative MVTec ablation).
 - [x] Add a class-balanced RBF-SVM defect-type classifier for Top-K anomaly patches.

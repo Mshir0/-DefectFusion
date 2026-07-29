@@ -179,9 +179,16 @@ class NormalPatchMemory:
         return evidence
 
 class NormalSubspace:
-    def __init__(self, explained_variance=0.99, max_components=None):
+    def __init__(self, explained_variance=0.99, max_components=None, residual_metric="squared_l2", covariance_shrinkage=0.1):
+        if residual_metric not in {"squared_l2", "mahalanobis"}:
+            raise ValueError("residual_metric must be squared_l2 or mahalanobis")
+        if not 0 <= covariance_shrinkage <= 1:
+            raise ValueError("covariance_shrinkage must be in [0, 1]")
         self.explained_variance = explained_variance; self.max_components = max_components
+        self.residual_metric = residual_metric
+        self.covariance_shrinkage = float(covariance_shrinkage)
         self.mean = self.components = None
+        self.residual_variance = None
         self.score_center = 0.0; self.score_scale = 1.0
         self.calibration_scores = None
     def fit(self, features):
@@ -190,21 +197,33 @@ class NormalSubspace:
         keep = np.searchsorted(np.cumsum(var) / max(var.sum(), 1e-12), self.explained_variance) + 1
         if self.max_components: keep = min(keep, self.max_components)
         self.components = vt[:max(1, keep)]
+        residual = self._residual(x)
+        variance = np.mean(residual ** 2, axis=0)
+        target = float(np.mean(variance))
+        variance = (1.0 - self.covariance_shrinkage) * variance + self.covariance_shrinkage * target
+        self.residual_variance = np.maximum(variance, max(target * 1e-6, 1e-12))
         scores = self.score(x)
         self.score_center, self.score_scale = NormalPatchMemory._robust_stats(scores)
         sample_count = min(len(scores), 4096)
         sample_indices = np.linspace(0, len(scores) - 1, sample_count, dtype=np.int64)
         self.calibration_scores = np.sort(np.asarray(scores[sample_indices], dtype=np.float64))
         return self
-    def score(self, features):
+    def _residual(self, features):
         z = np.asarray(features, dtype=np.float64) - self.mean; recon = (z @ self.components.T) @ self.components
-        return np.sum((z - recon) ** 2, axis=1)
+        return z - recon
+    def score(self, features):
+        residual = self._residual(features)
+        if self.residual_metric == "mahalanobis":
+            if self.residual_variance is None:
+                raise ValueError("Mahalanobis residual requires a fitted residual variance")
+            return np.mean((residual ** 2) / self.residual_variance, axis=1)
+        return np.sum(residual ** 2, axis=1)
     def calibrated(self, scores): return (np.asarray(scores, dtype=np.float64) - self.score_center) / self.score_scale
     def tail_evidence(self, scores): return NormalPatchMemory._tail_evidence(scores, self.calibration_scores)
-    def to_dict(self): return {"mean": self.mean.tolist(), "components": self.components.tolist(), "score_center": self.score_center, "score_scale": self.score_scale, "calibration_scores": self.calibration_scores.tolist() if self.calibration_scores is not None else None}
+    def to_dict(self): return {"mean": self.mean.tolist(), "components": self.components.tolist(), "residual_metric": self.residual_metric, "covariance_shrinkage": self.covariance_shrinkage, "residual_variance": self.residual_variance.tolist() if self.residual_variance is not None else None, "score_center": self.score_center, "score_scale": self.score_scale, "calibration_scores": self.calibration_scores.tolist() if self.calibration_scores is not None else None}
     @classmethod
     def from_dict(cls, d):
-        obj = cls(); obj.mean = np.asarray(d["mean"]); obj.components = np.asarray(d["components"]); obj.score_center = float(d.get("score_center", 0.0)); obj.score_scale = float(d.get("score_scale", 1.0)); calibration = d.get("calibration_scores"); obj.calibration_scores = None if calibration is None else np.asarray(calibration, dtype=np.float64); return obj
+        obj = cls(residual_metric=d.get("residual_metric", "squared_l2"), covariance_shrinkage=d.get("covariance_shrinkage", 0.1)); obj.mean = np.asarray(d["mean"]); obj.components = np.asarray(d["components"]); variance = d.get("residual_variance"); obj.residual_variance = None if variance is None else np.asarray(variance, dtype=np.float64); obj.score_center = float(d.get("score_center", 0.0)); obj.score_scale = float(d.get("score_scale", 1.0)); calibration = d.get("calibration_scores"); obj.calibration_scores = None if calibration is None else np.asarray(calibration, dtype=np.float64); return obj
 
 class PrototypeBank:
     def __init__(self, unknown_threshold=0.35):

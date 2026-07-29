@@ -10,6 +10,7 @@
   "image_fusion_stage": "patch",
   "image_spatial_weight": 0.0,
   "anomaly_method": "pca",
+  "pca_residual_metric": "squared_l2",
   "knn_weight": 0.5,
   "fusion_mode": "fixed",
   "gate_temperature": 1.0,
