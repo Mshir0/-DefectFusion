@@ -309,14 +309,6 @@ two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
 unchanged; screen `anoco` on seed 42 before running `pca_anoco` or five seeds.
 
-`--retrieval-entropy-weight` adds a RAID-inspired candidate-rejection signal
-to the layer-consensus image head. It computes normalized softmax entropy over
-the Top-K aggregate L2 memory matches, using `--anoco-neighbors` and
-`--anoco-temperature`, then calibrates it against leave-one-out normal entropy.
-High entropy means that the memory provides no decisive normal explanation.
-The requested weight blends calibrated entropy with the per-layer ANoCo
-consensus before PCA fusion. The default `0` preserves the validated result.
-
 For the dual-head configuration, use `--anomaly-method pca_knn_anoco` together
 with `--dual-branch`. The raw pixel branch uses calibrated PCA+kNN with
 `--knn-weight`, while the L2 image branch uses calibrated PCA+ANoCo with

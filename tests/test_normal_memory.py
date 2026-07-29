@@ -337,70 +337,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             fusion._image_score_bundle(np.eye(3, dtype=np.float32), layer_patches=np.empty((0, 3, 3)))
 
-    def test_retrieval_entropy_is_higher_for_ambiguous_matches(self):
-        uniform = np.array([[0.5, 0.5, 0.5, 0.5]], dtype=np.float32)
-        peaked = np.array([[1.0, 0.2, 0.1, 0.0]], dtype=np.float32)
-        allowed = np.ones_like(uniform, dtype=bool)
-        uniform_entropy = NormalPatchMemory._normalized_retrieval_entropy(uniform, allowed, 4, 0.1)
-        peaked_entropy = NormalPatchMemory._normalized_retrieval_entropy(peaked, allowed, 4, 0.1)
-        self.assertGreater(uniform_entropy[0], peaked_entropy[0])
-        np.testing.assert_allclose(uniform_entropy, [1.0], atol=1e-6)
-
-    def test_retrieval_entropy_blends_with_layer_consensus(self):
-        normal = np.array([
-            [1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0],
-            [0.1, 0.9, 0.0], [0.0, 0.0, 1.0], [0.1, 0.0, 0.9],
-        ], dtype=np.float32)
-        query = np.array([[0.8, 0.2, 0.1], [0.1, 0.7, 0.3]], dtype=np.float32)
-        layers = np.stack([query, query[:, [1, 2, 0]]])
-        fusion = DefectFusion(
-            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
-            anoco_layer_consensus=True, retrieval_entropy_weight=0.25,
-            anoco_neighbors=2, anoco_weight=0.25,
-        )
-        fusion.image_subspace.fit(normal)
-        fusion.image_memory.fit(normal).fit_retrieval_entropy_calibration(neighbor_count=2)
-        for features in (normal, normal[:, [1, 2, 0]]):
-            memory = NormalPatchMemory(backend="numpy").fit(features)
-            memory.fit_anoco_calibration(neighbor_count=2)
-            fusion.image_layer_memories.append(memory)
-        fused, pca_scores, evidence, _ = fusion._image_score_bundle(query, layer_patches=layers)
-        layer_evidence = []
-        for features, memory in zip(layers, fusion.image_layer_memories):
-            drift = memory.score_anoco(features, neighbor_count=2)
-            layer_evidence.append(memory.calibrated_anoco(drift))
-        consensus = np.median(np.stack(layer_evidence), axis=0)
-        entropy = fusion.image_memory.score_retrieval_entropy(query, neighbor_count=2)
-        entropy = fusion.image_memory.calibrated_retrieval_entropy(entropy)
-        expected_evidence = 0.75 * consensus + 0.25 * entropy
-        expected = 0.75 * fusion.image_subspace.calibrated(pca_scores) + 0.25 * expected_evidence
-        np.testing.assert_allclose(evidence, expected_evidence)
-        np.testing.assert_allclose(fused, expected)
-
-    def test_retrieval_entropy_requires_layer_consensus(self):
-        with self.assertRaisesRegex(ValueError, "requires anoco_layer_consensus"):
-            DefectFusion(object(), retrieval_entropy_weight=0.25)
-
-    def test_fit_normal_calibrates_retrieval_entropy_after_image_memory_fit(self):
-        class Extractor:
-            device = None
-
-            def extract_dual_layers(self, image):
-                raw = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0]], dtype=np.float32)
-                l2 = raw / np.linalg.norm(raw, axis=1, keepdims=True)
-                layers = np.stack([l2, l2[:, ::-1]], axis=0)
-                return raw, l2, layers, (2, 2)
-
-        fusion = DefectFusion(
-            Extractor(), anomaly_method="pca_knn_anoco", dual_branch=True,
-            anoco_layer_consensus=True, retrieval_entropy_weight=0.25,
-            anoco_neighbors=2, knn_backend="numpy",
-        )
-        fusion.fit_normal([Image.new("RGB", (2, 2)), Image.new("RGB", (2, 2))])
-        self.assertIsNotNone(fusion.image_memory.features)
-        self.assertIsNotNone(fusion.image_memory.entropy_calibration_scores)
-        self.assertTrue(np.all(np.isfinite(fusion.image_memory.entropy_calibration_scores)))
-
     def test_hybrid_head_requires_dual_branch(self):
         with self.assertRaisesRegex(ValueError, "requires dual_branch"):
             DefectFusion(object(), anomaly_method="pca_knn_anoco")
@@ -458,12 +394,12 @@ class NormalPatchMemoryTest(unittest.TestCase):
         normal = np.eye(5, dtype=np.float32)
         fusion = DefectFusion(
             object(), anomaly_method="pca_knn_anoco", dual_branch=True,
-            anoco_layer_consensus=True, retrieval_entropy_weight=0.25, anoco_neighbors=2,
+            anoco_layer_consensus=True, anoco_neighbors=2,
         )
         fusion.subspace.fit(normal)
         fusion.image_subspace.fit(normal)
         fusion.normal_memory.fit(normal)
-        fusion.image_memory.fit(normal).fit_anoco_calibration(neighbor_count=2).fit_retrieval_entropy_calibration(neighbor_count=2)
+        fusion.image_memory.fit(normal).fit_anoco_calibration(neighbor_count=2)
         for features in (normal, normal[::-1].copy()):
             memory = NormalPatchMemory(backend="numpy").fit(features)
             memory.fit_anoco_calibration(neighbor_count=2)
@@ -473,8 +409,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
             fusion.save(state_path)
             loaded = DefectFusion.load(state_path, object())
             self.assertTrue(loaded.anoco_layer_consensus)
-            self.assertEqual(loaded.retrieval_entropy_weight, 0.25)
-            np.testing.assert_allclose(loaded.image_memory.entropy_calibration_scores, fusion.image_memory.entropy_calibration_scores)
             self.assertEqual(len(loaded.image_layer_memories), 2)
             for expected, actual in zip(fusion.image_layer_memories, loaded.image_layer_memories):
                 np.testing.assert_allclose(actual.features, expected.features, atol=5e-4)
