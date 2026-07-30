@@ -18,7 +18,7 @@ class NormalTrainingView:
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, image_min_component_size: int = 1, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_weight: float = 0.5, anoco_layer_consensus: bool = False, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=()):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, image_min_component_size: int = 1, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, region_low_ratio: float = 0.1, region_min_component_size: int = 2, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_weight: float = 0.5, anoco_layer_consensus: bool = False, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=()):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -55,10 +55,16 @@ class DefectFusion:
         if type_matching not in {"prototype_mean", "bidirectional_patch", "rbf_svm"}:
             raise ValueError("type_matching must be prototype_mean, bidirectional_patch, or rbf_svm")
         self.type_matching = type_matching
-        if map_postprocess not in {"none", "gaussian", "crf"}:
-            raise ValueError("map_postprocess must be none, gaussian, or crf")
+        if map_postprocess not in {"none", "gaussian", "region", "crf"}:
+            raise ValueError("map_postprocess must be none, gaussian, region, or crf")
         self.map_postprocess = map_postprocess
         self.gaussian_sigma = gaussian_sigma
+        if map_postprocess == "region" and not image_top_ratio <= region_low_ratio <= 1:
+            raise ValueError("region_low_ratio must be in [image_top_ratio, 1]")
+        if map_postprocess == "region" and region_min_component_size <= 0:
+            raise ValueError("region_min_component_size must be positive")
+        self.region_low_ratio = float(region_low_ratio)
+        self.region_min_component_size = int(region_min_component_size)
         if anomaly_method not in {"pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco"}:
             raise ValueError("anomaly_method must be pca, knn, pca_knn, anoco, pca_anoco, or pca_knn_anoco")
         if anomaly_method == "pca_knn_anoco" and not self.dual_branch:
@@ -357,6 +363,45 @@ class DefectFusion:
     def _postprocess_map(self, anomaly_map, image):
         if self.map_postprocess == "none":
             return anomaly_map
+        if self.map_postprocess == "region":
+            scores = np.asarray(anomaly_map, dtype=np.float32)
+            flat = scores.ravel()
+            high_count = max(1, int(np.ceil(flat.size * self.image_top_ratio)))
+            low_count = max(high_count, int(np.ceil(flat.size * self.region_low_ratio)))
+            high = np.zeros(flat.size, dtype=bool)
+            low = np.zeros(flat.size, dtype=bool)
+            high[np.argpartition(flat, -high_count)[-high_count:]] = True
+            low[np.argpartition(flat, -low_count)[-low_count:]] = True
+            high = high.reshape(scores.shape)
+            low = low.reshape(scores.shape)
+            accepted = np.zeros_like(low)
+            visited = np.zeros_like(low)
+            for row, column in np.argwhere(low):
+                if visited[row, column]:
+                    continue
+                component = []
+                has_seed = False
+                stack = [(int(row), int(column))]
+                visited[row, column] = True
+                while stack:
+                    current = stack.pop()
+                    component.append(current)
+                    has_seed = has_seed or bool(high[current])
+                    for row_offset in (-1, 0, 1):
+                        for column_offset in (-1, 0, 1):
+                            if row_offset == column_offset == 0:
+                                continue
+                            next_row = current[0] + row_offset
+                            next_column = current[1] + column_offset
+                            if 0 <= next_row < low.shape[0] and 0 <= next_column < low.shape[1] and low[next_row, next_column] and not visited[next_row, next_column]:
+                                visited[next_row, next_column] = True
+                                stack.append((next_row, next_column))
+                if has_seed and len(component) >= self.region_min_component_size:
+                    for component_row, component_column in component:
+                        accepted[component_row, component_column] = True
+            filtered = np.full_like(scores, float(scores.min()))
+            filtered[accepted] = scores[accepted]
+            return filtered
         if self.map_postprocess == "gaussian":
             import torch
             import torch.nn.functional as F
@@ -498,6 +543,8 @@ class DefectFusion:
             "type_matching": self.type_matching,
             "map_postprocess": self.map_postprocess,
             "gaussian_sigma": self.gaussian_sigma,
+            "region_low_ratio": self.region_low_ratio,
+            "region_min_component_size": self.region_min_component_size,
             "anomaly_method": self.anomaly_method,
             "pca_residual_metric": self.pca_residual_metric,
             "knn_weight": self.knn_weight,
@@ -565,7 +612,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), image_min_component_size=state.get("image_min_component_size", 1), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_weight=state.get("anoco_weight", 0.5), anoco_layer_consensus=state.get("anoco_layer_consensus", False), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), image_min_component_size=state.get("image_min_component_size", 1), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), region_low_ratio=state.get("region_low_ratio", 0.1), region_min_component_size=state.get("region_min_component_size", 2), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_weight=state.get("anoco_weight", 0.5), anoco_layer_consensus=state.get("anoco_layer_consensus", False), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         if obj.dual_branch and "image_subspace" in state:
             obj.image_subspace = NormalSubspace.from_dict(state["image_subspace"])

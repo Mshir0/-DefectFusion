@@ -231,7 +231,7 @@ python -m defectfusion.cli evaluate-mvtec \
 Flip TTA always includes the identity view. For the first screening run, use
 `--test-augmentations hflip vflip`; image scores are averaged across three
 views and patch maps are inverse-aligned before averaging.
-| Map post-process | `--map-postprocess` | `none` | `none, gaussian, crf` | Pixel AUROC |
+| Map post-process | `--map-postprocess` | `none` | `none, gaussian, region, crf` | Pixel AUROC |
 | Gaussian sigma | `--gaussian-sigma` | `1.0` | `0.5, 1.0, 2.0` | Pixel AUROC |
 | Positional debiasing | `--debias` | off | off/on | All metrics |
 | Debias rank | `--svd-components` | `20` | `2, 5, 10, 20` | Active only with `--debias` |
@@ -316,7 +316,10 @@ done
 
 Anomaly-map post-processing is isolated from image scoring and defect typing.
 Use `--map-postprocess none` for the raw-map baseline, `gaussian` for separable
-Gaussian smoothing on the patch grid, or `crf` for RGB-guided DenseCRF. CRF
+Gaussian smoothing on the patch grid, `region` for high-confidence seed and
+low-confidence connected-region growth, or `crf` for RGB-guided DenseCRF.
+Region filtering uses `--image-top-ratio` for seeds and is controlled by
+`--region-low-ratio` and `--region-min-component-size`. CRF
 requires installing the optional dependency with `pip install -e '.[crf]'`.
 Gaussian smoothing is disabled by default after the MVTec sigma=1.0 ablation
 reduced macro pixel AUROC; it remains available only for explicit experiments.
