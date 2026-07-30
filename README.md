@@ -99,6 +99,11 @@ primary pixel and image heads at 896:
 The option is category-scoped and disabled unless a secondary size override
 is supplied. Its size must differ from the effective primary pixel size.
 
+For a localization-only region-coverage ablation, `--map-postprocess maxpool`
+expands each coarse patch response spatially without feeding the modified map
+back into the image score. `--map-maxpool-kernel 3` uses a one-patch radius;
+the default `--map-postprocess none` preserves the raw map.
+
 Every category JSON records the effective augmentation list, component size,
 and whether each override was active.
 

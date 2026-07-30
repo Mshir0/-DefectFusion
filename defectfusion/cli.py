@@ -135,7 +135,7 @@ def main(argv=None):
     f.add_argument("--test-augmentations", nargs="*", choices=["hflip", "vflip"], default=None)
     f.add_argument("--knn-backend", choices=["auto", "numpy", "torch"], default=None); f.add_argument("--knn-dtype", choices=["float32", "float16"], default=None)
     f.add_argument("--feature-layers", default=None); f.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); f.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None); f.add_argument("--layer-normalization", choices=["none", "l2"], default=None)
-    f.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); f.add_argument("--gaussian-sigma", type=float, default=None)
+    f.add_argument("--map-postprocess", choices=["none", "gaussian", "maxpool", "crf"], default=None); f.add_argument("--gaussian-sigma", type=float, default=None); f.add_argument("--map-maxpool-kernel", type=int, default=None)
     q = sub.add_parser("predict", help="score one image or a directory")
     q.add_argument("--model-state", required=True); q.add_argument("--image", required=True)
     q.add_argument("--model", default=None); q.add_argument("--device", default=None)
@@ -198,7 +198,8 @@ def main(argv=None):
     e.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None, help="named layer selection; middle7 matches the SubspaceAD indices")
     e.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None)
     e.add_argument("--layer-normalization", choices=["none", "l2"], default=None, help="normalize each hidden layer before fusion")
-    e.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); e.add_argument("--gaussian-sigma", type=float, default=None)
+    e.add_argument("--map-postprocess", choices=["none", "gaussian", "maxpool", "crf"], default=None); e.add_argument("--gaussian-sigma", type=float, default=None); e.add_argument("--map-maxpool-kernel", type=int, default=None, help="positive odd kernel for maxpool anomaly-map expansion")
+    e.add_argument("--map-postprocess-categories", nargs="+", default=None, help="apply map postprocess only to these categories")
     a = p.parse_args(argv); cfg = _config(a.config)
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     image_size = getattr(a, "image_size", None) or cfg.get("image_size", 448)
@@ -256,6 +257,9 @@ def main(argv=None):
     map_postprocess = getattr(a, "map_postprocess", None) or cfg.get("map_postprocess", "none")
     gaussian_sigma = getattr(a, "gaussian_sigma", None)
     gaussian_sigma = gaussian_sigma if gaussian_sigma is not None else cfg.get("gaussian_sigma", 1.0)
+    map_maxpool_kernel = getattr(a, "map_maxpool_kernel", None)
+    map_maxpool_kernel = map_maxpool_kernel if map_maxpool_kernel is not None else cfg.get("map_maxpool_kernel", 3)
+    if map_maxpool_kernel <= 0 or map_maxpool_kernel % 2 == 0: p.error("--map-maxpool-kernel must be a positive odd integer")
     extractor = DinoFeatureExtractor(
         model_name, image_size=image_size, resize_mode=resize_mode, device=getattr(a, "device", None) or cfg.get("device"),
         debias=getattr(a, "debias", False), svd_components=getattr(a, "svd_components", 20),
@@ -268,7 +272,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=image_min_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=image_min_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, map_maxpool_kernel=map_maxpool_kernel, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -305,13 +309,14 @@ def main(argv=None):
         if align_training_positions and affine_categories:
             p.error("--align-training-positions does not yet support --affine-categories")
         no_augment_categories = a.no_augment_categories or cfg.get("no_augment_categories", ["transistor"])
+        map_postprocess_categories = set(a.map_postprocess_categories or cfg.get("map_postprocess_categories", []))
         if is_visa:
             categories = load_visa_categories(a.data_root, a.split_csv)
         else:
             categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
         available_categories = {category.name for category in categories}
         override_categories = set(image_size_overrides) | set(pixel_image_size_overrides) | set(image_head_size_overrides) | set(pixel_multiscale_size_overrides)
-        unknown_overrides = sorted((affine_categories | component_reject_categories | override_categories) - available_categories)
+        unknown_overrides = sorted((affine_categories | component_reject_categories | map_postprocess_categories | override_categories) - available_categories)
         if unknown_overrides: p.error(f"unknown override categories: {', '.join(unknown_overrides)}")
         if a.categories:
             requested_categories = set(a.categories)
@@ -347,10 +352,11 @@ def main(argv=None):
             if category_name in affine_categories and "affine" not in category_augmentations:
                 category_augmentations.append("affine")
             category_component_size = image_min_component_size if not component_reject_categories or category_name in component_reject_categories else 1
+            category_map_postprocess = map_postprocess if not map_postprocess_categories or category_name in map_postprocess_categories else "none"
             normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
             print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
-            print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size}", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=pixel_multiscale_weight).fit_normal(normal_training_images)
+            print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} map_postprocess={category_map_postprocess}", flush=True)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=category_map_postprocess, gaussian_sigma=gaussian_sigma, map_maxpool_kernel=map_maxpool_kernel, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=pixel_multiscale_weight).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category_name}: backend={fusion.normal_memory.resolved_backend} "
@@ -437,8 +443,10 @@ def main(argv=None):
             metrics["align_training_positions"] = align_training_positions
             metrics["dual_branch"] = dual_branch
             metrics["test_augmentations"] = list(test_augmentations)
-            metrics["map_postprocess"] = map_postprocess
-            metrics["gaussian_sigma"] = gaussian_sigma if map_postprocess == "gaussian" else 0
+            metrics["map_postprocess"] = category_map_postprocess
+            metrics["map_postprocess_category_override"] = category_name in map_postprocess_categories
+            metrics["gaussian_sigma"] = gaussian_sigma if category_map_postprocess == "gaussian" else 0
+            metrics["map_maxpool_kernel"] = map_maxpool_kernel if category_map_postprocess == "maxpool" else 0
             metrics["metrics_file"] = str(result_path)
             predictions = json.loads(result_path.read_text(encoding="utf-8"))
             category_payload = {"metrics": metrics, "predictions": predictions}

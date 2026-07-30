@@ -18,7 +18,7 @@ class NormalTrainingView:
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, image_min_component_size: int = 1, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_weight: float = 0.5, anoco_layer_consensus: bool = False, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=(), pixel_image_size: int | None = None, image_head_image_size: int | None = None, secondary_pixel_image_size: int | None = None, pixel_multiscale_weight: float = 0.5):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, image_min_component_size: int = 1, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, map_maxpool_kernel: int = 3, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_weight: float = 0.5, anoco_layer_consensus: bool = False, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=(), pixel_image_size: int | None = None, image_head_image_size: int | None = None, secondary_pixel_image_size: int | None = None, pixel_multiscale_weight: float = 0.5):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -77,10 +77,13 @@ class DefectFusion:
         if type_matching not in {"prototype_mean", "bidirectional_patch", "rbf_svm"}:
             raise ValueError("type_matching must be prototype_mean, bidirectional_patch, or rbf_svm")
         self.type_matching = type_matching
-        if map_postprocess not in {"none", "gaussian", "crf"}:
-            raise ValueError("map_postprocess must be none, gaussian, or crf")
+        if map_postprocess not in {"none", "gaussian", "maxpool", "crf"}:
+            raise ValueError("map_postprocess must be none, gaussian, maxpool, or crf")
         self.map_postprocess = map_postprocess
         self.gaussian_sigma = gaussian_sigma
+        if map_maxpool_kernel <= 0 or map_maxpool_kernel % 2 == 0:
+            raise ValueError("map_maxpool_kernel must be a positive odd integer")
+        self.map_maxpool_kernel = int(map_maxpool_kernel)
         if anomaly_method not in {"pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco"}:
             raise ValueError("anomaly_method must be pca, knn, pca_knn, anoco, pca_anoco, or pca_knn_anoco")
         if anomaly_method == "pca_knn_anoco" and not self.dual_branch:
@@ -440,6 +443,12 @@ class DefectFusion:
     def _postprocess_map(self, anomaly_map, image):
         if self.map_postprocess == "none":
             return anomaly_map
+        if self.map_postprocess == "maxpool":
+            kernel = self.map_maxpool_kernel
+            source = np.asarray(anomaly_map, dtype=np.float32)
+            padded = np.pad(source, kernel // 2, mode="constant", constant_values=-np.inf)
+            windows = np.lib.stride_tricks.sliding_window_view(padded, (kernel, kernel))
+            return windows.max(axis=(-2, -1))
         if self.map_postprocess == "gaussian":
             import torch
             import torch.nn.functional as F
@@ -588,6 +597,7 @@ class DefectFusion:
             "type_matching": self.type_matching,
             "map_postprocess": self.map_postprocess,
             "gaussian_sigma": self.gaussian_sigma,
+            "map_maxpool_kernel": self.map_maxpool_kernel,
             "anomaly_method": self.anomaly_method,
             "pca_residual_metric": self.pca_residual_metric,
             "knn_weight": self.knn_weight,
@@ -671,7 +681,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), image_min_component_size=state.get("image_min_component_size", 1), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_weight=state.get("anoco_weight", 0.5), anoco_layer_consensus=state.get("anoco_layer_consensus", False), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()), pixel_image_size=state.get("pixel_image_size"), image_head_image_size=state.get("image_head_image_size"), secondary_pixel_image_size=state.get("secondary_pixel_image_size"), pixel_multiscale_weight=state.get("pixel_multiscale_weight", 0.5))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), image_min_component_size=state.get("image_min_component_size", 1), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), map_maxpool_kernel=state.get("map_maxpool_kernel", 3), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_weight=state.get("anoco_weight", 0.5), anoco_layer_consensus=state.get("anoco_layer_consensus", False), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()), pixel_image_size=state.get("pixel_image_size"), image_head_image_size=state.get("image_head_image_size"), secondary_pixel_image_size=state.get("secondary_pixel_image_size"), pixel_multiscale_weight=state.get("pixel_multiscale_weight", 0.5))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         if obj.dual_branch and "image_subspace" in state:
             obj.image_subspace = NormalSubspace.from_dict(state["image_subspace"])
