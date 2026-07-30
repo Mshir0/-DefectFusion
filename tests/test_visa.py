@@ -10,6 +10,27 @@ from defectfusion.visa import load_visa_categories
 
 
 class VisaTest(unittest.TestCase):
+    def test_loads_raw_release_layout_without_split_csv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "candle" / "Data"
+            normal_dir = data / "Images" / "Normal"
+            anomaly_dir = data / "Images" / "Anomaly"
+            mask_dir = data / "Masks" / "Anomaly"
+            normal_dir.mkdir(parents=True)
+            anomaly_dir.mkdir(parents=True)
+            mask_dir.mkdir(parents=True)
+            Image.new("RGB", (2, 2)).save(normal_dir / "normal.jpg")
+            Image.new("RGB", (2, 2)).save(anomaly_dir / "broken.jpg")
+            Image.new("L", (2, 2)).save(mask_dir / "broken.png")
+
+            categories = load_visa_categories(root)
+
+        self.assertEqual([item.name for item in categories], ["candle"])
+        self.assertEqual(len(categories[0].normal_images), 1)
+        anomalous = [item for item in categories[0].test_samples if item.anomalous]
+        self.assertEqual(anomalous[0].mask.name, "broken.png")
+
     def test_loads_official_one_class_split_csv(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -67,8 +67,9 @@ defect-type accuracy, macro-F1, and a confusion matrix.
 
 ## VisA evaluation
 
-The official VisA one-class split can be evaluated directly without converting
-its directory layout. Keep `split_csv/1cls.csv` under the dataset root and run:
+VisA can be evaluated directly without converting its directory layout. The
+loader supports both the official `split_csv/1cls.csv` split and the raw
+per-category `Data/Images/{Normal,Anomaly}` layout:
 
 ```bash
 python -m defectfusion.cli evaluate-visa \
@@ -87,7 +88,10 @@ python -m defectfusion.cli evaluate-visa \
 Use `--split-csv /path/to/1cls.csv` when the split file is stored elsewhere.
 The loader reads the CSV `object`, `split`, `label`, `image`, and `mask`
 columns, fits each object only on normal training rows, and evaluates the test
-rows with their listed masks. Output layout and metrics match MVTec evaluation.
+rows with their listed masks. Without a root split CSV, it discovers each
+category's `Data` directory and pairs anomaly images and masks by filename stem;
+selected normal shots are excluded from the normal test pool. Output layout and
+metrics match MVTec evaluation.
 
 `--normal-shots 1/2/4` samples that many images from the normal training
 partition (`train/good` for MVTec or normal train rows for VisA); `-1` uses

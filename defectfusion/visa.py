@@ -36,12 +36,36 @@ def _resolve(root: Path, value: str) -> Path | None:
     return path if path.is_absolute() else root / path
 
 
+def _images(path: Path):
+    extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    return sorted(item for item in path.rglob("*") if item.is_file() and item.suffix.lower() in extensions)
+
+
+def _load_raw_categories(root: Path):
+    categories = []
+    for category_dir in sorted(item for item in root.iterdir() if item.is_dir()):
+        data_dir = category_dir / "Data"
+        normal = _images(data_dir / "Images" / "Normal")
+        anomaly = _images(data_dir / "Images" / "Anomaly")
+        if not normal or not anomaly:
+            continue
+        mask_by_stem = {item.stem: item for item in _images(data_dir / "Masks" / "Anomaly")}
+        samples = [VisaSample(image, "good", False, None) for image in normal]
+        samples.extend(VisaSample(image, "anomaly", True, mask_by_stem.get(image.stem)) for image in anomaly)
+        categories.append(VisaCategory(category_dir.name, tuple(normal), tuple(samples)))
+    if not categories:
+        raise ValueError(f"No VisA categories with Data/Images/Normal and Data/Images/Anomaly found in {root}")
+    return categories
+
+
 def load_visa_categories(data_root, split_csv=None):
     """Load the official VisA 1-class split without rearranging the dataset."""
     root = Path(data_root)
     split_path = Path(split_csv) if split_csv else root / "split_csv" / "1cls.csv"
     if not split_path.is_file():
-        raise FileNotFoundError(f"VisA split CSV not found: {split_path}")
+        if split_csv:
+            raise FileNotFoundError(f"VisA split CSV not found: {split_path}")
+        return _load_raw_categories(root)
 
     groups = {}
     with split_path.open("r", encoding="utf-8-sig", newline="") as handle:
