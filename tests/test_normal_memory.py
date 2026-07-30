@@ -87,6 +87,58 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertEqual(loaded.pixel_image_size, 672)
         self.assertEqual(loaded.image_head_image_size, 896)
 
+    def test_secondary_pixel_resolution_fits_independent_memory(self):
+        extractor = self._resolution_extractor()
+        fusion = DefectFusion(
+            extractor, anomaly_method="knn", dual_branch=True,
+            pixel_image_size=896, image_head_image_size=896,
+            secondary_pixel_image_size=672, memory_max_patches=0,
+        ).fit_normal([Image.new("RGB", (8, 8))])
+        self.assertEqual(extractor.calls, [("extract_dual", 896), ("extract", 672)])
+        self.assertEqual(len(fusion.normal_memory.features), 9)
+        self.assertEqual(len(fusion.secondary_normal_memory.features), 4)
+        self.assertEqual(len(fusion.normal_memory.positions), 9)
+        self.assertEqual(len(fusion.secondary_normal_memory.positions), 4)
+
+    def test_secondary_pixel_scores_are_aligned_and_weighted(self):
+        extractor = self._resolution_extractor()
+        fusion = DefectFusion(
+            extractor, anomaly_method="pca", dual_branch=True,
+            pixel_image_size=896, image_head_image_size=896,
+            secondary_pixel_image_size=672, pixel_multiscale_weight=0.25,
+        ).fit_normal([Image.new("RGB", (8, 8))])
+        primary = np.zeros(9, dtype=np.float64)
+        secondary = np.array([0.0, 1.0, 2.0, 3.0])
+        fusion._anomaly_scores = lambda patches, positions: (primary, primary, None, None)
+        fusion._secondary_anomaly_scores = lambda patches, positions: (secondary, secondary, None, None)
+        aligned = DefectFusion._resize_patch_scores(secondary, (2, 2), (3, 3))
+        result = fusion._predict_single(Image.new("RGB", (8, 8)), "sample.png")
+        np.testing.assert_allclose(result["anomaly_map"], (0.25 * aligned).reshape(3, 3))
+
+    def test_pipeline_save_load_preserves_secondary_pixel_memory(self):
+        extractor = self._resolution_extractor()
+        fusion = DefectFusion(
+            extractor, anomaly_method="knn", dual_branch=True,
+            pixel_image_size=896, image_head_image_size=896,
+            secondary_pixel_image_size=672, pixel_multiscale_weight=0.25,
+            memory_max_patches=0,
+        ).fit_normal([Image.new("RGB", (8, 8))])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.json"
+            fusion.save(path)
+            loaded = DefectFusion.load(path, self._resolution_extractor())
+        self.assertEqual(loaded.secondary_pixel_image_size, 672)
+        self.assertEqual(loaded.pixel_multiscale_weight, 0.25)
+        np.testing.assert_allclose(
+            loaded.secondary_normal_memory.features,
+            fusion.secondary_normal_memory.features,
+            atol=5e-4,
+        )
+        np.testing.assert_allclose(
+            loaded.secondary_normal_memory.calibration_scores,
+            fusion.secondary_normal_memory.calibration_scores,
+        )
+
     def test_empty_prototype_bank_skips_duplicate_typing_pca(self):
         class Extractor:
             def extract_dual(self, image):

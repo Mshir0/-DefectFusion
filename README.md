@@ -85,6 +85,20 @@ Category-specific input resolution is repeatable with
 categories at 672. The extractor resets its size-dependent positional cache
 when switching categories.
 
+Pixel localization can optionally fuse a second independently fitted PCA/kNN
+memory. The secondary patch map is bilinearly aligned to the primary pixel
+grid before calibrated scores are combined. For example, with macaroni2's
+primary pixel and image heads at 896:
+
+```bash
+--image-size-override macaroni2=896 \
+--pixel-multiscale-size-override macaroni2=672 \
+--pixel-multiscale-weight 0.5
+```
+
+The option is category-scoped and disabled unless a secondary size override
+is supplied. Its size must differ from the effective primary pixel size.
+
 Every category JSON records the effective augmentation list, component size,
 and whether each override was active.
 
