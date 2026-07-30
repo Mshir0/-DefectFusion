@@ -368,10 +368,8 @@ pulls the query toward that consistent neighborhood in closed form, and scores
 the squared feature displacement times its angular displacement.
 `--anomaly-method pca_anoco` robustly calibrates and fuses this score with the
 PCA residual using `--anoco-weight` (default `0.5`). The main controls are
-`--anoco-neighbors 16` and `--anoco-query-weight 1.0`. Edge weights are the
-query-normal cosine affinity multiplied by feature-norm compatibility; the
-legacy `--anoco-temperature` option is accepted for saved-model and CLI
-compatibility but is not used to soften graph weights. With multi-layer features,
+`--anoco-neighbors 16`, `--anoco-query-weight 1.0`, and
+`--anoco-temperature 0.07`. With multi-layer features,
 `--anoco-layer-consensus` replaces aggregate-feature ANoCo evidence with the
 per-patch median of independently calibrated layer drift scores. The implementation reuses the normal memory,
 spatial candidate mask, CUDA backend, and chunk size used by kNN. It performs

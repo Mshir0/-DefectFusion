@@ -18,10 +18,8 @@ class NormalPatchMemory:
         self.dtype = dtype
         self.spatial_radius = float(spatial_radius)
         self.features = None
-        self.feature_norms = None
         self.positions = None
         self._torch_bank = None
-        self._torch_norms = None
         self._torch_positions = None
         self.center = 0.0
         self.scale = 1.0
@@ -44,9 +42,7 @@ class NormalPatchMemory:
         return center, max(mad_scale, std_floor, 1e-12)
 
     def fit(self, features, positions=None):
-        raw = np.asarray(features, dtype=np.float32)
-        feature_norms = np.maximum(np.linalg.norm(raw, axis=1), 1e-12)
-        bank = raw / feature_norms[:, None]
+        bank = self._normalize(features)
         if len(bank) < 2:
             raise ValueError("Normal patch kNN requires at least two reference patches")
         if positions is not None:
@@ -56,14 +52,11 @@ class NormalPatchMemory:
         if self.max_patches > 0 and len(bank) > self.max_patches:
             indices = np.linspace(0, len(bank) - 1, self.max_patches, dtype=np.int64)
             bank = bank[indices]
-            feature_norms = feature_norms[indices]
             if positions is not None:
                 positions = positions[indices]
         self.features = np.ascontiguousarray(bank)
-        self.feature_norms = np.ascontiguousarray(feature_norms)
         self.positions = None if positions is None else np.ascontiguousarray(positions)
         self._torch_bank = None
-        self._torch_norms = None
         self._torch_positions = None
         sample_count = min(len(bank), max(2, self.calibration_patches))
         sample_indices = np.linspace(0, len(bank) - 1, sample_count, dtype=np.int64)
@@ -164,18 +157,11 @@ class NormalPatchMemory:
             return self._score_torch(query, exclude, positions)
         return self._score_numpy(query, exclude, positions)
 
-    @staticmethod
-    def _norm_compatibility(query_norms, reference_norms):
-        smaller = np.minimum(query_norms[:, None], reference_norms[None, :])
-        larger = np.maximum(query_norms[:, None], reference_norms[None, :])
-        return smaller / np.maximum(larger, 1e-12)
-
-    def _anoco_score_numpy(self, query, query_norms, exclude, positions, neighbor_count, query_weight, temperature):
+    def _anoco_score_numpy(self, query, exclude, positions, neighbor_count, query_weight, temperature):
         scores = np.empty(len(query), dtype=np.float32)
         for start in range(0, len(query), self.query_chunk_size):
             end = min(start + self.query_chunk_size, len(query))
             query_chunk = query[start:end]
-            query_norm_chunk = query_norms[start:end]
             similarity = query_chunk @ self.features.T
             if self.spatial_radius >= 0 and positions is not None and self.positions is not None:
                 distance = np.max(np.abs(positions[start:end, None, :] - self.positions[None, :, :]), axis=2)
@@ -193,39 +179,25 @@ class NormalPatchMemory:
             masked_similarity = np.where(allowed, similarity, -np.inf)
             anchors = np.argmax(masked_similarity, axis=1)
             anchor_similarity = self.features[anchors] @ self.features.T
-            joint = np.where(allowed, np.minimum(similarity, anchor_similarity), -np.inf)
+            joint = np.where(allowed, 0.5 * (similarity + anchor_similarity), -np.inf)
             keep = min(neighbor_count, joint.shape[1])
             neighbor_indices = np.argpartition(joint, -keep, axis=1)[:, -keep:]
             neighbor_similarity = np.take_along_axis(similarity, neighbor_indices, axis=1)
             neighbor_allowed = np.take_along_axis(allowed, neighbor_indices, axis=1)
-            neighbor_norms = self.feature_norms[neighbor_indices]
-            compatibility = np.minimum(query_norm_chunk[:, None], neighbor_norms) / np.maximum(
-                np.maximum(query_norm_chunk[:, None], neighbor_norms), 1e-12,
-            )
-            weights = np.where(neighbor_allowed, np.maximum(neighbor_similarity, 0.0) * compatibility, 0.0)
-            degree = weights.sum(axis=1)
-            # A cosine of zero/negative can otherwise disconnect an abnormal
-            # query from the graph and produce a misleading zero drift.  The
-            # selected anchor-consistent neighbors still define the graph, so
-            # use their norm compatibility as a non-empty fallback only for
-            # this degenerate case.
-            empty_degree = degree <= 1e-12
-            if np.any(empty_degree):
-                weights[empty_degree] = np.where(
-                    neighbor_allowed[empty_degree],
-                    compatibility[empty_degree],
-                    0.0,
-                )
-                degree = weights.sum(axis=1)
+            logits = neighbor_similarity / temperature
+            logits = np.where(neighbor_allowed, logits, -np.inf)
+            logits -= np.max(logits, axis=1, keepdims=True)
+            weights = np.where(neighbor_allowed, np.exp(logits), 0.0)
+            weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
             normal_target = np.sum(self.features[neighbor_indices] * weights[:, :, None], axis=1)
-            updated = (query_weight * query_chunk + normal_target) / np.maximum((query_weight + degree)[:, None], 1e-12)
+            updated = (query_weight * query_chunk + normal_target) / (query_weight + 1.0)
             displacement = np.sum((updated - query_chunk) ** 2, axis=1)
             updated_normalized = updated / np.maximum(np.linalg.norm(updated, axis=1, keepdims=True), 1e-12)
             angular = 1.0 - np.sum(updated_normalized * query_chunk, axis=1)
             scores[start:end] = displacement * np.maximum(angular, 0.0)
         return scores
 
-    def _anoco_score_torch(self, query, query_norms, exclude, positions, neighbor_count, query_weight, temperature):
+    def _anoco_score_torch(self, query, exclude, positions, neighbor_count, query_weight, temperature):
         try:
             import torch
         except ImportError as exc:
@@ -236,8 +208,6 @@ class NormalPatchMemory:
         dtype = torch.float16 if self.dtype == "float16" else torch.float32
         if self._torch_bank is None or self._torch_bank.device != torch.device(device) or self._torch_bank.dtype != dtype:
             self._torch_bank = torch.as_tensor(self.features, device=device, dtype=dtype).contiguous()
-        if self._torch_norms is None or self._torch_norms.device != torch.device(device):
-            self._torch_norms = torch.as_tensor(self.feature_norms, device=device, dtype=torch.float32).contiguous()
         if self.positions is not None and (self._torch_positions is None or self._torch_positions.device != torch.device(device)):
             self._torch_positions = torch.as_tensor(self.positions, device=device, dtype=torch.float32).contiguous()
         scores = np.empty(len(query), dtype=np.float32)
@@ -245,7 +215,6 @@ class NormalPatchMemory:
             for start in range(0, len(query), self.query_chunk_size):
                 end = min(start + self.query_chunk_size, len(query))
                 query_chunk = torch.as_tensor(query[start:end], device=device, dtype=dtype)
-                query_norm_chunk = torch.as_tensor(query_norms[start:end], device=device, dtype=torch.float32)
                 similarity = query_chunk @ self._torch_bank.T
                 if self.spatial_radius >= 0 and positions is not None and self.positions is not None:
                     query_positions = torch.as_tensor(positions[start:end], device=device, dtype=torch.float32)
@@ -265,59 +234,32 @@ class NormalPatchMemory:
                 masked_similarity = similarity.masked_fill(~allowed, -torch.inf)
                 anchors = masked_similarity.argmax(dim=1)
                 anchor_similarity = self._torch_bank[anchors] @ self._torch_bank.T
-                joint = torch.minimum(similarity, anchor_similarity).masked_fill(~allowed, -torch.inf)
+                joint = (0.5 * (similarity + anchor_similarity)).masked_fill(~allowed, -torch.inf)
                 keep = min(neighbor_count, joint.shape[1])
                 neighbor_indices = torch.topk(joint, keep, dim=1).indices
                 neighbor_similarity = torch.gather(similarity, 1, neighbor_indices)
                 neighbor_allowed = torch.gather(allowed, 1, neighbor_indices)
-                neighbor_norms = self._torch_norms[neighbor_indices]
-                compatibility = torch.minimum(query_norm_chunk[:, None], neighbor_norms) / torch.clamp(
-                    torch.maximum(query_norm_chunk[:, None], neighbor_norms), min=1e-12,
-                )
-                weights = torch.clamp(neighbor_similarity.float(), min=0.0) * compatibility
-                weights = weights.masked_fill(~neighbor_allowed, 0.0)
-                degree = torch.sum(weights, dim=1)
-                empty_degree = degree <= 1e-12
-                if empty_degree.any():
-                    weights = torch.where(
-                        empty_degree[:, None],
-                        compatibility.masked_fill(~neighbor_allowed, 0.0),
-                        weights,
-                    )
-                    degree = torch.sum(weights, dim=1)
+                logits = (neighbor_similarity.float() / temperature).masked_fill(~neighbor_allowed, -torch.inf)
+                weights = torch.softmax(logits, dim=1)
                 normal_features = self._torch_bank[neighbor_indices].float()
                 normal_target = torch.sum(normal_features * weights[:, :, None], dim=1)
                 query_float = query_chunk.float()
-                updated = (query_weight * query_float + normal_target) / torch.clamp((query_weight + degree)[:, None], min=1e-12)
+                updated = (query_weight * query_float + normal_target) / (query_weight + 1.0)
                 displacement = torch.sum((updated - query_float) ** 2, dim=1)
                 angular = 1.0 - torch.sum(torch.nn.functional.normalize(updated, p=2, dim=1) * query_float, dim=1)
                 scores[start:end] = (displacement * torch.clamp(angular, min=0.0)).cpu().numpy()
         return scores
 
-    def score_anoco(self, features, neighbor_count=16, query_weight=1.0, temperature=0.07, exclude_indices=None, positions=None, query_norms=None):
+    def score_anoco(self, features, neighbor_count=16, query_weight=1.0, temperature=0.07, exclude_indices=None, positions=None):
         if self.features is None or len(self.features) == 0:
             raise ValueError("Normal patch memory has not been fitted")
-        if self.feature_norms is None:
-            self.feature_norms = np.ones(len(self.features), dtype=np.float32)
         if neighbor_count <= 0:
             raise ValueError("ANoCo neighbor_count must be positive")
         if query_weight <= 0:
             raise ValueError("ANoCo query_weight must be positive")
-        # Keep accepting temperature for backwards-compatible saved models and
-        # callers.  ANoCo edge weights are cosine affinity times norm
-        # compatibility; they are intentionally not softmax-temperature
-        # weights.
         if temperature <= 0:
             raise ValueError("ANoCo temperature must be positive")
-        raw = np.asarray(features, dtype=np.float32)
-        if query_norms is None:
-            query_norms = np.maximum(np.linalg.norm(raw, axis=1), 1e-12)
-        else:
-            query_norms = np.asarray(query_norms, dtype=np.float32)
-            if query_norms.shape != (len(raw),):
-                raise ValueError("ANoCo query_norms must have shape (patches,)")
-            query_norms = np.maximum(query_norms, 1e-12)
-        query = raw / query_norms[:, None]
+        query = self._normalize(features)
         exclude = None if exclude_indices is None else np.asarray(exclude_indices)
         if positions is not None:
             positions = np.asarray(positions, dtype=np.float32)
@@ -326,8 +268,8 @@ class NormalPatchMemory:
         if self.spatial_radius >= 0 and (positions is None or self.positions is None):
             raise ValueError("Spatial ANoCo requires patch positions for normal and query features")
         if self._resolved_backend() == "torch":
-            return self._anoco_score_torch(query, query_norms, exclude, positions, neighbor_count, query_weight, temperature)
-        return self._anoco_score_numpy(query, query_norms, exclude, positions, neighbor_count, query_weight, temperature)
+            return self._anoco_score_torch(query, exclude, positions, neighbor_count, query_weight, temperature)
+        return self._anoco_score_numpy(query, exclude, positions, neighbor_count, query_weight, temperature)
 
     def fit_anoco_calibration(self, neighbor_count=16, query_weight=1.0, temperature=0.07, calibration_patches=1024):
         sample_count = min(len(self.features), max(2, int(calibration_patches)))
@@ -340,7 +282,6 @@ class NormalPatchMemory:
             temperature=temperature,
             exclude_indices=sample_indices,
             positions=calibration_positions,
-            query_norms=self.feature_norms[sample_indices],
         )
         self.anoco_center, self.anoco_scale = self._robust_stats(calibration)
         self.anoco_calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
