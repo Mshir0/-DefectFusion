@@ -388,6 +388,42 @@ class NormalPatchMemoryTest(unittest.TestCase):
         scores = memory.score_anoco(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32), neighbor_count=4)
         self.assertGreater(scores[1], scores[0])
 
+    def test_anoco_uses_bipartite_closed_form_drift(self):
+        normal = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        query = np.array([[1.0, 1.0]], dtype=np.float32)
+        query /= np.linalg.norm(query, axis=1, keepdims=True)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+
+        score = memory.score_anoco(query, neighbor_count=2, query_weight=1.0)[0]
+
+        query_unit = query[0] / np.linalg.norm(query[0])
+        weights = np.array([query_unit @ normal[0], query_unit @ normal[1]])
+        updated = (query_unit + weights @ normal) / (1.0 + weights.sum())
+        displacement = np.sum((updated - query_unit) ** 2)
+        angular = 1.0 - updated @ query_unit / np.linalg.norm(updated)
+        self.assertAlmostEqual(score, displacement * angular, places=6)
+
+    def test_anoco_norm_compatibility_reduces_mismatched_reference_weight(self):
+        normal = np.array([[10.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        query = np.array([[1.0, 1.0]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+
+        score = memory.score_anoco(query, neighbor_count=2, query_weight=1.0)[0]
+
+        query_norm = np.linalg.norm(query[0])
+        query_unit = query[0] / query_norm
+        normal_units = normal / np.linalg.norm(normal, axis=1, keepdims=True)
+        cosine = query_unit @ normal_units.T
+        compatibility = np.minimum(query_norm, np.linalg.norm(normal, axis=1)) / np.maximum(
+            query_norm, np.linalg.norm(normal, axis=1),
+        )
+        weights = cosine * compatibility
+        updated = (query_unit + weights @ normal_units) / (1.0 + weights.sum())
+        displacement = np.sum((updated - query_unit) ** 2)
+        angular = 1.0 - updated @ query_unit / np.linalg.norm(updated)
+        self.assertAlmostEqual(score, displacement * angular, places=6)
+        self.assertLess(weights[0], weights[1])
+
     def test_anoco_calibration_is_finite(self):
         features = np.eye(6, dtype=np.float32)
         memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(features)
@@ -532,6 +568,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             loaded = DefectFusion.load(state_path, object())
             self.assertEqual(loaded.anoco_neighbors, 3)
             self.assertEqual(loaded.anoco_temperature, 0.2)
+            np.testing.assert_allclose(loaded.normal_memory.feature_norms, fusion.normal_memory.feature_norms)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_anoco_layer_consensus(self):

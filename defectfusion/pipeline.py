@@ -649,18 +649,26 @@ class DefectFusion:
         if self.normal_memory.features is not None:
             memory_path = path.with_suffix(path.suffix + ".normal-memory.npz")
             memory_data = {"features": self.normal_memory.features.astype(np.float16)}
+            if self.normal_memory.feature_norms is not None:
+                memory_data["feature_norms"] = self.normal_memory.feature_norms.astype(np.float32)
             if self.normal_memory.positions is not None:
                 memory_data["positions"] = self.normal_memory.positions
             if self.dual_branch and self.image_memory.features is not None:
                 memory_data["image_features"] = self.image_memory.features.astype(np.float16)
+                if self.image_memory.feature_norms is not None:
+                    memory_data["image_feature_norms"] = self.image_memory.feature_norms.astype(np.float32)
                 if self.image_memory.positions is not None:
                     memory_data["image_positions"] = self.image_memory.positions
                 for index, memory in enumerate(self.image_layer_memories):
                     memory_data[f"image_layer_{index}_features"] = memory.features.astype(np.float16)
+                    if memory.feature_norms is not None:
+                        memory_data[f"image_layer_{index}_feature_norms"] = memory.feature_norms.astype(np.float32)
                     if memory.positions is not None:
                         memory_data[f"image_layer_{index}_positions"] = memory.positions
             if self.secondary_normal_memory is not None and self.secondary_normal_memory.features is not None:
                 memory_data["secondary_features"] = self.secondary_normal_memory.features.astype(np.float16)
+                if self.secondary_normal_memory.feature_norms is not None:
+                    memory_data["secondary_feature_norms"] = self.secondary_normal_memory.feature_norms.astype(np.float32)
                 if self.secondary_normal_memory.positions is not None:
                     memory_data["secondary_positions"] = self.secondary_normal_memory.positions
             np.savez_compressed(memory_path, **memory_data)
@@ -684,6 +692,7 @@ class DefectFusion:
             memory_path = Path(path).parent / memory_file
             memory = np.load(memory_path)
             obj.normal_memory.features = memory["features"].astype(np.float32)
+            obj.normal_memory.feature_norms = memory["feature_norms"].astype(np.float32) if "feature_norms" in memory else np.ones(len(obj.normal_memory.features), dtype=np.float32)
             obj.normal_memory.positions = memory["positions"].astype(np.float32) if "positions" in memory else None
             obj.normal_memory.center = float(state.get("knn_center", 0.0))
             obj.normal_memory.scale = float(state.get("knn_scale", 1.0))
@@ -695,6 +704,7 @@ class DefectFusion:
             obj.normal_memory.anoco_calibration_scores = None if anoco_calibration is None else np.asarray(anoco_calibration, dtype=np.float64)
             if obj.secondary_normal_memory is not None and "secondary_features" in memory:
                 obj.secondary_normal_memory.features = memory["secondary_features"].astype(np.float32)
+                obj.secondary_normal_memory.feature_norms = memory["secondary_feature_norms"].astype(np.float32) if "secondary_feature_norms" in memory else np.ones(len(obj.secondary_normal_memory.features), dtype=np.float32)
                 obj.secondary_normal_memory.positions = memory["secondary_positions"].astype(np.float32) if "secondary_positions" in memory else None
                 obj.secondary_normal_memory.center = float(state.get("secondary_knn_center", 0.0))
                 obj.secondary_normal_memory.scale = float(state.get("secondary_knn_scale", 1.0))
@@ -706,6 +716,7 @@ class DefectFusion:
                 obj.secondary_normal_memory.anoco_calibration_scores = None if secondary_anoco_calibration is None else np.asarray(secondary_anoco_calibration, dtype=np.float64)
             if obj.dual_branch and "image_features" in memory:
                 obj.image_memory.features = memory["image_features"].astype(np.float32)
+                obj.image_memory.feature_norms = memory["image_feature_norms"].astype(np.float32) if "image_feature_norms" in memory else np.ones(len(obj.image_memory.features), dtype=np.float32)
                 obj.image_memory.positions = memory["image_positions"].astype(np.float32) if "image_positions" in memory else None
                 obj.image_memory.center = float(state.get("image_knn_center", 0.0))
                 obj.image_memory.scale = float(state.get("image_knn_scale", 1.0))
@@ -723,6 +734,8 @@ class DefectFusion:
                         dtype=obj.normal_memory.dtype, spatial_radius=obj.normal_memory.spatial_radius,
                     )
                     layer_memory.features = memory[f"image_layer_{index}_features"].astype(np.float32)
+                    norm_key = f"image_layer_{index}_feature_norms"
+                    layer_memory.feature_norms = memory[norm_key].astype(np.float32) if norm_key in memory else np.ones(len(layer_memory.features), dtype=np.float32)
                     position_key = f"image_layer_{index}_positions"
                     layer_memory.positions = memory[position_key].astype(np.float32) if position_key in memory else None
                     layer_memory.anoco_center = float(layer_state["center"])

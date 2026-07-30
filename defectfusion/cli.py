@@ -181,7 +181,7 @@ def main(argv=None):
     e.add_argument("--knn-weight", type=float, default=None, help="kNN contribution in calibrated pca_knn fusion")
     e.add_argument("--anoco-neighbors", type=int, default=None, help="anchor-consistent normal neighbors")
     e.add_argument("--anoco-query-weight", type=float, default=None, help="query fidelity weight in closed-form manifold pull")
-    e.add_argument("--anoco-temperature", type=float, default=None, help="normal-neighbor softmax temperature")
+    e.add_argument("--anoco-temperature", type=float, default=None, help="legacy compatibility parameter (not used in cosine graph weights)")
     e.add_argument("--anoco-weight", type=float, default=None, help="ANoCo contribution in calibrated pca_anoco fusion")
     e.add_argument("--anoco-layer-consensus", action="store_true", help="replace aggregate-layer ANoCo with the median calibrated drift across selected layers")
     e.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None, help="fixed weight or normal-tail-calibrated patch gate")
