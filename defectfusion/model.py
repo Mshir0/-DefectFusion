@@ -81,16 +81,15 @@ class NormalPatchMemory:
         if self.features is None or self.view_ids is None:
             raise ValueError("View selection requires fitted features and view IDs")
         ids = np.unique(self.view_ids)
-        if top_k <= 0:
-            raise ValueError("View Top-K must be positive")
-        effective_top_k = min(int(top_k), len(ids))
+        if not 0 < top_k <= len(ids):
+            raise ValueError("View Top-K must be between one and the number of views")
         descriptors = []
         for view_id in ids:
             descriptor = self.features[self.view_ids == view_id].mean(axis=0)
             descriptors.append(descriptor / max(np.linalg.norm(descriptor), 1e-12))
         self.view_descriptor_ids = ids.astype(np.int32)
         self.view_descriptors = np.ascontiguousarray(np.stack(descriptors).astype(np.float32))
-        self.view_top_k = effective_top_k
+        self.view_top_k = int(top_k)
         return self
 
     def _selected_view_mask(self, query):

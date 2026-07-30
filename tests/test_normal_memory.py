@@ -253,16 +253,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         mask = memory._selected_view_mask(query)
         np.testing.assert_array_equal(mask, [True, True, False, False])
 
-    def test_view_index_clamps_top_k_to_available_views(self):
-        normal = np.array([[1.0, 0.0], [0.9, 0.1], [0.8, 0.2]], dtype=np.float32)
-        view_ids = np.zeros(len(normal), dtype=np.int32)
-        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal, view_ids=view_ids)
-        memory.fit_view_index(top_k=8)
-        query = memory._normalize([[1.0, 0.0]])
-
-        self.assertEqual(memory.view_top_k, 1)
-        np.testing.assert_array_equal(memory._selected_view_mask(query), [True, True, True])
-
     def test_view_selection_requires_layer_consensus(self):
         with self.assertRaisesRegex(ValueError, "requires layer consensus"):
             DefectFusion(object(), normal_view_top_k=4)
