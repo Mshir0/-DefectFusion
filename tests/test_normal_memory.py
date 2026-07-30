@@ -11,6 +11,82 @@ from defectfusion.pipeline import DefectFusion, NormalTrainingView
 
 
 class NormalPatchMemoryTest(unittest.TestCase):
+    @staticmethod
+    def _resolution_extractor():
+        class Extractor:
+            image_size = 672
+            positional_basis = "cached"
+            resize_mode = "direct"
+            device = None
+
+            def __init__(self):
+                self.calls = []
+
+            def _features(self):
+                side = 2 if self.image_size == 672 else 3
+                count = side * side
+                values = np.arange(count * 2, dtype=np.float32).reshape(count, 2)
+                return values, (side, side)
+
+            def extract(self, image):
+                self.calls.append(("extract", self.image_size))
+                return self._features()
+
+            def extract_dual(self, image):
+                self.calls.append(("extract_dual", self.image_size))
+                raw, grid = self._features()
+                return raw, raw + 0.25, grid
+
+            def extract_dual_layers(self, image):
+                self.calls.append(("extract_dual_layers", self.image_size))
+                raw, grid = self._features()
+                return raw, raw + 0.25, np.stack([raw + 0.5, raw + 0.75]), grid
+
+        return Extractor()
+
+    def test_equal_head_resolutions_reuse_one_dual_forward(self):
+        extractor = self._resolution_extractor()
+        fusion = DefectFusion(extractor, anomaly_method="pca", dual_branch=True, pixel_image_size=672, image_head_image_size=672)
+        fusion.fit_normal([Image.new("RGB", (8, 8))])
+        self.assertEqual(extractor.calls, [("extract_dual", 672)])
+
+    def test_different_head_resolutions_use_separate_grids_and_positions(self):
+        extractor = self._resolution_extractor()
+        fusion = DefectFusion(
+            extractor, anomaly_method="knn", dual_branch=True,
+            pixel_image_size=672, image_head_image_size=896, memory_max_patches=0,
+        ).fit_normal([Image.new("RGB", (8, 8))])
+        self.assertEqual(extractor.calls, [("extract", 672), ("extract_dual_layers", 896)])
+        self.assertEqual(len(fusion.normal_memory.positions), 4)
+        self.assertEqual(len(fusion.image_memory.positions), 9)
+        self.assertIsNone(extractor.positional_basis)
+
+        seen = {}
+        original = fusion._image_anomaly_score
+        def capture(patches, positions=None, grid=None, score_bundle=None):
+            seen["grid"] = grid
+            seen["positions"] = positions
+            return original(patches, positions, grid, score_bundle)
+        fusion._image_anomaly_score = capture
+        result = fusion._predict_single(Image.new("RGB", (8, 8)), "sample.png")
+        self.assertEqual(result["grid"], [2, 2])
+        self.assertEqual(np.asarray(result["anomaly_map"]).shape, (2, 2))
+        self.assertEqual(seen["grid"], (3, 3))
+        self.assertEqual(len(seen["positions"]), 9)
+
+    def test_pipeline_save_load_preserves_head_resolutions(self):
+        extractor = self._resolution_extractor()
+        fusion = DefectFusion(
+            extractor, anomaly_method="pca", dual_branch=True,
+            pixel_image_size=672, image_head_image_size=896,
+        ).fit_normal([Image.new("RGB", (8, 8))])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.json"
+            fusion.save(path)
+            loaded = DefectFusion.load(path, self._resolution_extractor())
+        self.assertEqual(loaded.pixel_image_size, 672)
+        self.assertEqual(loaded.image_head_image_size, 896)
+
     def test_empty_prototype_bank_skips_duplicate_typing_pca(self):
         class Extractor:
             def extract_dual(self, image):
