@@ -79,6 +79,12 @@ and scope both changes explicitly:
 --component-reject-categories macaroni1 macaroni2
 ```
 
+Category-specific input resolution is repeatable with
+`--image-size-override CATEGORY=SIZE`. For example,
+`--image-size 672 --image-size-override macaroni2=896` keeps all other
+categories at 672. The extractor resets its size-dependent positional cache
+when switching categories.
+
 Every category JSON records the effective augmentation list, component size,
 and whether each override was active.
 

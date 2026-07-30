@@ -14,6 +14,7 @@ from .features import DinoFeatureExtractor
 from .pipeline import DefectFusion, NormalTrainingView
 from .mvtec import evaluate_mvtec, evaluate_samples
 from .reporting import experiment_output_dir, write_metrics_csv
+from .settings import image_size_overrides as parse_image_size_overrides
 from .visa import load_visa_categories
 
 
@@ -158,6 +159,7 @@ def main(argv=None):
     e.add_argument("--no-augment-categories", nargs="+", default=None)
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
     e.add_argument("--image-size", type=int, default=None)
+    e.add_argument("--image-size-override", action="append", default=None, metavar="CATEGORY=SIZE", help="override input size for one category; repeatable")
     e.add_argument("--resize-mode", choices=["direct", "longest_pad"], default=None)
     e.add_argument("--output", default="outputs/mvtec-results", help="experiment output directory; a filename is converted to a same-stem directory")
     e.add_argument("--debias", action="store_true", help="apply INSID3 positional debiasing")
@@ -283,6 +285,10 @@ def main(argv=None):
         normal_augmentations = a.normal_augmentations or cfg.get("normal_augmentations", ["rotate"])
         affine_categories = set(a.affine_categories or cfg.get("affine_categories", []))
         component_reject_categories = set(a.component_reject_categories or cfg.get("component_reject_categories", []))
+        try:
+            image_size_overrides = parse_image_size_overrides(a.image_size_override if a.image_size_override is not None else cfg.get("image_size_overrides", {}))
+        except ValueError as exc:
+            p.error(str(exc))
         if align_training_positions and "affine" in normal_augmentations:
             p.error("--align-training-positions does not yet support affine normal augmentation")
         if align_training_positions and affine_categories:
@@ -293,7 +299,7 @@ def main(argv=None):
         else:
             categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
         available_categories = {category.name for category in categories}
-        unknown_overrides = sorted((affine_categories | component_reject_categories) - available_categories)
+        unknown_overrides = sorted((affine_categories | component_reject_categories | set(image_size_overrides)) - available_categories)
         if unknown_overrides: p.error(f"unknown override categories: {', '.join(unknown_overrides)}")
         if a.categories:
             requested_categories = set(a.categories)
@@ -307,6 +313,10 @@ def main(argv=None):
         all_metrics = []
         for category in categories:
             category_name = category.name
+            category_image_size = image_size_overrides.get(category_name, image_size)
+            if extractor.image_size != category_image_size:
+                extractor.image_size = category_image_size
+                extractor.positional_basis = None
             normal_candidates = [str(path) for path in category.normal_images] if is_visa else _images(str(category / "train" / "good"))
             if a.normal_shots == -1:
                 normal_selected = normal_candidates
@@ -322,7 +332,7 @@ def main(argv=None):
             category_component_size = image_min_component_size if not component_reject_categories or category_name in component_reject_categories else 1
             normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
             print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
-            print(f"[category-config] {category_name}: augmentations={category_augmentations} component_size={category_component_size}", flush=True)
+            print(f"[category-config] {category_name}: image_size={category_image_size} augmentations={category_augmentations} component_size={category_component_size}", flush=True)
             fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
@@ -379,7 +389,8 @@ def main(argv=None):
             metrics["component_reject_category_override"] = category_name in component_reject_categories
             metrics["feature_layers"] = list(feature_layers)
             metrics["feature_layer_preset"] = feature_layer_preset
-            metrics["image_size"] = image_size
+            metrics["image_size"] = category_image_size
+            metrics["image_size_override"] = category_name in image_size_overrides
             metrics["resize_mode"] = resize_mode
             metrics["layer_aggregation"] = layer_aggregation
             metrics["layer_normalization"] = layer_normalization
