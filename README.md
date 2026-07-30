@@ -43,7 +43,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
   --normal-shots 1 --defect-shots 0 --seed 42 \
   --normal-augment-count 30 --normal-augmentations rotate \
-  --image-size 672 --feature-layers=-1,-3,-5,-7 \
+  --image-size 672 --feature-layers=1,17,21,23 \
   --layer-aggregation mean --image-score mtop1p \
   --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
   --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
@@ -114,7 +114,7 @@ python -m defectfusion.cli evaluate-visa \
   --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
   --normal-shots 1 --defect-shots 0 --seed 42 \
   --normal-augment-count 30 --normal-augmentations rotate \
-  --image-size 672 --feature-layers=-1,-3,-5,-7 \
+  --image-size 672 --feature-layers=1,17,21,23 \
   --dual-branch --anomaly-method pca_knn_anoco \
   --knn-weight 0.5 --anoco-weight 0.25 --anoco-layer-consensus \
   --image-score mtop1p --image-top-ratio 0.01 --image-fusion-stage patch \
@@ -176,7 +176,7 @@ for ratio in 0.005 0.01 0.02 0.05; do
     --normal-shots 1 --defect-shots 0 --seed 42 \
     --normal-augment-count 30 --normal-augmentations rotate \
     --image-size 672 --resize-mode direct \
-    --feature-layers=-1,-3,-5,-7 --layer-aggregation mean \
+    --feature-layers=1,17,21,23 --layer-aggregation mean \
     --layer-normalization none --dual-branch \
     --image-score mtop1p --image-top-ratio "$ratio" \
     --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
@@ -187,7 +187,8 @@ done
 ```
 
 Dense features are averaged from the four cross-depth DINOv3 states
-`-1,-3,-5,-7` by default, selected after the MVTec ablation. Use
+`1,17,21,23` by default, selected as the best-performing feature combination.
+Use
 `--feature-layer-preset last4` for the consecutive final-four baseline or
 `--feature-layers=-1` for the former last-layer baseline.
 Use `--feature-layer-preset middle7` to select the seven intermediate states
@@ -208,7 +209,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --normal-shots 1 --defect-shots 0 --seed 42 \
   --normal-augment-count 30 --normal-augmentations rotate \
   --image-score mtop1p \
-  --feature-layers=-1,-3,-5,-7 \
+  --feature-layers=1,17,21,23 \
   --layer-aggregation mean --image-size 672 \
   --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
   --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
@@ -241,7 +242,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | Align train positions | `--align-training-positions` | off | on/off | Canonical coordinates for rotate/flip normal views |
 | kNN backend | `--knn-backend` | `auto` | `auto, torch, numpy` | Runtime only |
 | kNN CUDA dtype | `--knn-dtype` | `float32` | `float32, float16` | Speed, memory, small numeric differences |
-| Feature layers | `--feature-layers` | `-1,-3,-5,-7` | `-1`, `-1,-2,-3,-4`, `-1,-3,-5,-7` | All metrics |
+| Feature layers | `--feature-layers` | `1,17,21,23` | `-1`, `-1,-2,-3,-4`, `-1,-3,-5,-7`, `1,17,21,23` | All metrics |
 | Feature layer preset | `--feature-layer-preset` | `cross4` | `cross4, last4, middle7` | All metrics |
 | Layer fusion | `--layer-aggregation` | `mean` | `mean, concat` | All metrics and memory |
 | Per-layer normalization | `--layer-normalization` | `none` | `none, l2` | Multi-layer feature balance |
@@ -259,9 +260,10 @@ views and patch maps are inverse-aligned before averaging.
 | Input resolution | `--image-size` | `448` | `224, 448, 672` | All metrics and memory |
 | Resize geometry | `--resize-mode` | `direct` | `direct, longest_pad` | Geometric fidelity, all metrics |
 
-Negative feature-layer values must use the equals form, such as
-`--feature-layers=-1,-3,-5,-7`, so that `argparse` does not interpret them as
-new options. `concat` multiplies the PCA feature dimension by the number of
+Pass the recommended layers as `--feature-layers=1,17,21,23`. Negative-layer
+ablations must use the same equals form, such as `--feature-layers=-1,-3,-5,-7`,
+so that `argparse` does not interpret them as new options. `concat` multiplies
+the PCA feature dimension by the number of
 selected layers and therefore uses substantially more memory than `mean`.
 Use `--layer-normalization l2` to normalize every patch token independently in
 each selected hidden layer before layer fusion; `none` reproduces prior runs.
@@ -278,7 +280,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --normal-shots 1 --defect-shots 0 --seed 42 \
   --normal-augment-count 30 --normal-augmentations rotate \
   --image-size 672 --resize-mode direct \
-  --feature-layers=-1,-3,-5,-7 --layer-aggregation mean \
+  --feature-layers=1,17,21,23 --layer-aggregation mean \
   --layer-normalization none --dual-branch \
   --image-score mtop1p --anomaly-method pca_knn \
   --fusion-mode fixed --knn-weight 0.5 --knn-spatial-radius -1 \
@@ -301,7 +303,7 @@ for mode in direct longest_pad; do
     --normal-shots 1 --defect-shots 0 --seed 42 \
     --normal-augment-count 30 --normal-augmentations rotate \
     --image-size 672 --resize-mode "$mode" \
-    --feature-layers=-1,-3,-5,-7 --layer-aggregation mean \
+    --feature-layers=1,17,21,23 --layer-aggregation mean \
     --image-score mtop1p --anomaly-method pca_knn \
     --fusion-mode fixed --knn-weight 0.5 \
     --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
@@ -326,7 +328,7 @@ split:
 for matcher in bidirectional_patch rbf_svm; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots -1 --defect-shots 1 --seed 42 \
-    --image-size 672 --feature-layers=-1,-3,-5,-7 \
+    --image-size 672 --feature-layers=1,17,21,23 \
     --top-k-ratio 0.05 --type-matching "$matcher" \
     --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
     --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
@@ -404,7 +406,7 @@ Run a single-variable comparison with the current 1-shot protocol:
 for method in pca knn pca_knn; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots 1 --defect-shots 0 --seed 42 --normal-augment-count 30 \
-    --image-size 672 --feature-layers=-1,-3,-5,-7 \
+    --image-size 672 --feature-layers=1,17,21,23 \
     --anomaly-method "$method" --knn-weight 0.5 \
     --knn-backend torch --knn-dtype float16 \
     --output "outputs/mvtec-${method}-seed42.json"
@@ -421,7 +423,7 @@ backbone, memory, split, or image aggregation:
 for fusion in fixed gated; do
   python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
     --normal-shots 1 --defect-shots 0 --seed 42 --normal-augment-count 30 \
-    --image-size 672 --feature-layers=-1,-3,-5,-7 \
+    --image-size 672 --feature-layers=1,17,21,23 \
     --anomaly-method pca_knn --fusion-mode "$fusion" --gate-temperature 1.0 \
     --knn-backend torch --knn-dtype float16 --memory-max-patches 5000 \
     --output "outputs/mvtec-fusion-${fusion}-seed42.json"
@@ -530,7 +532,7 @@ for seed in 0 1 2 3 4; do
     --model facebook/dinov3-vitl16-pretrain-lvd1689m --device cuda \
     --normal-shots 1 --defect-shots 0 --seed "$seed" \
     --normal-augment-count 30 --image-size 672 \
-    --feature-layers=-1,-3,-5,-7 --layer-aggregation mean \
+    --feature-layers=1,17,21,23 --layer-aggregation mean \
     --anomaly-method pca_knn --fusion-mode fixed --knn-weight 0.5 \
     --memory-max-patches 5000 --knn-backend torch --knn-dtype float16 \
     --knn-chunk-size 1024 \

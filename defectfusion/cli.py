@@ -37,7 +37,7 @@ def _layers(value) -> tuple[int, ...]:
 
 
 FEATURE_LAYER_PRESETS = {
-    "cross4": (-1, -3, -5, -7),
+    "cross4": (1, 17, 21, 23),
     "last4": (-1, -2, -3, -4),
     # SubspaceAD uses these seven intermediate hidden states with mean fusion.
     "middle7": (-12, -13, -14, -15, -16, -17, -18),

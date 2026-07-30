@@ -22,7 +22,7 @@
   "test_augmentations": [],
   "knn_backend": "auto",
   "knn_dtype": "float32",
-  "feature_layers": [-1, -3, -5, -7],
+  "feature_layers": [1, 17, 21, 23],
   "layer_aggregation": "mean",
   "layer_normalization": "none",
   "map_postprocess": "none",
