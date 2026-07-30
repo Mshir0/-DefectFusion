@@ -309,6 +309,10 @@ two query-to-bank similarity products per chunk, so it is expected to be
 roughly twice as expensive as the kNN head. The validated default detector is
 unchanged; screen `anoco` on seed 42 before running `pca_anoco` or five seeds.
 
+For an experimental higher-recall consensus, `--anoco-layer-top-k K` averages
+the strongest K calibrated layer drifts for each patch instead of taking the
+median. It requires `--anoco-layer-consensus`; `0` keeps the median behavior.
+
 For the dual-head configuration, use `--anomaly-method pca_knn_anoco` together
 with `--dual-branch`. The raw pixel branch uses calibrated PCA+kNN with
 `--knn-weight`, while the L2 image branch uses calibrated PCA+ANoCo with
