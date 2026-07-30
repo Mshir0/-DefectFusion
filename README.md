@@ -65,7 +65,32 @@ generated. If `--output` has a file suffix, its stem becomes
 the experiment directory name. Add `--prototype-dir` (subdirectories are defect labels) to enable
 defect-type accuracy, macro-F1, and a confusion matrix.
 
-`--normal-shots 1/2/4` samples that many images from `train/good`; `-1` uses
+## VisA evaluation
+
+The official VisA one-class split can be evaluated directly without converting
+its directory layout. Keep `split_csv/1cls.csv` under the dataset root and run:
+
+```bash
+python -m defectfusion.cli evaluate-visa \
+  --data-root /mnt/sda1/VisA \
+  --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
+  --normal-shots 1 --defect-shots 0 --seed 42 \
+  --normal-augment-count 30 --normal-augmentations rotate \
+  --image-size 672 --feature-layers=-1,-3,-5,-7 \
+  --dual-branch --anomaly-method pca_knn_anoco \
+  --knn-weight 0.5 --anoco-weight 0.25 --anoco-layer-consensus \
+  --image-score mtop1p --image-top-ratio 0.01 --image-fusion-stage patch \
+  --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 \
+  --output outputs/visa-1shot
+```
+
+Use `--split-csv /path/to/1cls.csv` when the split file is stored elsewhere.
+The loader reads the CSV `object`, `split`, `label`, `image`, and `mask`
+columns, fits each object only on normal training rows, and evaluates the test
+rows with their listed masks. Output layout and metrics match MVTec evaluation.
+
+`--normal-shots 1/2/4` samples that many images from the normal training
+partition (`train/good` for MVTec or normal train rows for VisA); `-1` uses
 all normal training images. Keep `--defect-shots 0` for standard anomaly
 detection comparisons with AnomalyDINO and SubspaceAD. No test anomaly is then
 used while fitting the detector.

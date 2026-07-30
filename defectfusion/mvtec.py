@@ -125,47 +125,43 @@ def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
 
-def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_images=None):
-    """Evaluate a fitted model on one MVTec category and write JSON predictions."""
-    root = Path(category_dir)
+def evaluate_samples(fusion, category, samples, output, *, progress=True, excluded_images=None):
+    """Evaluate image/mask records shared by MVTec AD and VisA."""
     excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
     rows, image_y, image_s, pixel_masks, pixel_maps = [], [], [], [], []
     started = time.perf_counter()
     prediction_seconds = 0.0
     pixel_preparation_seconds = 0.0
-    test = root / "test"
-    for defect_dir in sorted(p for p in test.iterdir() if p.is_dir()):
-        defect = defect_dir.name
-        for image in _images(defect_dir):
-            if str(image.resolve()) in excluded_images:
-                continue
-            prediction_started = time.perf_counter()
-            result = fusion.predict(str(image))
-            prediction_seconds += time.perf_counter() - prediction_started
-            truth = defect != "good"
-            result.update({"category": root.name, "ground_truth_type": defect, "ground_truth_anomaly": truth})
-            mask_path = root / "ground_truth" / defect / f"{image.stem}_mask.png"
-            if mask_path.exists() or not truth:
-                pixel_started = time.perf_counter()
-                from PIL import Image as PILImage
-                if mask_path.exists():
-                    mask = np.asarray(PILImage.open(mask_path).convert("L")) > 0
-                else:
-                    with PILImage.open(image) as source:
-                        mask = np.zeros((source.height, source.width), dtype=bool)
-                score = np.asarray(result["anomaly_map"], dtype=np.float32)
-                # Resize the coarse patch map to the mask resolution for pixel metrics.
-                score = np.asarray(PILImage.fromarray(score.astype("float32"), mode="F").resize(mask.shape[::-1], PILImage.Resampling.BILINEAR))
-                pixel_masks.append(mask); pixel_maps.append(score)
-                pixel_preparation_seconds += time.perf_counter() - pixel_started
-            image_y.append(int(truth)); image_s.append(float(result["anomaly_score"])); rows.append(result)
-            if progress:
-                print(f"[{len(rows):04d}] {image.name} anomaly={result['anomaly_score']:.5f} type={result['defect_type']}", flush=True)
+    for image, defect, truth, mask_path in samples:
+        image = Path(image)
+        if str(image.resolve()) in excluded_images:
+            continue
+        prediction_started = time.perf_counter()
+        result = fusion.predict(str(image))
+        prediction_seconds += time.perf_counter() - prediction_started
+        result.update({"category": category, "ground_truth_type": defect, "ground_truth_anomaly": bool(truth)})
+        mask_path = None if mask_path is None else Path(mask_path)
+        if (mask_path is not None and mask_path.exists()) or not truth:
+            pixel_started = time.perf_counter()
+            from PIL import Image as PILImage
+            if mask_path is not None and mask_path.exists():
+                mask = np.asarray(PILImage.open(mask_path).convert("L")) > 0
+            else:
+                with PILImage.open(image) as source:
+                    mask = np.zeros((source.height, source.width), dtype=bool)
+            score = np.asarray(result["anomaly_map"], dtype=np.float32)
+            # Resize the coarse patch map to the mask resolution for pixel metrics.
+            score = np.asarray(PILImage.fromarray(score.astype("float32"), mode="F").resize(mask.shape[::-1], PILImage.Resampling.BILINEAR))
+            pixel_masks.append(mask); pixel_maps.append(score)
+            pixel_preparation_seconds += time.perf_counter() - pixel_started
+        image_y.append(int(truth)); image_s.append(float(result["anomaly_score"])); rows.append(result)
+        if progress:
+            print(f"[{len(rows):04d}] {image.name} anomaly={result['anomaly_score']:.5f} type={result['defect_type']}", flush=True)
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
     output_started = time.perf_counter()
     output.write_text(json.dumps(rows, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     output_seconds = time.perf_counter() - output_started
-    metrics = {"category": root.name, "images": len(rows), "results": str(output)}
+    metrics = {"category": category, "images": len(rows), "results": str(output)}
     metrics_started = time.perf_counter()
     if len(set(image_y)) > 1:
         metrics["image_auroc"], metrics["image_aupr"] = compute_binary_auroc_aupr(image_y, image_s)
@@ -200,3 +196,16 @@ def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_imag
         "total": time.perf_counter() - started,
     }
     return metrics
+
+
+def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_images=None):
+    """Evaluate a fitted model on one MVTec category and write JSON predictions."""
+    root = Path(category_dir)
+    samples = []
+    for defect_dir in sorted(p for p in (root / "test").iterdir() if p.is_dir()):
+        defect = defect_dir.name
+        for image in _images(defect_dir):
+            truth = defect != "good"
+            mask = root / "ground_truth" / defect / f"{image.stem}_mask.png"
+            samples.append((image, defect, truth, mask if truth else None))
+    return evaluate_samples(fusion, root.name, samples, output, progress=progress, excluded_images=excluded_images)

@@ -12,8 +12,9 @@ from PIL import Image
 
 from .features import DinoFeatureExtractor
 from .pipeline import DefectFusion, NormalTrainingView
-from .mvtec import evaluate_mvtec
+from .mvtec import evaluate_mvtec, evaluate_samples
 from .reporting import experiment_output_dir, write_metrics_csv
+from .visa import load_visa_categories
 
 
 def _images(root: str, recursive: bool = True) -> list[str]:
@@ -141,9 +142,10 @@ def main(argv=None):
     q.add_argument("--output", help="write JSON results to a file")
     q.add_argument("--debias", action="store_true"); q.add_argument("--svd-components", type=int, default=20)
     q.add_argument("--feature-layers", default=None); q.add_argument("--feature-layer-preset", choices=FEATURE_LAYER_PRESETS, default=None); q.add_argument("--layer-aggregation", choices=["mean", "concat"], default=None); q.add_argument("--layer-normalization", choices=["none", "l2"], default=None)
-    e = sub.add_parser("evaluate-mvtec", help="fit on train/good and evaluate one MVTec category")
+    e = sub.add_parser("evaluate-mvtec", aliases=["evaluate-visa"], help="evaluate MVTec AD or official VisA splits")
     e.add_argument("--data-dir", help="MVTec category directory")
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
+    e.add_argument("--split-csv", help="VisA split CSV; defaults to <data-root>/split_csv/1cls.csv")
     e.add_argument("--prototype-dir", help="optional defect prototypes; subdirectories are defect labels")
     e.add_argument("--normal-shots", type=int, default=-1, help="normal train/good references per category; -1 uses all")
     e.add_argument("--defect-shots", "--few-shot", dest="defect_shots", type=int, default=0, help="labeled defect exemplars per defect type")
@@ -268,7 +270,9 @@ def main(argv=None):
         if a.output: Path(a.output).write_text(payload + "\n", encoding="utf-8")
         print(payload)
     else:
-        if not a.data_dir and not a.data_root: p.error("evaluate-mvtec requires --data-dir or --data-root")
+        is_visa = a.cmd == "evaluate-visa"
+        if is_visa and not a.data_root: p.error("evaluate-visa requires --data-root")
+        if not is_visa and not a.data_dir and not a.data_root: p.error("evaluate-mvtec requires --data-dir or --data-root")
         if a.normal_shots == 0 or a.normal_shots < -1: p.error("--normal-shots must be -1 or a positive integer")
         if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
         if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
@@ -276,28 +280,31 @@ def main(argv=None):
         if align_training_positions and "affine" in normal_augmentations:
             p.error("--align-training-positions does not yet support affine normal augmentation")
         no_augment_categories = a.no_augment_categories or cfg.get("no_augment_categories", ["transistor"])
-        categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
+        if is_visa:
+            categories = load_visa_categories(a.data_root, a.split_csv)
+        else:
+            categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
         output_dir = experiment_output_dir(a.output)
         category_output_dir = output_dir / "categories"
         category_output_dir.mkdir(parents=True, exist_ok=True)
         all_metrics = []
         for category in categories:
-            normal_dir = str(category / "train" / "good")
-            normal_candidates = _images(normal_dir)
+            category_name = category.name
+            normal_candidates = [str(path) for path in category.normal_images] if is_visa else _images(str(category / "train" / "good"))
             if a.normal_shots == -1:
                 normal_selected = normal_candidates
             else:
                 normal_rng = random.Random(a.seed)
                 normal_selected = sorted(normal_rng.sample(normal_candidates, min(a.normal_shots, len(normal_candidates))))
-            print(f"[normal-shots] {category.name}: {len(normal_selected)}/{len(normal_candidates)}", flush=True)
+            print(f"[normal-shots] {category_name}: {len(normal_selected)}/{len(normal_candidates)}", flush=True)
             augment_count = a.normal_augment_count if a.normal_augment_count is not None else (30 if a.normal_shots != -1 else 0)
-            if category.name in no_augment_categories: augment_count = 0
+            if category_name in no_augment_categories: augment_count = 0
             normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
-            print(f"[normal-augment] {category.name}: {len(normal_training_images)} views", flush=True)
+            print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
             fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, anoco_layer_top_k=anoco_layer_top_k, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
-                    f"[knn] {category.name}: backend={fusion.normal_memory.resolved_backend} "
+                    f"[knn] {category_name}: backend={fusion.normal_memory.resolved_backend} "
                     f"device={fusion.normal_memory.device or 'cpu'} dtype={knn_dtype} "
                     f"patches={len(fusion.normal_memory.features)} chunk={knn_chunk_size}",
                     flush=True,
@@ -310,15 +317,26 @@ def main(argv=None):
             selected = []
             if a.defect_shots > 0:
                 rng = random.Random(a.seed)
-                for defect_dir in sorted(x for x in (category / "test").iterdir() if x.is_dir() and x.name != "good"):
-                    candidates = _images(str(defect_dir))
+                if is_visa:
+                    defect_groups = {}
+                    for sample in category.test_samples:
+                        if sample.anomalous:
+                            defect_groups.setdefault(sample.defect_type, []).append(str(sample.image))
+                else:
+                    defect_groups = {x.name: _images(str(x)) for x in sorted((category / "test").iterdir()) if x.is_dir() and x.name != "good"}
+                for defect_name, candidates in sorted(defect_groups.items()):
                     chosen = rng.sample(candidates, min(a.defect_shots, len(candidates)))
                     for image in chosen:
-                        fusion.add_prototype(defect_dir.name, image)
+                        fusion.add_prototype(defect_name, image)
                         selected.append(image)
-                        print(f"[defect-shot] {category.name}/{defect_dir.name}: {Path(image).name}", flush=True)
-            result_path = category_output_dir / f"{category.name}.json"
-            metrics = evaluate_mvtec(fusion, category, result_path, excluded_images=selected)
+                        print(f"[defect-shot] {category_name}/{defect_name}: {Path(image).name}", flush=True)
+            result_path = category_output_dir / f"{category_name}.json"
+            if is_visa:
+                samples = [(x.image, x.defect_type, x.anomalous, x.mask) for x in category.test_samples]
+                metrics = evaluate_samples(fusion, category_name, samples, result_path, excluded_images=selected)
+            else:
+                metrics = evaluate_mvtec(fusion, category, result_path, excluded_images=selected)
+            metrics["dataset"] = "visa" if is_visa else "mvtec"
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]
             metrics["normal_augment_count"] = augment_count
