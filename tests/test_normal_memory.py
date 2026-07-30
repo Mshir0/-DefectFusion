@@ -221,27 +221,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be positive"):
             DefectFusion(object(), image_min_component_size=0)
 
-    def test_region_postprocess_keeps_seeded_component_only(self):
-        fusion = DefectFusion(
-            object(), image_top_ratio=1 / 16, map_postprocess="region",
-            region_low_ratio=6 / 16, region_min_component_size=2,
-        )
-        anomaly_map = np.array([
-            [10, 9, 0, 0],
-            [8, 0, 0, 0],
-            [0, 0, 0, 7],
-            [0, 0, 6, 5],
-        ], dtype=np.float32)
-
-        filtered = fusion._postprocess_map(anomaly_map, None)
-
-        np.testing.assert_array_equal(filtered[:2, :2], [[10, 9], [8, 0]])
-        np.testing.assert_array_equal(filtered[2:, 2:], 0)
-
-    def test_region_low_ratio_must_cover_seed_ratio(self):
-        with self.assertRaisesRegex(ValueError, "region_low_ratio"):
-            DefectFusion(object(), image_top_ratio=0.1, map_postprocess="region", region_low_ratio=0.05)
-
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")
     def test_rbf_svm_classifies_separable_patch_sets(self):
         bank = PrototypeBank(unknown_threshold=0.0)
@@ -454,9 +433,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
         fusion = DefectFusion(
             object(), pca_residual_metric="mahalanobis",
-            image_min_component_size=2, map_postprocess="region",
-            region_low_ratio=0.2, region_min_component_size=3,
-            test_augmentations=["hflip"],
+            image_min_component_size=2, test_augmentations=["hflip"],
         )
         normal = np.array([[0.0, 0.0], [1.0, 0.1], [2.0, -0.1]])
         fusion.subspace.fit(normal)
@@ -467,9 +444,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
             self.assertEqual(loaded.pca_residual_metric, "mahalanobis")
             self.assertEqual(loaded.subspace.residual_metric, "mahalanobis")
             self.assertEqual(loaded.image_min_component_size, 2)
-            self.assertEqual(loaded.map_postprocess, "region")
-            self.assertEqual(loaded.region_low_ratio, 0.2)
-            self.assertEqual(loaded.region_min_component_size, 3)
             self.assertEqual(loaded.test_augmentations, ("hflip",))
 
 
