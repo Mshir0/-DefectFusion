@@ -154,6 +154,7 @@ def main(argv=None):
     e.add_argument("--seed", type=int, default=42, help="seed used for reproducible normal and defect sampling")
     e.add_argument("--normal-augment-count", type=int, default=None, help="augmented views per normal shot; defaults to 30 in few-shot mode")
     e.add_argument("--normal-augmentations", nargs="+", choices=["rotate", "hflip", "vflip", "color_jitter", "affine"], default=None)
+    e.add_argument("--affine-categories", nargs="+", default=None, help="append affine augmentation only for these categories")
     e.add_argument("--no-augment-categories", nargs="+", default=None)
     e.add_argument("--model", default=None); e.add_argument("--device", default=None)
     e.add_argument("--image-size", type=int, default=None)
@@ -167,6 +168,7 @@ def main(argv=None):
     e.add_argument("--image-fusion-stage", choices=["patch", "score"], default=None, help="fuse PCA/kNN before or after image aggregation")
     e.add_argument("--image-spatial-weight", type=float, default=None, help="relative image-score boost from connected Top-K patches")
     e.add_argument("--image-min-component-size", type=int, default=None, help="reject Top-K candidate regions smaller than this many patches")
+    e.add_argument("--component-reject-categories", nargs="+", default=None, help="apply image-min-component-size only to these categories")
     e.add_argument("--type-matching", choices=["prototype_mean", "bidirectional_patch", "rbf_svm"], default=None)
     e.add_argument("--anomaly-method", choices=["pca", "knn", "pca_knn", "anoco", "pca_anoco", "pca_knn_anoco"], default=None, help="normal anomaly detector; pca_knn_anoco uses PCA+kNN for pixels and PCA+ANoCo for images")
     e.add_argument("--pca-residual-metric", choices=["squared_l2", "mahalanobis"], default=None, help="PCA orthogonal-residual metric")
@@ -279,13 +281,20 @@ def main(argv=None):
         if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
         if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
         normal_augmentations = a.normal_augmentations or cfg.get("normal_augmentations", ["rotate"])
+        affine_categories = set(a.affine_categories or cfg.get("affine_categories", []))
+        component_reject_categories = set(a.component_reject_categories or cfg.get("component_reject_categories", []))
         if align_training_positions and "affine" in normal_augmentations:
             p.error("--align-training-positions does not yet support affine normal augmentation")
+        if align_training_positions and affine_categories:
+            p.error("--align-training-positions does not yet support --affine-categories")
         no_augment_categories = a.no_augment_categories or cfg.get("no_augment_categories", ["transistor"])
         if is_visa:
             categories = load_visa_categories(a.data_root, a.split_csv)
         else:
             categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
+        available_categories = {category.name for category in categories}
+        unknown_overrides = sorted((affine_categories | component_reject_categories) - available_categories)
+        if unknown_overrides: p.error(f"unknown override categories: {', '.join(unknown_overrides)}")
         if a.categories:
             requested_categories = set(a.categories)
             categories = [category for category in categories if category.name in requested_categories]
@@ -307,9 +316,14 @@ def main(argv=None):
             print(f"[normal-shots] {category_name}: {len(normal_selected)}/{len(normal_candidates)}", flush=True)
             augment_count = a.normal_augment_count if a.normal_augment_count is not None else (30 if a.normal_shots != -1 else 0)
             if category_name in no_augment_categories: augment_count = 0
-            normal_training_images = _augment_normal_images(normal_selected, augment_count, normal_augmentations, a.seed)
+            category_augmentations = list(normal_augmentations)
+            if category_name in affine_categories and "affine" not in category_augmentations:
+                category_augmentations.append("affine")
+            category_component_size = image_min_component_size if not component_reject_categories or category_name in component_reject_categories else 1
+            normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
             print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=image_min_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
+            print(f"[category-config] {category_name}: augmentations={category_augmentations} component_size={category_component_size}", flush=True)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category_name}: backend={fusion.normal_memory.resolved_backend} "
@@ -348,7 +362,7 @@ def main(argv=None):
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]
             metrics["normal_augment_count"] = augment_count
-            metrics["normal_augmentations"] = list(normal_augmentations)
+            metrics["normal_augmentations"] = category_augmentations
             metrics["normal_training_views"] = len(normal_training_images)
             metrics["defect_shots"] = a.defect_shots
             metrics["seed"] = a.seed
@@ -360,7 +374,9 @@ def main(argv=None):
             metrics["image_top_ratio"] = image_top_ratio if image_score == "mtop1p" else 0
             metrics["image_fusion_stage"] = image_fusion_stage
             metrics["image_spatial_weight"] = image_spatial_weight
-            metrics["image_min_component_size"] = image_min_component_size
+            metrics["image_min_component_size"] = category_component_size
+            metrics["affine_category_override"] = category_name in affine_categories
+            metrics["component_reject_category_override"] = category_name in component_reject_categories
             metrics["feature_layers"] = list(feature_layers)
             metrics["feature_layer_preset"] = feature_layer_preset
             metrics["image_size"] = image_size

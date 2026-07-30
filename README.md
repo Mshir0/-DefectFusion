@@ -70,6 +70,17 @@ Use `--categories macaroni2` to run a focused category ablation. The optional
 image score while leaving the pixel map unchanged; the default `1` preserves
 the validated aggregation. For pose-variable categories, combine it with
 `--normal-augmentations rotate affine` before considering a full-dataset run.
+For a mixed full-dataset run, keep the baseline `--normal-augmentations rotate`
+and scope both changes explicitly:
+
+```bash
+--affine-categories macaroni1 macaroni2 \
+--image-min-component-size 2 \
+--component-reject-categories macaroni1 macaroni2
+```
+
+Every category JSON records the effective augmentation list, component size,
+and whether each override was active.
 
 ## VisA evaluation
 
