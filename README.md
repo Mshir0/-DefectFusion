@@ -65,6 +65,12 @@ generated. If `--output` has a file suffix, its stem becomes
 the experiment directory name. Add `--prototype-dir` (subdirectories are defect labels) to enable
 defect-type accuracy, macro-F1, and a confusion matrix.
 
+Use `--categories macaroni2` to run a focused category ablation. The optional
+`--image-min-component-size 2` rejects isolated Top-K anomaly patches from the
+image score while leaving the pixel map unchanged; the default `1` preserves
+the validated aggregation. For pose-variable categories, combine it with
+`--normal-augmentations rotate affine` before considering a full-dataset run.
+
 ## VisA evaluation
 
 VisA can be evaluated directly without converting its directory layout. The

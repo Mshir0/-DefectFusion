@@ -205,6 +205,22 @@ class NormalPatchMemoryTest(unittest.TestCase):
         scattered_score, _ = fusion._image_anomaly_score(patches, grid=(4, 4), score_bundle=(scattered, scattered, None, None))
         self.assertGreater(connected_score, scattered_score)
 
+    def test_minimum_component_size_rejects_isolated_top_patches(self):
+        fusion = DefectFusion(object(), image_top_ratio=0.25, image_min_component_size=2)
+        connected = np.array([4, 3, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+        isolated = np.array([4, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 1], dtype=np.float32)
+
+        connected_score = fusion._region_rejected_score(connected, (4, 4))
+        isolated_score = fusion._region_rejected_score(isolated, (4, 4))
+
+        self.assertEqual(connected_score, 2.5)
+        self.assertEqual(isolated_score, float(isolated.mean()))
+        self.assertGreater(connected_score, isolated_score)
+
+    def test_minimum_component_size_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            DefectFusion(object(), image_min_component_size=0)
+
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")
     def test_rbf_svm_classifies_separable_patch_sets(self):
         bank = PrototypeBank(unknown_threshold=0.0)
@@ -415,7 +431,10 @@ class NormalPatchMemoryTest(unittest.TestCase):
                 np.testing.assert_allclose(actual.anoco_calibration_scores, expected.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_mahalanobis_residual(self):
-        fusion = DefectFusion(object(), pca_residual_metric="mahalanobis", test_augmentations=["hflip"])
+        fusion = DefectFusion(
+            object(), pca_residual_metric="mahalanobis",
+            image_min_component_size=2, test_augmentations=["hflip"],
+        )
         normal = np.array([[0.0, 0.0], [1.0, 0.1], [2.0, -0.1]])
         fusion.subspace.fit(normal)
         with tempfile.TemporaryDirectory() as directory:
@@ -424,6 +443,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             loaded = DefectFusion.load(state_path, object())
             self.assertEqual(loaded.pca_residual_metric, "mahalanobis")
             self.assertEqual(loaded.subspace.residual_metric, "mahalanobis")
+            self.assertEqual(loaded.image_min_component_size, 2)
             self.assertEqual(loaded.test_augmentations, ("hflip",))
 
 
