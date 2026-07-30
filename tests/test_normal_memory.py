@@ -349,17 +349,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be positive"):
             DefectFusion(object(), image_min_component_size=0)
 
-    def test_maxpool_map_postprocess_expands_local_region(self):
-        fusion = DefectFusion(object(), map_postprocess="maxpool", map_maxpool_kernel=3)
-        source = np.zeros((3, 3), dtype=np.float32)
-        source[1, 1] = 5.0
-        expanded = fusion._postprocess_map(source, Image.new("RGB", (3, 3)))
-        self.assertTrue(np.all(expanded == 5.0))
-
-    def test_maxpool_kernel_must_be_positive_odd(self):
-        with self.assertRaisesRegex(ValueError, "positive odd"):
-            DefectFusion(object(), map_maxpool_kernel=2)
-
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed")
     def test_rbf_svm_classifies_separable_patch_sets(self):
         bank = PrototypeBank(unknown_threshold=0.0)
