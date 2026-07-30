@@ -19,10 +19,6 @@ class NormalPatchMemory:
         self.spatial_radius = float(spatial_radius)
         self.features = None
         self.positions = None
-        self.view_ids = None
-        self.view_descriptors = None
-        self.view_descriptor_ids = None
-        self.view_top_k = 0
         self._torch_bank = None
         self._torch_positions = None
         self.center = 0.0
@@ -45,7 +41,7 @@ class NormalPatchMemory:
         std_floor = float(scores.std() * 0.1)
         return center, max(mad_scale, std_floor, 1e-12)
 
-    def fit(self, features, positions=None, view_ids=None):
+    def fit(self, features, positions=None):
         bank = self._normalize(features)
         if len(bank) < 2:
             raise ValueError("Normal patch kNN requires at least two reference patches")
@@ -53,20 +49,13 @@ class NormalPatchMemory:
             positions = np.asarray(positions, dtype=np.float32)
             if positions.shape != (len(bank), 2):
                 raise ValueError("Normal patch positions must have shape (patches, 2)")
-        if view_ids is not None:
-            view_ids = np.asarray(view_ids, dtype=np.int32)
-            if view_ids.shape != (len(bank),):
-                raise ValueError("Normal patch view IDs must have shape (patches,)")
         if self.max_patches > 0 and len(bank) > self.max_patches:
             indices = np.linspace(0, len(bank) - 1, self.max_patches, dtype=np.int64)
             bank = bank[indices]
             if positions is not None:
                 positions = positions[indices]
-            if view_ids is not None:
-                view_ids = view_ids[indices]
         self.features = np.ascontiguousarray(bank)
         self.positions = None if positions is None else np.ascontiguousarray(positions)
-        self.view_ids = None if view_ids is None else np.ascontiguousarray(view_ids)
         self._torch_bank = None
         self._torch_positions = None
         sample_count = min(len(bank), max(2, self.calibration_patches))
@@ -76,31 +65,6 @@ class NormalPatchMemory:
         self.center, self.scale = self._robust_stats(calibration)
         self.calibration_scores = np.sort(np.asarray(calibration, dtype=np.float64))
         return self
-
-    def fit_view_index(self, top_k):
-        if self.features is None or self.view_ids is None:
-            raise ValueError("View selection requires fitted features and view IDs")
-        ids = np.unique(self.view_ids)
-        if not 0 < top_k <= len(ids):
-            raise ValueError("View Top-K must be between one and the number of views")
-        descriptors = []
-        for view_id in ids:
-            descriptor = self.features[self.view_ids == view_id].mean(axis=0)
-            descriptors.append(descriptor / max(np.linalg.norm(descriptor), 1e-12))
-        self.view_descriptor_ids = ids.astype(np.int32)
-        self.view_descriptors = np.ascontiguousarray(np.stack(descriptors).astype(np.float32))
-        self.view_top_k = int(top_k)
-        return self
-
-    def _selected_view_mask(self, query):
-        if self.view_descriptors is None:
-            return None
-        descriptor = query.mean(axis=0)
-        descriptor /= max(np.linalg.norm(descriptor), 1e-12)
-        similarity = descriptor @ self.view_descriptors.T
-        selected = np.argpartition(similarity, -self.view_top_k)[-self.view_top_k:]
-        selected_ids = self.view_descriptor_ids[selected]
-        return np.isin(self.view_ids, selected_ids)
 
     def _resolved_backend(self):
         if self.backend != "auto":
@@ -195,7 +159,6 @@ class NormalPatchMemory:
 
     def _anoco_score_numpy(self, query, exclude, positions, neighbor_count, query_weight, temperature):
         scores = np.empty(len(query), dtype=np.float32)
-        view_allowed = self._selected_view_mask(query)
         for start in range(0, len(query), self.query_chunk_size):
             end = min(start + self.query_chunk_size, len(query))
             query_chunk = query[start:end]
@@ -205,8 +168,6 @@ class NormalPatchMemory:
                 allowed = distance <= self.spatial_radius
             else:
                 allowed = np.ones_like(similarity, dtype=bool)
-            if view_allowed is not None:
-                allowed &= view_allowed[None, :]
             if exclude is not None:
                 rows = np.arange(end - start)
                 allowed[rows, exclude[start:end]] = False
@@ -250,7 +211,6 @@ class NormalPatchMemory:
         if self.positions is not None and (self._torch_positions is None or self._torch_positions.device != torch.device(device)):
             self._torch_positions = torch.as_tensor(self.positions, device=device, dtype=torch.float32).contiguous()
         scores = np.empty(len(query), dtype=np.float32)
-        view_allowed = self._selected_view_mask(query)
         with torch.inference_mode():
             for start in range(0, len(query), self.query_chunk_size):
                 end = min(start + self.query_chunk_size, len(query))
@@ -262,8 +222,6 @@ class NormalPatchMemory:
                     allowed = distance <= self.spatial_radius
                 else:
                     allowed = torch.ones_like(similarity, dtype=torch.bool)
-                if view_allowed is not None:
-                    allowed &= torch.as_tensor(view_allowed, device=device)[None, :]
                 if exclude is not None:
                     rows = torch.arange(end - start, device=device)
                     columns = torch.as_tensor(exclude[start:end], device=device)
