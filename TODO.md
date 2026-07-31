@@ -23,6 +23,41 @@
 
 ### ANoCo-inspired follow-ups
 
+#### Pixel optimization recovery plan
+
+Run these items in order. Do not start the next numbered item until the
+current item has a recorded command, commit, per-category CSV, macro metrics,
+and an accept/reject decision. Every output directory must follow
+`outputs/<dataset>-<improvement-name>`.
+
+Reference results on VisA 1-shot, seed 42, feature layers `1,17,21,23`:
+
+| Run | I-AUROC | I-AUPR | P-AUROC | P-AUPR | PRO |
+|---|---:|---:|---:|---:|---:|
+| Restored PCA+kNN pixel baseline | 93.81 | 93.19 | 98.47 | 44.81 | 93.88 |
+| Rejected PCA+ANoCo pixel change | 93.50 | 93.02 | 98.05 | 43.13 | 92.35 |
+| ANoCo paper target | 92.70 | 93.30 | 98.70 | - | 94.90 |
+
+Merge gates for a pixel-level change:
+
+- [ ] Preserve I-AUROC within 0.10 points of the rerun baseline.
+- [ ] Improve both macro P-AUROC and macro PRO; do not trade one for the other.
+- [ ] Do not reduce any category PRO by more than 1.00 point without a documented category-specific reason.
+- [ ] Validate the winning setting on five seeds, then on 1/2/4-shot VisA and MVTec-AD.
+
+- [x] R0. Revert the failed combined change to raw cosine weights, strict minimum anchor ranking, norm compatibility, and PCA+ANoCo pixel replacement. Keep feature layers `1,17,21,23`.
+- [x] R1. Record the failed result and affected categories. The largest PRO regressions were macaroni2, fryum, pcb4, and macaroni1.
+- [ ] P0. Add image F1-MAX and pixel F1-MAX to evaluation output, CSV reporting, and metric tests so results are directly comparable with ANoCo Table 1.
+- [ ] P1. Re-run the restored `pca_knn_anoco` baseline twice on the current commit with identical category overrides. Require metric differences below 0.05 points before algorithm ablations.
+- [ ] P2. Add an experimental ANoCo affinity mode without changing the default. Compare current softmax weights with non-negative cosine weights normalized to sum to one. Keep mean anchor ranking, norm compatibility off, and the pixel branch fixed to PCA+kNN.
+- [ ] P3. Sweep `anoco_query_weight` over `0.5, 1.0, 2.0, 4.0` only for the winning normalized affinity from P2. Reject settings that improve image metrics by weakening pixel calibration or category stability.
+- [ ] P4. Compare anchor retrieval scoring while keeping P2-P3 fixed: current mean score versus strict minimum score. Do not combine this test with norm compatibility.
+- [ ] P5. Test norm compatibility only after P4. Multiply the winning affinity by `min(norm_q, norm_r) / max(norm_q, norm_r)`, then renormalize each query's edge weights to sum to one. Never reuse the rejected unnormalized degree formulation.
+- [ ] P6. Sweep `anoco_neighbors` over `4, 8, 16, 32` with all earlier choices frozen. Report latency and memory together with metrics.
+- [ ] P7. Add ANoCo to the pixel branch as residual evidence instead of replacing PCA+kNN. Start from the restored PCA+kNN score and sweep an independent pixel ANoCo weight over `0.10, 0.25, 0.50`; keep the image-head ANoCo weight unchanged.
+- [ ] P8. Inspect per-category maps for macaroni2, fryum, pcb4, and macaroni1. Only after a global P7 winner exists, test a normal-only uncertainty gate that falls back to PCA+kNN when ANoCo and kNN disagree.
+- [ ] P9. Promote a setting only after it passes all merge gates and the five-seed, 1/2/4-shot, cross-dataset validation. Update README defaults only at this point.
+
 - [x] Remove soft anchor, adaptive lambda, calibrated drift, exact ANoCo, disagreement gating, view balancing, and active graph after neutral or negative ablations.
 - [x] Add optional median consensus across independently calibrated per-layer ANoCo drift.
 
