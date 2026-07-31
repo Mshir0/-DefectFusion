@@ -214,9 +214,12 @@ python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
 ```
 
 Defect typing uses the highest PCA-reconstruction-residual patches instead of
-the whole-image mean. Control their fraction with `--top-k-ratio` (default
-`0.05`, selected by the MVTec 1-shot ablation); use `1.0` to reproduce
-whole-image prototype classification.
+the whole-image mean. For dataset-sampled prototypes, an available ground-truth
+mask first restricts candidates to the annotated defect region; PCA residuals
+then select a fixed number of patches inside that region. Test images never use
+masks and are still typed from their own highest-residual patches. Control the
+selected fraction with `--top-k-ratio` (default `0.05`); use `1.0` to retain all
+mask-overlapping prototype patches.
 
 Image-level anomaly scores use the mean of the highest-scoring 1% of patch
 residuals (`--image-score mtop1p --image-top-ratio 0.01`). Use `--image-score mean` to reproduce the

@@ -369,22 +369,38 @@ def main(argv=None):
                     if label_dir.is_dir():
                         for image in _images(str(label_dir)):
                             fusion.add_prototype(label_dir.name, image)
-            selected = []
+            selected, selected_masks = [], []
             if a.defect_shots > 0:
                 rng = random.Random(a.seed)
                 if is_visa:
                     defect_groups = {}
                     for sample in category.test_samples:
                         if sample.anomalous:
-                            defect_groups.setdefault(sample.defect_type, []).append(str(sample.image))
+                            defect_groups.setdefault(sample.defect_type, []).append((str(sample.image), sample.mask))
                 else:
-                    defect_groups = {x.name: _images(str(x)) for x in sorted((category / "test").iterdir()) if x.is_dir() and x.name != "good"}
+                    defect_groups = {}
+                    for defect_dir in sorted((category / "test").iterdir()):
+                        if not defect_dir.is_dir() or defect_dir.name == "good":
+                            continue
+                        defect_groups[defect_dir.name] = [
+                            (
+                                image,
+                                category / "ground_truth" / defect_dir.name / f"{Path(image).stem}_mask.png",
+                            )
+                            for image in _images(str(defect_dir))
+                        ]
                 for defect_name, candidates in sorted(defect_groups.items()):
                     chosen = rng.sample(candidates, min(a.defect_shots, len(candidates)))
-                    for image in chosen:
-                        fusion.add_prototype(defect_name, image)
+                    for image, mask in chosen:
+                        fusion.add_prototype(defect_name, image, mask)
                         selected.append(image)
-                        print(f"[defect-shot] {category_name}/{defect_name}: {Path(image).name}", flush=True)
+                        if mask is not None:
+                            selected_masks.append(str(Path(mask)))
+                        print(
+                            f"[defect-shot] {category_name}/{defect_name}: {Path(image).name} "
+                            f"mask={Path(mask).name if mask is not None else 'none'}",
+                            flush=True,
+                        )
             result_path = category_output_dir / f"{category_name}.json"
             if is_visa:
                 samples = [(x.image, x.defect_type, x.anomalous, x.mask) for x in category.test_samples]
@@ -400,6 +416,7 @@ def main(argv=None):
             metrics["defect_shots"] = a.defect_shots
             metrics["seed"] = a.seed
             metrics["defect_shot_images"] = [str(Path(x)) for x in selected]
+            metrics["defect_shot_masks"] = selected_masks
             metrics["defect_type_excluded_images"] = [str(Path(x)) for x in selected]
             metrics["debias"] = a.debias
             metrics["svd_components"] = a.svd_components if a.debias else 0
