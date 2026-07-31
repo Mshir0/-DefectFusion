@@ -18,6 +18,9 @@ class ReportingTest(unittest.TestCase):
         metrics = [{
             "category": "bottle", "images": 10, "image_auroc": 0.9,
             "image_f1_max": 0.85, "pixel_auroc": 0.8, "pixel_f1_max": 0.75,
+            "defect_type_accuracy": 0.7, "defect_type_macro_precision": 0.6,
+            "defect_type_macro_recall": 0.65, "defect_type_macro_f1": 0.62,
+            "defect_type_weighted_f1": 0.68,
             "timing_seconds": {"total": 12.5},
             "memory_patch_count": 123, "memory_bytes": 456,
         }]
@@ -35,6 +38,9 @@ class ReportingTest(unittest.TestCase):
         self.assertEqual(rows[0]["total_seconds"], "12.5")
         self.assertEqual(rows[0]["memory_patch_count"], "123")
         self.assertEqual(rows[0]["memory_bytes"], "456")
+        self.assertEqual(rows[0]["defect_type_macro_precision"], "0.6")
+        self.assertEqual(rows[0]["defect_type_macro_recall"], "0.65")
+        self.assertEqual(rows[0]["defect_type_weighted_f1"], "0.68")
         self.assertEqual(rows[1]["category"], "macro_average")
         self.assertEqual(rows[1]["image_auroc"], "0.9")
         self.assertEqual(rows[1]["image_f1_max"], "0.85")

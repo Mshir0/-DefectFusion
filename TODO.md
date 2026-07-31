@@ -23,6 +23,9 @@
 
 ### ANoCo-inspired follow-ups
 
+Pixel-neighbor optimization is paused while the one-defect-shot type
+classification experiment is evaluated.
+
 #### Pixel optimization recovery plan
 
 Run these items in order. Do not start the next numbered item until the

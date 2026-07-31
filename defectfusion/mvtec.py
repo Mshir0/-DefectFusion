@@ -135,13 +135,70 @@ def compute_binary_auroc_aupr(labels, scores):
     return auroc, aupr
 
 
+def compute_type_metrics(true_types, pred_types):
+    """Compute multiclass defect-type metrics without an optional dependency."""
+    if len(true_types) != len(pred_types):
+        raise ValueError(f"Defect-type metric shape mismatch: {len(true_types)} vs {len(pred_types)}")
+    labels = sorted(set(true_types) | set(pred_types))
+    if not labels:
+        return {}
+
+    label_indices = {label: index for index, label in enumerate(labels)}
+    confusion = np.zeros((len(labels), len(labels)), dtype=np.int64)
+    for truth, prediction in zip(true_types, pred_types):
+        confusion[label_indices[truth], label_indices[prediction]] += 1
+
+    true_positive = np.diag(confusion).astype(np.float64)
+    predicted_count = confusion.sum(axis=0).astype(np.float64)
+    support = confusion.sum(axis=1).astype(np.float64)
+    precision = np.divide(
+        true_positive,
+        predicted_count,
+        out=np.zeros_like(true_positive),
+        where=predicted_count > 0,
+    )
+    recall = np.divide(
+        true_positive,
+        support,
+        out=np.zeros_like(true_positive),
+        where=support > 0,
+    )
+    f1_denominator = precision + recall
+    f1 = np.divide(
+        2.0 * precision * recall,
+        f1_denominator,
+        out=np.zeros_like(precision),
+        where=f1_denominator > 0,
+    )
+    total = float(support.sum())
+    return {
+        "defect_type_accuracy": float(true_positive.sum() / total) if total else float("nan"),
+        "defect_type_macro_precision": float(precision.mean()),
+        "defect_type_macro_recall": float(recall.mean()),
+        "defect_type_macro_f1": float(f1.mean()),
+        "defect_type_weighted_f1": float(np.sum(f1 * support) / total) if total else float("nan"),
+        "defect_type_labels": labels,
+        "defect_type_confusion_matrix": confusion.tolist(),
+    }
+
+
 def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
 
-def evaluate_samples(fusion, category, samples, output, *, progress=True, excluded_images=None):
+def evaluate_samples(
+    fusion,
+    category,
+    samples,
+    output,
+    *,
+    progress=True,
+    excluded_images=None,
+    excluded_type_images=None,
+):
     """Evaluate image/mask records shared by MVTec AD and VisA."""
     excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
+    excluded_type_images = {str(Path(p).resolve()) for p in (excluded_type_images or [])}
     rows, image_y, image_s, pixel_masks, pixel_maps = [], [], [], [], []
     started = time.perf_counter()
     prediction_seconds = 0.0
@@ -186,21 +243,18 @@ def evaluate_samples(fusion, category, samples, output, *, progress=True, exclud
             metrics["pixel_auroc"], metrics["pixel_aupr"], metrics["pixel_f1_max"] = compute_binary_metrics(pixel_y, pixel_s)
             del pixel_y, pixel_s
             metrics["pixel_aupro"] = compute_aupro(pixel_maps, pixel_masks)
-    try:
-        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
-        defect_rows = [r for r in rows if r["ground_truth_anomaly"]]
-        true_types = [r["ground_truth_type"] for r in defect_rows]
-        pred_types = [r["defect_type"] for r in defect_rows]
-        if any(p != "unknown" for p in pred_types):
-            labels = sorted(set(true_types) | set(pred_types))
-            metrics["defect_type_accuracy"] = float(accuracy_score(true_types, pred_types))
-            metrics["defect_type_macro_f1"] = float(f1_score(true_types, pred_types, labels=labels, average="macro", zero_division=0))
-            metrics["defect_type_labels"] = labels
-            metrics["defect_type_confusion_matrix"] = confusion_matrix(true_types, pred_types, labels=labels).tolist()
-        else:
-            metrics["defect_type_note"] = "No prototypes supplied; type metrics are unavailable"
-    except ImportError:
-        metrics["type_metrics_note"] = "Install scikit-learn to compute defect-type metrics"
+    defect_rows = [
+        r for r in rows
+        if r["ground_truth_anomaly"]
+        and str(Path(r["image"]).resolve()) not in excluded_type_images
+    ]
+    true_types = [r["ground_truth_type"] for r in defect_rows]
+    pred_types = [r["defect_type"] for r in defect_rows]
+    type_metrics_enabled = bool(excluded_type_images) or any(p != "unknown" for p in pred_types)
+    if true_types and type_metrics_enabled:
+        metrics.update(compute_type_metrics(true_types, pred_types))
+    else:
+        metrics["defect_type_note"] = "No prototypes supplied; type metrics are unavailable"
     metrics_seconds = time.perf_counter() - metrics_started
     metrics["timing_seconds"] = {
         "prediction": prediction_seconds,
@@ -212,7 +266,15 @@ def evaluate_samples(fusion, category, samples, output, *, progress=True, exclud
     return metrics
 
 
-def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_images=None):
+def evaluate_mvtec(
+    fusion,
+    category_dir,
+    output,
+    *,
+    progress=True,
+    excluded_images=None,
+    excluded_type_images=None,
+):
     """Evaluate a fitted model on one MVTec category and write JSON predictions."""
     root = Path(category_dir)
     samples = []
@@ -222,4 +284,12 @@ def evaluate_mvtec(fusion, category_dir, output, *, progress=True, excluded_imag
             truth = defect != "good"
             mask = root / "ground_truth" / defect / f"{image.stem}_mask.png"
             samples.append((image, defect, truth, mask if truth else None))
-    return evaluate_samples(fusion, root.name, samples, output, progress=progress, excluded_images=excluded_images)
+    return evaluate_samples(
+        fusion,
+        root.name,
+        samples,
+        output,
+        progress=progress,
+        excluded_images=excluded_images,
+        excluded_type_images=excluded_type_images,
+    )

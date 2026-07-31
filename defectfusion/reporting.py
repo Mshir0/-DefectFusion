@@ -13,7 +13,8 @@ def write_metrics_csv(path: Path, category_metrics: list[dict], macro: dict) -> 
     fields = [
         "category", "images", "image_auroc", "image_aupr", "image_f1_max",
         "pixel_auroc", "pixel_aupr", "pixel_aupro", "pixel_f1_max", "defect_type_accuracy",
-        "defect_type_macro_f1", "total_seconds", "memory_patch_count", "memory_bytes",
+        "defect_type_macro_precision", "defect_type_macro_recall", "defect_type_macro_f1",
+        "defect_type_weighted_f1", "total_seconds", "memory_patch_count", "memory_bytes",
     ]
     rows = []
     for metrics in category_metrics:

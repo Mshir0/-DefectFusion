@@ -388,9 +388,9 @@ def main(argv=None):
             result_path = category_output_dir / f"{category_name}.json"
             if is_visa:
                 samples = [(x.image, x.defect_type, x.anomalous, x.mask) for x in category.test_samples]
-                metrics = evaluate_samples(fusion, category_name, samples, result_path, excluded_images=selected)
+                metrics = evaluate_samples(fusion, category_name, samples, result_path, excluded_type_images=selected)
             else:
-                metrics = evaluate_mvtec(fusion, category, result_path, excluded_images=selected)
+                metrics = evaluate_mvtec(fusion, category, result_path, excluded_type_images=selected)
             metrics["dataset"] = "visa" if is_visa else "mvtec"
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]
@@ -400,6 +400,7 @@ def main(argv=None):
             metrics["defect_shots"] = a.defect_shots
             metrics["seed"] = a.seed
             metrics["defect_shot_images"] = [str(Path(x)) for x in selected]
+            metrics["defect_type_excluded_images"] = [str(Path(x)) for x in selected]
             metrics["debias"] = a.debias
             metrics["svd_components"] = a.svd_components if a.debias else 0
             metrics["top_k_ratio"] = top_k_ratio
@@ -459,7 +460,8 @@ def main(argv=None):
         metric_names = (
             "image_auroc", "image_aupr", "image_f1_max", "pixel_auroc", "pixel_aupr",
             "pixel_aupro", "pixel_f1_max",
-            "defect_type_accuracy", "defect_type_macro_f1",
+            "defect_type_accuracy", "defect_type_macro_precision", "defect_type_macro_recall",
+            "defect_type_macro_f1", "defect_type_weighted_f1",
         )
         macro = {}
         for name in metric_names:

@@ -63,7 +63,10 @@ and `categories/<category>.json`. Each category file contains both its metrics
 and a `predictions` array with all per-image results. No JSONL files are
 generated. If `--output` has a file suffix, its stem becomes
 the experiment directory name. Add `--prototype-dir` (subdirectories are defect labels) to enable
-defect-type accuracy, macro-F1, and a confusion matrix.
+defect-type accuracy, macro precision, macro recall, macro-F1, weighted-F1, and a confusion matrix.
+With VisA, `--defect-shots 1` selects one labeled defect image per defect type;
+the selected image is excluded from defect-type statistics while its paired mask
+and anomaly scores remain included in image/pixel evaluation.
 
 Use `--categories macaroni2` to run a focused category ablation. The optional
 `--image-min-component-size 2` rejects isolated Top-K anomaly patches from the
@@ -153,13 +156,54 @@ used while fitting the detector.
 
 Typing is an auxiliary experiment, separate from the anomaly-detection setup.
 `--defect-shots` samples labeled test images per defect type as prototypes;
-those selected images are excluded from classification evaluation:
+those selected images are excluded only from defect-type statistics, while they
+remain in image- and pixel-level evaluation:
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots 1 --defect-shots 1 --seed 42 \
   --output outputs/mvtec-all
 ```
+
+The recommended VisA 1-defect-shot typing run keeps the validated detection
+configuration and uses one labeled defect image plus its mask per defect type:
+
+```bash
+python -m defectfusion.cli evaluate-visa \
+  --data-root /mnt/sda1/VisA_20220922 \
+  --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
+  --normal-shots 1 --defect-shots 1 --seed 42 \
+  --image-size 672 \
+  --image-size-override macaroni2=896 \
+  --image-size-override pcb2=896 \
+  --image-size-override pcb3=896 \
+  --pixel-image-size-override fryum=896 \
+  --image-head-size-override pcb4=896 \
+  --pixel-multiscale-size-override macaroni2=672 \
+  --pixel-multiscale-size-override pcb2=672 \
+  --pixel-multiscale-size-override pcb3=672 \
+  --pixel-multiscale-weight 0.25 \
+  --normal-augment-count 30 --normal-augmentations rotate \
+  --affine-categories macaroni1 macaroni2 \
+  --feature-layers=1,17,21,23 --dual-branch \
+  --anomaly-method pca_knn_anoco --knn-weight 0.5 \
+  --anoco-neighbors 16 --anoco-query-weight 2.0 \
+  --anoco-temperature 0.07 --anoco-affinity softmax \
+  --anoco-anchor-ranking mean --anoco-weight 0.25 \
+  --anoco-layer-consensus \
+  --image-score mtop1p --image-top-ratio 0.01 \
+  --image-min-component-size 2 \
+  --component-reject-categories macaroni1 macaroni2 \
+  --image-fusion-stage patch \
+  --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 \
+  --output outputs/visa-defect-type-1shot
+```
+
+The resulting `summary.csv` adds `defect_type_accuracy`,
+`defect_type_macro_precision`, `defect_type_macro_recall`,
+`defect_type_macro_f1`, and `defect_type_weighted_f1`. The complete label list
+and confusion matrix are stored in each category JSON file. These type metrics
+are computed with NumPy and do not require an additional metrics package.
 
 Enable INSID3 positional debiasing for an ablation with the same split:
 
