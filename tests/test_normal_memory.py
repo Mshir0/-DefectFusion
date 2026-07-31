@@ -609,6 +609,15 @@ class NormalPatchMemoryTest(unittest.TestCase):
                 fusion.normal_memory.calibration_scores,
             )
 
+    def test_memory_stats_reports_fitted_bank_size(self):
+        fusion = DefectFusion(object(), anomaly_method="knn")
+        normal = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+        fusion.normal_memory.fit(normal)
+        stats = fusion.memory_stats()
+        self.assertEqual(stats["patch_count"], 3)
+        expected_bytes = fusion.normal_memory.features.nbytes + fusion.normal_memory.norms.nbytes
+        self.assertEqual(stats["bytes"], expected_bytes)
+
     def test_pipeline_save_load_preserves_anoco_state(self):
         fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_affinity="cosine", anoco_anchor_ranking="minimum", anoco_norm_compatibility=True)
         normal = np.eye(5, dtype=np.float32)

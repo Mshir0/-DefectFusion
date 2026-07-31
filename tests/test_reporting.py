@@ -19,6 +19,7 @@ class ReportingTest(unittest.TestCase):
             "category": "bottle", "images": 10, "image_auroc": 0.9,
             "image_f1_max": 0.85, "pixel_auroc": 0.8, "pixel_f1_max": 0.75,
             "timing_seconds": {"total": 12.5},
+            "memory_patch_count": 123, "memory_bytes": 456,
         }]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "summary.csv"
@@ -32,6 +33,8 @@ class ReportingTest(unittest.TestCase):
         self.assertEqual(rows[0]["image_f1_max"], "0.85")
         self.assertEqual(rows[0]["pixel_f1_max"], "0.75")
         self.assertEqual(rows[0]["total_seconds"], "12.5")
+        self.assertEqual(rows[0]["memory_patch_count"], "123")
+        self.assertEqual(rows[0]["memory_bytes"], "456")
         self.assertEqual(rows[1]["category"], "macro_average")
         self.assertEqual(rows[1]["image_auroc"], "0.9")
         self.assertEqual(rows[1]["image_f1_max"], "0.85")

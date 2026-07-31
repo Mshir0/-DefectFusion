@@ -434,6 +434,9 @@ def main(argv=None):
             metrics["anoco_affinity"] = anoco_affinity if anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"} else "none"
             metrics["anoco_anchor_ranking"] = anoco_anchor_ranking if anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"} else "none"
             metrics["anoco_norm_compatibility"] = anoco_norm_compatibility if anomaly_method in {"anoco", "pca_anoco", "pca_knn_anoco"} else False
+            memory_stats = fusion.memory_stats()
+            metrics["memory_patch_count"] = memory_stats["patch_count"] if anomaly_method != "pca" else 0
+            metrics["memory_bytes"] = memory_stats["bytes"] if anomaly_method != "pca" else 0
             metrics["anoco_weight"] = anoco_weight if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else 0
             metrics["anoco_layer_consensus"] = anoco_layer_consensus if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else False
             metrics["fusion_mode"] = fusion_mode if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} else "none"

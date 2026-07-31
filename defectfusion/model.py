@@ -89,6 +89,12 @@ class NormalPatchMemory:
     def resolved_backend(self):
         return self._resolved_backend()
 
+    @property
+    def memory_bytes(self):
+        """Return the fitted CPU-side memory-bank footprint in bytes."""
+        arrays = (self.features, self.norms, self.positions)
+        return int(sum(array.nbytes for array in arrays if array is not None))
+
     def _score_numpy(self, query, exclude, positions):
         scores = np.empty(len(query), dtype=np.float32)
         for start in range(0, len(query), self.query_chunk_size):

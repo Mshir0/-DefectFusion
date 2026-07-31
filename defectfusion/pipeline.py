@@ -133,6 +133,18 @@ class DefectFusion:
             if hasattr(self.extractor, "positional_basis"):
                 self.extractor.positional_basis = self._positional_basis_by_size.get(image_size)
 
+    def memory_stats(self):
+        memories = [self.normal_memory]
+        if self.dual_branch and self.image_memory is not None:
+            memories.append(self.image_memory)
+            memories.extend(self.image_layer_memories)
+        if self.secondary_normal_memory is not None:
+            memories.append(self.secondary_normal_memory)
+        return {
+            "patch_count": int(sum(len(memory.features) for memory in memories if memory.features is not None)),
+            "bytes": int(sum(memory.memory_bytes for memory in memories)),
+        }
+
     def _extract_branches(self, image):
         if not self.dual_branch:
             self._set_extractor_image_size(self.pixel_image_size)
