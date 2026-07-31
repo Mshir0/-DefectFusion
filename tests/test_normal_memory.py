@@ -396,6 +396,39 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertGreater(memory.anoco_scale, 0)
         self.assertTrue(np.all(np.isfinite(memory.anoco_calibration_scores)))
 
+    def test_anoco_default_affinity_matches_explicit_softmax(self):
+        normal = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+        query = np.array([[0.8, 0.6], [-0.2, 1.0]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        np.testing.assert_allclose(
+            memory.score_anoco(query, neighbor_count=2),
+            memory.score_anoco(query, neighbor_count=2, affinity="softmax"),
+        )
+
+    def test_anoco_cosine_affinity_uses_normalized_weights(self):
+        normal = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        query = np.array([[0.8, 0.6]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        score = memory.score_anoco(query, neighbor_count=2, query_weight=1.0, affinity="cosine")
+        target = np.array([4.0 / 7.0, 3.0 / 7.0], dtype=np.float32)
+        updated = (query[0] + target) / 2.0
+        displacement = np.sum((updated - query[0]) ** 2)
+        angular = 1.0 - np.dot(updated, query[0]) / (np.linalg.norm(updated) * np.linalg.norm(query[0]))
+        np.testing.assert_allclose(score[0], displacement * angular, rtol=1e-5, atol=1e-8)
+
+    def test_anoco_cosine_affinity_falls_back_to_uniform_weights(self):
+        normal = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        query = np.array([[-1.0, 0.0]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        score = memory.score_anoco(query, neighbor_count=2, affinity="cosine")
+        self.assertTrue(np.isfinite(score[0]))
+        self.assertGreater(score[0], 0.0)
+
+    def test_anoco_rejects_invalid_affinity(self):
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(np.eye(2, dtype=np.float32))
+        with self.assertRaisesRegex(ValueError, "affinity"):
+            memory.score_anoco(np.eye(2, dtype=np.float32), affinity="invalid")
+
     def test_fused_weight_endpoints_match_calibrated_components(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
@@ -522,16 +555,17 @@ class NormalPatchMemoryTest(unittest.TestCase):
             )
 
     def test_pipeline_save_load_preserves_anoco_state(self):
-        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2)
+        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_affinity="cosine")
         normal = np.eye(5, dtype=np.float32)
         fusion.subspace.fit(normal)
-        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2)
+        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2, affinity="cosine")
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "model.json"
             fusion.save(state_path)
             loaded = DefectFusion.load(state_path, object())
             self.assertEqual(loaded.anoco_neighbors, 3)
             self.assertEqual(loaded.anoco_temperature, 0.2)
+            self.assertEqual(loaded.anoco_affinity, "cosine")
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_anoco_layer_consensus(self):

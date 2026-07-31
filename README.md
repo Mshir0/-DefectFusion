@@ -130,6 +130,12 @@ category's `Data` directory and pairs anomaly images and masks by filename stem;
 selected normal shots are excluded from the normal test pool. Output layout and
 metrics match MVTec evaluation.
 
+ANoCo uses temperature-softmax edge weights by default. P2 adds
+`--anoco-affinity cosine` as an experimental ablation: selected non-negative
+cosine affinities are normalized to sum to one per query patch, with a uniform
+fallback when all selected affinities are zero. This changes only the ANoCo
+head; with `pca_knn_anoco`, pixel localization remains PCA+kNN.
+
 `--normal-shots 1/2/4` samples that many images from the normal training
 partition (`train/good` for MVTec or normal train rows for VisA); `-1` uses
 all normal training images. Keep `--defect-shots 0` for standard anomaly
