@@ -251,42 +251,12 @@ class DefectFusion:
         self.reference_grid = features.shape[1]
         return self
 
-    def add_prototype(self, label: str, image_path, mask_path=None):
-        with Image.open(image_path) as source:
-            image = source.convert("RGB")
+    def add_prototype(self, label: str, image_path):
+        image = Image.open(image_path)
         self._set_extractor_image_size(self.pixel_image_size)
-        patches, grid = self.extractor.extract(image)
-        if mask_path is None:
-            prototype_patches = self._anomaly_patches(patches)
-        else:
-            mask_path = Path(mask_path)
-            if not mask_path.is_file():
-                raise FileNotFoundError(f"Prototype mask not found: {mask_path}")
-            with Image.open(mask_path) as source:
-                prototype_patches = self._masked_anomaly_patches(patches, grid, source.convert("L"))
-        self.prototype_bank.add(label, prototype_patches)
+        patches, _ = self.extractor.extract(image)
+        self.prototype_bank.add(label, self._anomaly_patches(patches))
         return self
-
-    def _masked_anomaly_patches(self, patches, grid, mask):
-        patches = np.asarray(patches)
-        if len(patches) != grid[0] * grid[1]:
-            raise ValueError("Prototype patch count must match its spatial grid")
-        binary = (np.asarray(mask, dtype=np.uint8) > 0).astype(np.float32)
-        if not binary.any():
-            raise ValueError("Prototype mask is empty")
-        coverage = np.asarray(
-            Image.fromarray(binary, mode="F").resize(grid[::-1], Image.Resampling.BOX),
-            dtype=np.float32,
-        ).ravel()
-        candidates = np.flatnonzero(coverage > 0)
-        if not len(candidates):
-            candidates = np.asarray([int(np.argmax(coverage))])
-        scores = np.asarray(self.subspace.score(patches))
-        keep = min(len(candidates), max(1, int(np.ceil(len(patches) * self.top_k_ratio))))
-        if len(candidates) > keep:
-            selected = np.argpartition(scores[candidates], -keep)[-keep:]
-            candidates = candidates[selected]
-        return patches[candidates]
 
     def _anomaly_patches(self, patches, scores=None):
         scores = self.subspace.score(patches) if scores is None else np.asarray(scores)

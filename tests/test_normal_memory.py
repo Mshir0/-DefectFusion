@@ -210,43 +210,6 @@ class NormalPatchMemoryTest(unittest.TestCase):
         selected = fusion._anomaly_patches(patches, supplied_scores)
         np.testing.assert_array_equal(selected, patches[[3]])
 
-    def test_prototype_mask_restricts_reference_patches(self):
-        class Extractor:
-            def extract(self, image):
-                return np.array([
-                    [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0],
-                ]), (2, 2)
-
-        fusion = DefectFusion(Extractor(), top_k_ratio=0.25)
-        fusion.subspace.score = lambda features: np.arange(len(features), dtype=np.float64)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            image = root / "defect.png"
-            mask = root / "defect_mask.png"
-            Image.new("RGB", (4, 4)).save(image)
-            mask_data = np.zeros((4, 4), dtype=np.uint8)
-            mask_data[:2, :2] = 255
-            Image.fromarray(mask_data).save(mask)
-            fusion.add_prototype("scratch", image, mask)
-
-        np.testing.assert_allclose(fusion.prototype_bank.patch_banks["scratch"], [[1.0, 0.0]])
-
-    def test_empty_prototype_mask_is_rejected(self):
-        class Extractor:
-            def extract(self, image):
-                return np.ones((4, 2), dtype=np.float32), (2, 2)
-
-        fusion = DefectFusion(Extractor(), top_k_ratio=0.25)
-        fusion.subspace.score = lambda features: np.arange(len(features), dtype=np.float64)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            image = root / "defect.png"
-            mask = root / "empty_mask.png"
-            Image.new("RGB", (4, 4)).save(image)
-            Image.new("L", (4, 4)).save(mask)
-            with self.assertRaisesRegex(ValueError, "mask is empty"):
-                fusion.add_prototype("scratch", image, mask)
-
     def test_aligned_training_positions_restore_rotation_coordinates(self):
         fusion = DefectFusion(object(), knn_spatial_radius=0.1, align_training_positions=True)
         # A 90-degree counter-clockwise augmentation maps its top-center patch back to right-center.
