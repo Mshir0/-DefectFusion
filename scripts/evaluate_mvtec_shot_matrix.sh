@@ -47,10 +47,11 @@ common_args=(
 )
 
 run_experiment() {
-  local name="$1"
+  local normal_name="$1"
   local normal_shots="$2"
   local defect_shots="$3"
   local augment_count="$4"
+  local name="normal-${normal_name}-defect-${defect_shots}shot"
 
   echo "[shot-matrix] starting $name"
   python -m defectfusion.cli evaluate-mvtec \
@@ -62,12 +63,21 @@ run_experiment() {
   echo "[shot-matrix] completed $name"
 }
 
-run_experiment normal-1shot 1 0 30
-run_experiment normal-2shot 2 0 30
-run_experiment normal-4shot 4 0 30
-run_experiment normal-fullshot -1 0 0
-run_experiment defect-1shot 1 1 30
-run_experiment defect-2shot 1 2 30
-run_experiment defect-4shot 1 4 30
+run_experiment 1shot 1 0 30
+run_experiment 1shot 1 1 30
+
+run_experiment 2shot 2 0 30
+run_experiment 2shot 2 1 30
+run_experiment 2shot 2 2 30
+
+run_experiment 4shot 4 0 30
+run_experiment 4shot 4 1 30
+run_experiment 4shot 4 2 30
+run_experiment 4shot 4 4 30
+
+run_experiment fullshot -1 0 0
+run_experiment fullshot -1 1 0
+run_experiment fullshot -1 2 0
+run_experiment fullshot -1 4 0
 
 echo "[shot-matrix] all experiments completed"

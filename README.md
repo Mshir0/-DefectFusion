@@ -155,11 +155,12 @@ used while fitting the detector.
 ### MVTec shot evaluation matrix
 
 Use the following frozen MVTec configuration for comparable normal-shot and
-defect-shot experiments. Each command changes only the shot count named in its
-output directory. The defect-shot runs keep `--normal-shots 1`, and sampled
-defect exemplars are excluded from defect-type metrics.
+defect-shot experiments. The script evaluates every requested combination for
+which the defect shot count does not exceed the normal shot count. Full normal
+shot allows every defect shot count. Sampled defect exemplars are excluded from
+defect-type metrics.
 
-Run all seven experiments sequentially with one command:
+Run all 13 experiments sequentially with one command:
 
 ```bash
 bash scripts/evaluate_mvtec_shot_matrix.sh
@@ -168,47 +169,12 @@ bash scripts/evaluate_mvtec_shot_matrix.sh
 Override the server paths when needed with `DATA_ROOT=/path/to/mvtec` and
 `MODEL=/path/to/model` before the command.
 
-Normal 1-shot:
-
-```bash
-python -m defectfusion.cli evaluate-mvtec --data-root /mnt/sda1/mvtec_anomaly --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m --device cuda --normal-shots 1 --defect-shots 0 --seed 42 --image-size 672 --pixel-image-size-override cable=896 --pixel-image-size-override transistor=896 --pixel-multiscale-size-override cable=672 --pixel-multiscale-size-override transistor=672 --pixel-multiscale-weight 0.25 --resize-mode direct --normal-augment-count 30 --normal-augmentations rotate --no-augment-categories transistor --feature-layers=1,17,21,23 --layer-aggregation mean --layer-normalization none --dual-branch --anomaly-method pca_knn_anoco --knn-weight 0.5 --anoco-neighbors 16 --anoco-query-weight 2.0 --anoco-temperature 0.07 --anoco-affinity softmax --anoco-anchor-ranking mean --anoco-weight 0.25 --anoco-layer-consensus --fusion-mode fixed --image-score mtop1p --image-top-ratio 0.01 --image-min-component-size 1 --image-fusion-stage patch --memory-max-patches 50000 --knn-chunk-size 256 --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 --map-postprocess none --type-matching bidirectional_patch --top-k-ratio 0.05 --output outputs/mvtec-normal-1shot
-```
-
-Normal 2-shot:
-
-```bash
-python -m defectfusion.cli evaluate-mvtec --data-root /mnt/sda1/mvtec_anomaly --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m --device cuda --normal-shots 2 --defect-shots 0 --seed 42 --image-size 672 --pixel-image-size-override cable=896 --pixel-image-size-override transistor=896 --pixel-multiscale-size-override cable=672 --pixel-multiscale-size-override transistor=672 --pixel-multiscale-weight 0.25 --resize-mode direct --normal-augment-count 30 --normal-augmentations rotate --no-augment-categories transistor --feature-layers=1,17,21,23 --layer-aggregation mean --layer-normalization none --dual-branch --anomaly-method pca_knn_anoco --knn-weight 0.5 --anoco-neighbors 16 --anoco-query-weight 2.0 --anoco-temperature 0.07 --anoco-affinity softmax --anoco-anchor-ranking mean --anoco-weight 0.25 --anoco-layer-consensus --fusion-mode fixed --image-score mtop1p --image-top-ratio 0.01 --image-min-component-size 1 --image-fusion-stage patch --memory-max-patches 50000 --knn-chunk-size 256 --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 --map-postprocess none --type-matching bidirectional_patch --top-k-ratio 0.05 --output outputs/mvtec-normal-2shot
-```
-
-Normal 4-shot:
-
-```bash
-python -m defectfusion.cli evaluate-mvtec --data-root /mnt/sda1/mvtec_anomaly --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m --device cuda --normal-shots 4 --defect-shots 0 --seed 42 --image-size 672 --pixel-image-size-override cable=896 --pixel-image-size-override transistor=896 --pixel-multiscale-size-override cable=672 --pixel-multiscale-size-override transistor=672 --pixel-multiscale-weight 0.25 --resize-mode direct --normal-augment-count 30 --normal-augmentations rotate --no-augment-categories transistor --feature-layers=1,17,21,23 --layer-aggregation mean --layer-normalization none --dual-branch --anomaly-method pca_knn_anoco --knn-weight 0.5 --anoco-neighbors 16 --anoco-query-weight 2.0 --anoco-temperature 0.07 --anoco-affinity softmax --anoco-anchor-ranking mean --anoco-weight 0.25 --anoco-layer-consensus --fusion-mode fixed --image-score mtop1p --image-top-ratio 0.01 --image-min-component-size 1 --image-fusion-stage patch --memory-max-patches 50000 --knn-chunk-size 256 --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 --map-postprocess none --type-matching bidirectional_patch --top-k-ratio 0.05 --output outputs/mvtec-normal-4shot
-```
-
-Normal full-shot (`-1` means all normal training images):
-
-```bash
-python -m defectfusion.cli evaluate-mvtec --data-root /mnt/sda1/mvtec_anomaly --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m --device cuda --normal-shots -1 --defect-shots 0 --seed 42 --image-size 672 --pixel-image-size-override cable=896 --pixel-image-size-override transistor=896 --pixel-multiscale-size-override cable=672 --pixel-multiscale-size-override transistor=672 --pixel-multiscale-weight 0.25 --resize-mode direct --normal-augment-count 0 --normal-augmentations rotate --no-augment-categories transistor --feature-layers=1,17,21,23 --layer-aggregation mean --layer-normalization none --dual-branch --anomaly-method pca_knn_anoco --knn-weight 0.5 --anoco-neighbors 16 --anoco-query-weight 2.0 --anoco-temperature 0.07 --anoco-affinity softmax --anoco-anchor-ranking mean --anoco-weight 0.25 --anoco-layer-consensus --fusion-mode fixed --image-score mtop1p --image-top-ratio 0.01 --image-min-component-size 1 --image-fusion-stage patch --memory-max-patches 50000 --knn-chunk-size 256 --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 --map-postprocess none --type-matching bidirectional_patch --top-k-ratio 0.05 --output outputs/mvtec-normal-fullshot
-```
-
-Defect 1-shot:
-
-```bash
-python -m defectfusion.cli evaluate-mvtec --data-root /mnt/sda1/mvtec_anomaly --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m --device cuda --normal-shots 1 --defect-shots 1 --seed 42 --image-size 672 --pixel-image-size-override cable=896 --pixel-image-size-override transistor=896 --pixel-multiscale-size-override cable=672 --pixel-multiscale-size-override transistor=672 --pixel-multiscale-weight 0.25 --resize-mode direct --normal-augment-count 30 --normal-augmentations rotate --no-augment-categories transistor --feature-layers=1,17,21,23 --layer-aggregation mean --layer-normalization none --dual-branch --anomaly-method pca_knn_anoco --knn-weight 0.5 --anoco-neighbors 16 --anoco-query-weight 2.0 --anoco-temperature 0.07 --anoco-affinity softmax --anoco-anchor-ranking mean --anoco-weight 0.25 --anoco-layer-consensus --fusion-mode fixed --image-score mtop1p --image-top-ratio 0.01 --image-min-component-size 1 --image-fusion-stage patch --memory-max-patches 50000 --knn-chunk-size 256 --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 --map-postprocess none --type-matching bidirectional_patch --top-k-ratio 0.05 --output outputs/mvtec-defect-1shot
-```
-
-Defect 2-shot:
-
-```bash
-python -m defectfusion.cli evaluate-mvtec --data-root /mnt/sda1/mvtec_anomaly --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m --device cuda --normal-shots 1 --defect-shots 2 --seed 42 --image-size 672 --pixel-image-size-override cable=896 --pixel-image-size-override transistor=896 --pixel-multiscale-size-override cable=672 --pixel-multiscale-size-override transistor=672 --pixel-multiscale-weight 0.25 --resize-mode direct --normal-augment-count 30 --normal-augmentations rotate --no-augment-categories transistor --feature-layers=1,17,21,23 --layer-aggregation mean --layer-normalization none --dual-branch --anomaly-method pca_knn_anoco --knn-weight 0.5 --anoco-neighbors 16 --anoco-query-weight 2.0 --anoco-temperature 0.07 --anoco-affinity softmax --anoco-anchor-ranking mean --anoco-weight 0.25 --anoco-layer-consensus --fusion-mode fixed --image-score mtop1p --image-top-ratio 0.01 --image-min-component-size 1 --image-fusion-stage patch --memory-max-patches 50000 --knn-chunk-size 256 --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 --map-postprocess none --type-matching bidirectional_patch --top-k-ratio 0.05 --output outputs/mvtec-defect-2shot
-```
-
-Defect 4-shot:
-
-```bash
-python -m defectfusion.cli evaluate-mvtec --data-root /mnt/sda1/mvtec_anomaly --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m --device cuda --normal-shots 1 --defect-shots 4 --seed 42 --image-size 672 --pixel-image-size-override cable=896 --pixel-image-size-override transistor=896 --pixel-multiscale-size-override cable=672 --pixel-multiscale-size-override transistor=672 --pixel-multiscale-weight 0.25 --resize-mode direct --normal-augment-count 30 --normal-augmentations rotate --no-augment-categories transistor --feature-layers=1,17,21,23 --layer-aggregation mean --layer-normalization none --dual-branch --anomaly-method pca_knn_anoco --knn-weight 0.5 --anoco-neighbors 16 --anoco-query-weight 2.0 --anoco-temperature 0.07 --anoco-affinity softmax --anoco-anchor-ranking mean --anoco-weight 0.25 --anoco-layer-consensus --fusion-mode fixed --image-score mtop1p --image-top-ratio 0.01 --image-min-component-size 1 --image-fusion-stage patch --memory-max-patches 50000 --knn-chunk-size 256 --knn-backend torch --knn-dtype float16 --knn-spatial-radius -1 --map-postprocess none --type-matching bidirectional_patch --top-k-ratio 0.05 --output outputs/mvtec-defect-4shot
-```
+| Normal shots | Defect shots | Output prefix |
+|---:|---:|---|
+| 1 | 0, 1 | `outputs/mvtec-normal-1shot-defect-*shot` |
+| 2 | 0, 1, 2 | `outputs/mvtec-normal-2shot-defect-*shot` |
+| 4 | 0, 1, 2, 4 | `outputs/mvtec-normal-4shot-defect-*shot` |
+| full (`-1`) | 0, 1, 2, 4 | `outputs/mvtec-normal-fullshot-defect-*shot` |
 
 ### Optional defect typing
 
