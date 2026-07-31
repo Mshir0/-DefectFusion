@@ -429,6 +429,35 @@ class NormalPatchMemoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "affinity"):
             memory.score_anoco(np.eye(2, dtype=np.float32), affinity="invalid")
 
+    def test_anoco_default_anchor_ranking_matches_explicit_mean(self):
+        normal = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+        query = np.array([[0.8, 0.6], [-0.2, 1.0]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        np.testing.assert_allclose(
+            memory.score_anoco(query, neighbor_count=2),
+            memory.score_anoco(query, neighbor_count=2, anchor_ranking="mean"),
+        )
+
+    def test_anoco_minimum_anchor_ranking_changes_neighbor_selection(self):
+        normal = np.array([
+            [-1.9012227, -1.2895378, -1.841735],
+            [-0.23509113, -1.2674465, 0.27126434],
+            [0.15675108, -0.18693094, -2.5167596],
+            [-0.5386929, -0.04850094, 0.11330899],
+            [-1.5301358, -0.47775328, -0.9785191],
+        ], dtype=np.float32)
+        query = np.array([[-0.80883723, 1.0608987, -0.8075347]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        mean_score = memory.score_anoco(query, neighbor_count=2, anchor_ranking="mean")
+        minimum_score = memory.score_anoco(query, neighbor_count=2, anchor_ranking="minimum")
+        self.assertFalse(np.allclose(mean_score, minimum_score))
+        self.assertTrue(np.all(np.isfinite(minimum_score)))
+
+    def test_anoco_rejects_invalid_anchor_ranking(self):
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(np.eye(2, dtype=np.float32))
+        with self.assertRaisesRegex(ValueError, "anchor_ranking"):
+            memory.score_anoco(np.eye(2, dtype=np.float32), anchor_ranking="invalid")
+
     def test_fused_weight_endpoints_match_calibrated_components(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
@@ -555,7 +584,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             )
 
     def test_pipeline_save_load_preserves_anoco_state(self):
-        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_affinity="cosine")
+        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_affinity="cosine", anoco_anchor_ranking="minimum")
         normal = np.eye(5, dtype=np.float32)
         fusion.subspace.fit(normal)
         fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2, affinity="cosine")
@@ -566,6 +595,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             self.assertEqual(loaded.anoco_neighbors, 3)
             self.assertEqual(loaded.anoco_temperature, 0.2)
             self.assertEqual(loaded.anoco_affinity, "cosine")
+            self.assertEqual(loaded.anoco_anchor_ranking, "minimum")
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_anoco_layer_consensus(self):
