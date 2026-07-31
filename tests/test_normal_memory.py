@@ -458,6 +458,32 @@ class NormalPatchMemoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "anchor_ranking"):
             memory.score_anoco(np.eye(2, dtype=np.float32), anchor_ranking="invalid")
 
+    def test_anoco_norm_compatibility_reweights_and_renormalizes(self):
+        normal = np.array([[10.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        query = np.array([[0.8, 0.6]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        score = memory.score_anoco(
+            query, neighbor_count=2, query_weight=1.0, temperature=1.0,
+            norm_compatibility=True,
+        )
+        similarities = np.array([0.8, 0.6], dtype=np.float64)
+        raw_weights = np.exp(similarities) * np.array([0.1, 1.0])
+        weights = raw_weights / raw_weights.sum()
+        target = weights @ np.array([[1.0, 0.0], [0.0, 1.0]])
+        updated = (query[0] + target) / 2.0
+        displacement = np.sum((updated - query[0]) ** 2)
+        angular = 1.0 - np.dot(updated, query[0]) / (np.linalg.norm(updated) * np.linalg.norm(query[0]))
+        np.testing.assert_allclose(score[0], displacement * angular, rtol=1e-5, atol=1e-8)
+        disabled = memory.score_anoco(query, neighbor_count=2, temperature=1.0)
+        self.assertFalse(np.allclose(score, disabled))
+
+    def test_anoco_norm_compatibility_zero_weights_falls_back(self):
+        normal = np.array([[10.0, 0.0], [0.0, 20.0]], dtype=np.float32)
+        query = np.array([[0.0, 1.0]], dtype=np.float32)
+        memory = NormalPatchMemory(max_patches=0, backend="numpy").fit(normal)
+        score = memory.score_anoco(query, neighbor_count=2, norm_compatibility=True, feature_norms=np.array([0.0]))
+        self.assertTrue(np.isfinite(score[0]))
+
     def test_fused_weight_endpoints_match_calibrated_components(self):
         normal = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
         query = np.array([[1, -1], [-1, 1]], dtype=np.float32)
@@ -584,7 +610,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             )
 
     def test_pipeline_save_load_preserves_anoco_state(self):
-        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_affinity="cosine", anoco_anchor_ranking="minimum")
+        fusion = DefectFusion(object(), anomaly_method="anoco", anoco_neighbors=3, anoco_temperature=0.2, anoco_affinity="cosine", anoco_anchor_ranking="minimum", anoco_norm_compatibility=True)
         normal = np.eye(5, dtype=np.float32)
         fusion.subspace.fit(normal)
         fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=3, temperature=0.2, affinity="cosine")
@@ -596,6 +622,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             self.assertEqual(loaded.anoco_temperature, 0.2)
             self.assertEqual(loaded.anoco_affinity, "cosine")
             self.assertEqual(loaded.anoco_anchor_ranking, "minimum")
+            self.assertTrue(loaded.anoco_norm_compatibility)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_anoco_layer_consensus(self):

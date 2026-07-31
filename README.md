@@ -139,6 +139,9 @@ Anchor-consistent retrieval ranks candidates by the mean of query-neighbor and
 anchor-neighbor similarity by default. Use the experimental
 `--anoco-anchor-ranking minimum` mode to require both similarities to be high;
 this changes neighbor ranking only and does not enable norm compatibility.
+Use `--anoco-norm-compatibility` for the P5 ablation: multiply each selected
+edge by `min(norm_q, norm_r) / max(norm_q, norm_r)` and renormalize the weights
+per query. It is disabled by default and does not alter ordinary kNN scores.
 
 `--normal-shots 1/2/4` samples that many images from the normal training
 partition (`train/good` for MVTec or normal train rows for VisA); `-1` uses
