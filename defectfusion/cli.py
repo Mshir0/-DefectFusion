@@ -445,7 +445,8 @@ def main(argv=None):
             result_path.write_text(json.dumps(category_payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
             all_metrics.append(metrics)
         metric_names = (
-            "image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "pixel_aupro",
+            "image_auroc", "image_aupr", "image_f1_max", "pixel_auroc", "pixel_aupr",
+            "pixel_aupro", "pixel_f1_max",
             "defect_type_accuracy", "defect_type_macro_f1",
         )
         macro = {}

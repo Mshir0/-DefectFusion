@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from defectfusion.mvtec import compute_aupro, compute_binary_auroc_aupr, evaluate_mvtec
+from defectfusion.mvtec import compute_aupro, compute_binary_auroc_aupr, compute_binary_metrics, evaluate_mvtec
 
 
 class AuproTest(unittest.TestCase):
@@ -36,10 +36,20 @@ class AuproTest(unittest.TestCase):
         self.assertEqual(auroc, 1.0)
         self.assertEqual(aupr, 1.0)
 
+        _, _, f1_max = compute_binary_metrics([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9])
+        self.assertEqual(f1_max, 1.0)
+
     def test_shared_binary_metrics_handle_tied_scores(self):
         auroc, aupr = compute_binary_auroc_aupr([0, 1], [0.5, 0.5])
         self.assertEqual(auroc, 0.5)
         self.assertEqual(aupr, 0.5)
+
+        _, _, f1_max = compute_binary_metrics([0, 1], [0.5, 0.5])
+        self.assertAlmostEqual(f1_max, 2.0 / 3.0)
+
+    def test_shared_binary_metrics_return_nan_for_one_class(self):
+        metrics = compute_binary_metrics([0, 0], [0.1, 0.2])
+        self.assertTrue(all(np.isnan(value) for value in metrics))
 
     def test_shared_binary_metrics_match_known_reversed_ranking(self):
         auroc, aupr = compute_binary_auroc_aupr([0, 0, 1, 1], [0.9, 0.8, 0.2, 0.1])

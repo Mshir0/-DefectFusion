@@ -47,7 +47,7 @@ Merge gates for a pixel-level change:
 
 - [x] R0. Revert the failed combined change to raw cosine weights, strict minimum anchor ranking, norm compatibility, and PCA+ANoCo pixel replacement. Keep feature layers `1,17,21,23`.
 - [x] R1. Record the failed result and affected categories. The largest PRO regressions were macaroni2, fryum, pcb4, and macaroni1.
-- [ ] P0. Add image F1-MAX and pixel F1-MAX to evaluation output, CSV reporting, and metric tests so results are directly comparable with ANoCo Table 1.
+- [x] P0. Add image F1-MAX and pixel F1-MAX to evaluation output, CSV reporting, and metric tests so results are directly comparable with ANoCo Table 1.
 - [ ] P1. Re-run the restored `pca_knn_anoco` baseline twice on the current commit with identical category overrides. Require metric differences below 0.05 points before algorithm ablations.
 - [ ] P2. Add an experimental ANoCo affinity mode without changing the default. Compare current softmax weights with non-negative cosine weights normalized to sum to one. Keep mean anchor ranking, norm compatibility off, and the pixel branch fixed to PCA+kNN.
 - [ ] P3. Sweep `anoco_query_weight` over `0.5, 1.0, 2.0, 4.0` only for the winning normalized affinity from P2. Reject settings that improve image metrics by weakening pixel calibration or category stability.

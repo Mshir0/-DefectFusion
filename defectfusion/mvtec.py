@@ -89,8 +89,8 @@ def compute_aupro(anomaly_maps, gt_masks, fpr_limit=0.3, num_thresholds=300, con
     return float(integrate(pros, fprs) / fpr_limit)
 
 
-def compute_binary_auroc_aupr(labels, scores):
-    """Compute exact binary AUROC and average precision from one shared sort."""
+def compute_binary_metrics(labels, scores):
+    """Compute exact AUROC, average precision, and maximum F1 from one sort."""
     labels = np.asarray(labels, dtype=np.uint8).ravel()
     scores = np.asarray(scores).ravel()
     if labels.shape != scores.shape:
@@ -98,9 +98,9 @@ def compute_binary_auroc_aupr(labels, scores):
     positives = int(labels.sum())
     negatives = len(labels) - positives
     if positives == 0 or negatives == 0:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
     if not np.isfinite(scores).all():
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
 
     order = np.argsort(scores, kind="stable")[::-1]
     sorted_scores = scores[order]
@@ -118,6 +118,20 @@ def compute_binary_auroc_aupr(labels, scores):
     precision = cumulative_true / cumulative_count
     recall = cumulative_true / positives
     aupr = float(np.sum(np.diff(np.r_[0.0, recall]) * precision))
+    false_negatives = positives - cumulative_true
+    denominator = 2 * cumulative_true + cumulative_false + false_negatives
+    f1_max = float(np.max(np.divide(
+        2 * cumulative_true,
+        denominator,
+        out=np.zeros_like(denominator, dtype=np.float64),
+        where=denominator > 0,
+    )))
+    return auroc, aupr, f1_max
+
+
+def compute_binary_auroc_aupr(labels, scores):
+    """Backward-compatible AUROC/AP pair computed by ``compute_binary_metrics``."""
+    auroc, aupr, _ = compute_binary_metrics(labels, scores)
     return auroc, aupr
 
 
@@ -164,12 +178,12 @@ def evaluate_samples(fusion, category, samples, output, *, progress=True, exclud
     metrics = {"category": category, "images": len(rows), "results": str(output)}
     metrics_started = time.perf_counter()
     if len(set(image_y)) > 1:
-        metrics["image_auroc"], metrics["image_aupr"] = compute_binary_auroc_aupr(image_y, image_s)
+        metrics["image_auroc"], metrics["image_aupr"], metrics["image_f1_max"] = compute_binary_metrics(image_y, image_s)
     if pixel_masks:
         pixel_y = np.concatenate([item.ravel() for item in pixel_masks]).astype(np.uint8)
         pixel_s = np.concatenate([item.ravel() for item in pixel_maps]).astype(np.float32, copy=False)
         if pixel_y.min() == 0 and pixel_y.max() == 1:
-            metrics["pixel_auroc"], metrics["pixel_aupr"] = compute_binary_auroc_aupr(pixel_y, pixel_s)
+            metrics["pixel_auroc"], metrics["pixel_aupr"], metrics["pixel_f1_max"] = compute_binary_metrics(pixel_y, pixel_s)
             del pixel_y, pixel_s
             metrics["pixel_aupro"] = compute_aupro(pixel_maps, pixel_masks)
     try:

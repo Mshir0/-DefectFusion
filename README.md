@@ -51,7 +51,7 @@ python -m defectfusion.cli evaluate-mvtec \
 ```
 
 The command fits only on `train/good`, writes one JSON object per test image,
-and reports Image AUROC/AUPR plus Pixel AUROC/AUPR/AUPRO when ground-truth
+and reports Image AUROC/AUPR/F1-MAX plus Pixel AUROC/AUPR/AUPRO/F1-MAX when ground-truth
 masks are available. AUPRO follows the MVTec convention and integrates the
 per-region overlap curve over `FPR <= 0.3`.
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;

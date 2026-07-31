@@ -79,7 +79,9 @@ class VisaTest(unittest.TestCase):
             metrics = evaluate_samples(Fusion(), "candle", samples, output, progress=False)
 
         self.assertEqual(metrics["image_auroc"], 1.0)
+        self.assertEqual(metrics["image_f1_max"], 1.0)
         self.assertEqual(metrics["pixel_auroc"], 1.0)
+        self.assertEqual(metrics["pixel_f1_max"], 1.0)
 
 
 if __name__ == "__main__":
