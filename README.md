@@ -133,6 +133,19 @@ category's `Data` directory and pairs anomaly images and masks by filename stem;
 selected normal shots are excluded from the normal test pool. Output layout and
 metrics match MVTec evaluation.
 
+Run the frozen full-category VisA configuration sequentially for normal
+1/2/4/full-shot with one command:
+
+```bash
+bash scripts/evaluate_visa_shots.sh
+```
+
+The four outputs are `outputs/visa-normal-1shot`,
+`outputs/visa-normal-2shot`, `outputs/visa-normal-4shot`, and
+`outputs/visa-normal-fullshot`. The few-shot runs use 30 augmented normal views;
+full-shot uses every normal training image without augmentation. Override the
+default server paths with `DATA_ROOT=/path/to/visa` and `MODEL=/path/to/model`.
+
 ANoCo uses temperature-softmax edge weights by default. P2 adds
 `--anoco-affinity cosine` as an experimental ablation: selected non-negative
 cosine affinities are normalized to sum to one per query patch, with a uniform
