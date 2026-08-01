@@ -133,6 +133,17 @@ category's `Data` directory and pairs anomaly images and masks by filename stem;
 selected normal shots are excluded from the normal test pool. Output layout and
 metrics match MVTec evaluation.
 
+Aggregate every completed experiment under `outputs` with:
+
+```bash
+python scripts/summarize_results.py --input outputs --output outputs/all-results-summary
+```
+
+The command writes `experiment_metrics.csv` with one macro-average row per
+experiment and `category_metrics.csv` with every category's scalar metrics,
+timing, resource usage, and configuration. Incomplete runs without a final
+`results.json` are not included.
+
 Run the frozen full-category VisA configuration sequentially for normal
 1/2/4/full-shot with one command:
 
