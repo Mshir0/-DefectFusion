@@ -190,6 +190,7 @@ def main(argv=None):
     e.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None, help="fixed weight or normal-tail-calibrated patch gate")
     e.add_argument("--gate-temperature", type=float, default=None, help="soft gate temperature; lower values select one expert more strongly")
     e.add_argument("--memory-max-patches", type=int, default=None, help="maximum normal patches retained for kNN; 0 keeps all")
+    e.add_argument("--normal-fit-max-patches", type=int, default=None, help="maximum normal patches used to fit each branch; 0 keeps all")
     e.add_argument("--knn-chunk-size", type=int, default=None, help="query patches per kNN matrix chunk")
     e.add_argument("--knn-spatial-radius", type=float, default=None, help="normalized local kNN radius; -1 searches globally")
     e.add_argument("--align-training-positions", action="store_true", help="map rotate/flip normal augmentation positions back to canonical coordinates")
@@ -229,6 +230,7 @@ def main(argv=None):
     fusion_mode = getattr(a, "fusion_mode", None) or cfg.get("fusion_mode", "fixed")
     gate_temperature = getattr(a, "gate_temperature", None); gate_temperature = gate_temperature if gate_temperature is not None else cfg.get("gate_temperature", 1.0)
     memory_max_patches = getattr(a, "memory_max_patches", None); memory_max_patches = memory_max_patches if memory_max_patches is not None else cfg.get("memory_max_patches", 50000)
+    normal_fit_max_patches = getattr(a, "normal_fit_max_patches", None); normal_fit_max_patches = normal_fit_max_patches if normal_fit_max_patches is not None else cfg.get("normal_fit_max_patches", 0)
     knn_chunk_size = getattr(a, "knn_chunk_size", None); knn_chunk_size = knn_chunk_size if knn_chunk_size is not None else cfg.get("knn_chunk_size", 256)
     knn_spatial_radius = getattr(a, "knn_spatial_radius", None); knn_spatial_radius = knn_spatial_radius if knn_spatial_radius is not None else cfg.get("knn_spatial_radius", -1.0)
     align_training_positions = bool(getattr(a, "align_training_positions", False) or cfg.get("align_training_positions", False))
@@ -249,6 +251,7 @@ def main(argv=None):
     if image_min_component_size <= 0: p.error("--image-min-component-size must be positive")
     if gate_temperature <= 0: p.error("--gate-temperature must be positive")
     if memory_max_patches < 0: p.error("--memory-max-patches must be non-negative")
+    if normal_fit_max_patches < 0: p.error("--normal-fit-max-patches must be non-negative")
     if knn_chunk_size <= 0: p.error("--knn-chunk-size must be positive")
     if knn_spatial_radius != -1 and not 0 <= knn_spatial_radius <= 1: p.error("--knn-spatial-radius must be -1 or in [0, 1]")
     if align_training_positions and knn_spatial_radius < 0: p.error("--align-training-positions requires --knn-spatial-radius in [0, 1]")
@@ -355,8 +358,8 @@ def main(argv=None):
             category_component_size = image_min_component_size if not component_reject_categories or category_name in component_reject_categories else 1
             normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
             print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
-            print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size}", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=pixel_multiscale_weight).fit_normal(normal_training_images)
+            print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} fit_max_patches={normal_fit_max_patches or 'all'}", flush=True)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=pixel_multiscale_weight).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category_name}: backend={fusion.normal_memory.resolved_backend} "
@@ -443,6 +446,7 @@ def main(argv=None):
             metrics["fusion_mode"] = fusion_mode if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} else "none"
             metrics["gate_temperature"] = gate_temperature if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} and fusion_mode == "gated" else 0
             metrics["memory_max_patches"] = memory_max_patches if anomaly_method != "pca" else 0
+            metrics["normal_fit_max_patches"] = normal_fit_max_patches
             metrics["knn_chunk_size"] = knn_chunk_size if anomaly_method != "pca" else 0
             metrics["knn_backend"] = fusion.normal_memory.resolved_backend if anomaly_method != "pca" else "none"
             metrics["knn_dtype"] = knn_dtype if anomaly_method != "pca" else "none"

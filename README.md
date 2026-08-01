@@ -143,8 +143,11 @@ bash scripts/evaluate_visa_shots.sh
 The four outputs are `outputs/visa-normal-1shot`,
 `outputs/visa-normal-2shot`, `outputs/visa-normal-4shot`, and
 `outputs/visa-normal-fullshot`. The few-shot runs use 30 augmented normal views;
-full-shot uses every normal training image without augmentation. Override the
-default server paths with `DATA_ROOT=/path/to/visa` and `MODEL=/path/to/model`.
+full-shot uses every normal training image without augmentation and evenly
+samples at most 50,000 patches per fitted branch before concatenation. This
+prevents the full normal set and four layer-consensus banks from exhausting
+host memory. The 1/2/4-shot runs remain uncapped. Override the default server
+paths with `DATA_ROOT=/path/to/visa` and `MODEL=/path/to/model`.
 
 ANoCo uses temperature-softmax edge weights by default. P2 adds
 `--anoco-affinity cosine` as an experimental ablation: selected non-negative
@@ -331,6 +334,7 @@ python -m defectfusion.cli evaluate-mvtec \
 | PCA-kNN fusion | `--fusion-mode` | `fixed` | `fixed, gated` | Image/Pixel AUROC |
 | Gate temperature | `--gate-temperature` | `1.0` | `0.5, 1.0, 2.0` | Active with gated fusion |
 | Normal patch memory | `--memory-max-patches` | `50000` | `10000, 25000, 50000, 0` | kNN accuracy, memory, runtime |
+| Normal fit patches | `--normal-fit-max-patches` | `0` (all) | `25000, 50000, 0` | PCA/kNN fit memory, full-shot accuracy |
 | kNN query chunk | `--knn-chunk-size` | `256` | `64, 128, 256` | Runtime/memory only |
 | kNN spatial radius | `--knn-spatial-radius` | `-1` | `-1, 0.05, 0.10, 0.20` | Local structural matching |
 | Align train positions | `--align-training-positions` | off | on/off | Canonical coordinates for rotate/flip normal views |

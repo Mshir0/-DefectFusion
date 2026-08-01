@@ -50,19 +50,27 @@ run_experiment() {
   local name="$1"
   local normal_shots="$2"
   local augment_count="$3"
+  local fit_max_patches="$4"
+  local output="outputs/visa-normal-$name"
+
+  if [[ -f "$output/summary.csv" ]]; then
+    echo "[visa-shots] skipping $name (complete: $output/summary.csv)"
+    return
+  fi
 
   echo "[visa-shots] starting $name"
   python -m defectfusion.cli evaluate-visa \
     "${common_args[@]}" \
     --normal-shots "$normal_shots" \
     --normal-augment-count "$augment_count" \
-    --output "outputs/visa-normal-$name"
+    --normal-fit-max-patches "$fit_max_patches" \
+    --output "$output"
   echo "[visa-shots] completed $name"
 }
 
-run_experiment 1shot 1 30
-run_experiment 2shot 2 30
-run_experiment 4shot 4 30
-run_experiment fullshot -1 0
+run_experiment 1shot 1 30 0
+run_experiment 2shot 2 30 0
+run_experiment 4shot 4 30 0
+run_experiment fullshot -1 0 50000
 
 echo "[visa-shots] all experiments completed"

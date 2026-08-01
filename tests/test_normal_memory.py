@@ -87,6 +87,49 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertEqual(loaded.pixel_image_size, 672)
         self.assertEqual(loaded.image_head_image_size, 896)
 
+    def test_normal_fit_limit_samples_each_image_before_concatenation(self):
+        extractor = self._resolution_extractor()
+
+        class CapturingSubspace:
+            def fit(self, features):
+                self.features = np.asarray(features)
+                return self
+
+        fusion = DefectFusion(
+            extractor,
+            anomaly_method="pca",
+            dual_branch=True,
+            normal_fit_max_patches=5,
+        )
+        fusion.subspace = CapturingSubspace()
+        fusion.image_subspace = CapturingSubspace()
+        fusion.fit_normal([Image.new("RGB", (8, 8)), Image.new("RGB", (8, 8))])
+
+        self.assertEqual(len(fusion.subspace.features), 5)
+        self.assertEqual(len(fusion.image_subspace.features), 5)
+
+    def test_pipeline_save_load_preserves_normal_fit_limit(self):
+        extractor = self._resolution_extractor()
+        fusion = DefectFusion(
+            extractor,
+            anomaly_method="pca",
+            normal_fit_max_patches=3,
+        ).fit_normal([Image.new("RGB", (8, 8))])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.json"
+            fusion.save(path)
+            loaded = DefectFusion.load(path, self._resolution_extractor())
+        self.assertEqual(loaded.normal_fit_max_patches, 3)
+
+    def test_normal_fit_limit_requires_one_patch_per_image(self):
+        fusion = DefectFusion(
+            self._resolution_extractor(),
+            anomaly_method="pca",
+            normal_fit_max_patches=1,
+        )
+        with self.assertRaisesRegex(ValueError, "at least one patch"):
+            fusion.fit_normal([Image.new("RGB", (8, 8)), Image.new("RGB", (8, 8))])
+
     def test_secondary_pixel_resolution_fits_independent_memory(self):
         extractor = self._resolution_extractor()
         fusion = DefectFusion(

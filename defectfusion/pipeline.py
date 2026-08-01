@@ -18,7 +18,7 @@ class NormalTrainingView:
 
 
 class DefectFusion:
-    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, image_min_component_size: int = 1, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_affinity: str = "softmax", anoco_anchor_ranking: str = "mean", anoco_norm_compatibility: bool = False, anoco_weight: float = 0.5, anoco_layer_consensus: bool = False, memory_max_patches: int = 50000, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=(), pixel_image_size: int | None = None, image_head_image_size: int | None = None, secondary_pixel_image_size: int | None = None, pixel_multiscale_weight: float = 0.5):
+    def __init__(self, extractor, *, alpha: float = 0.5, unknown_threshold: float = 0.35, top_k_ratio: float = 0.05, image_score: str = "mtop1p", image_top_ratio: float = 0.01, image_fusion_stage: str = "patch", image_spatial_weight: float = 0.0, image_min_component_size: int = 1, type_matching: str = "bidirectional_patch", map_postprocess: str = "none", gaussian_sigma: float = 1.0, anomaly_method: str = "pca", pca_residual_metric: str = "squared_l2", knn_weight: float = 0.5, anoco_neighbors: int = 16, anoco_query_weight: float = 1.0, anoco_temperature: float = 0.07, anoco_affinity: str = "softmax", anoco_anchor_ranking: str = "mean", anoco_norm_compatibility: bool = False, anoco_weight: float = 0.5, anoco_layer_consensus: bool = False, memory_max_patches: int = 50000, normal_fit_max_patches: int = 0, knn_chunk_size: int = 256, knn_backend: str = "auto", knn_dtype: str = "float32", knn_spatial_radius: float = -1.0, align_training_positions: bool = False, dual_branch: bool = False, fusion_mode: str = "fixed", gate_temperature: float = 1.0, test_augmentations=(), pixel_image_size: int | None = None, image_head_image_size: int | None = None, secondary_pixel_image_size: int | None = None, pixel_multiscale_weight: float = 0.5):
         self.extractor = extractor
         knn_device = getattr(extractor, "device", None)
         self.dual_branch = bool(dual_branch)
@@ -47,6 +47,9 @@ class DefectFusion:
         self.alpha = alpha
         self.subspace = NormalSubspace(residual_metric=pca_residual_metric)
         self.normal_memory = NormalPatchMemory(memory_max_patches, knn_chunk_size, backend=knn_backend, device=knn_device, dtype=knn_dtype, spatial_radius=knn_spatial_radius)
+        if normal_fit_max_patches < 0:
+            raise ValueError("normal_fit_max_patches must be non-negative")
+        self.normal_fit_max_patches = int(normal_fit_max_patches)
         self.secondary_subspace = NormalSubspace(residual_metric=pca_residual_metric) if self.secondary_pixel_image_size is not None else None
         self.secondary_normal_memory = NormalPatchMemory(memory_max_patches, knn_chunk_size, backend=knn_backend, device=knn_device, dtype=knn_dtype, spatial_radius=knn_spatial_radius) if self.secondary_pixel_image_size is not None else None
         self.align_training_positions = bool(align_training_positions)
@@ -165,11 +168,28 @@ class DefectFusion:
         return patches, image_patches, image_layers if self.anoco_layer_consensus else None, pixel_grid, image_grid
 
     def fit_normal(self, image_paths):
+        image_paths = list(image_paths)
+        per_image_limit = per_image_remainder = 0
+        if self.normal_fit_max_patches > 0 and image_paths:
+            if self.normal_fit_max_patches < len(image_paths):
+                raise ValueError("normal_fit_max_patches must cover at least one patch per normal image")
+            per_image_limit, per_image_remainder = divmod(self.normal_fit_max_patches, len(image_paths))
+
+        def sample_indices(count, image_index):
+            if self.normal_fit_max_patches <= 0:
+                return np.arange(count)
+            image_limit = per_image_limit + int(image_index < per_image_remainder)
+            if count <= image_limit:
+                return np.arange(count)
+            if image_limit == 0:
+                return np.empty(0, dtype=np.int64)
+            return np.linspace(0, count - 1, image_limit, dtype=np.int64)
+
         patch_batches, image_patch_batches, image_layer_batches, position_batches, image_position_batches = [], [], [], [], []
         memory_patch_batches, image_memory_patch_batches, image_layer_memory_batches = [], [], []
         memory_position_batches, image_memory_position_batches = [], []
         secondary_patch_batches, secondary_memory_patch_batches, secondary_position_batches = [], [], []
-        for path in image_paths:
+        for image_index, path in enumerate(image_paths):
             if isinstance(path, NormalTrainingView):
                 image = path.image.copy()
                 inverse_position_matrix = path.inverse_position_matrix
@@ -177,29 +197,46 @@ class DefectFusion:
                 image = path.copy() if isinstance(path, Image.Image) else Image.open(path)
                 inverse_position_matrix = None
             patches, image_patches, image_layers, grid, image_grid = self._extract_branches(image)
+            patch_fit_indices = sample_indices(len(patches), image_index)
             if self.dual_branch:
-                image_patch_batches.append(image_patches)
+                image_fit_indices = sample_indices(len(image_patches), image_index)
+                image_patch_batches.append(image_patches[image_fit_indices])
                 if self.anoco_layer_consensus:
-                    image_layer_batches.append(image_layers)
-            patch_batches.append(patches)
+                    image_layer_batches.append(image_layers[:, image_fit_indices])
+            patch_batches.append(patches[patch_fit_indices])
             positions, valid = self._training_positions(grid, inverse_position_matrix)
-            position_batches.append(positions)
-            memory_patch_batches.append(patches[valid])
+            if self.align_training_positions:
+                memory_patches = patches[valid]
+                memory_fit_indices = sample_indices(len(memory_patches), image_index)
+                memory_patch_batches.append(memory_patches[memory_fit_indices])
+                memory_position_batches.append(positions[memory_fit_indices])
+            else:
+                position_batches.append(positions[patch_fit_indices])
             if self.dual_branch:
                 image_positions, image_valid = self._training_positions(image_grid, inverse_position_matrix)
-                image_position_batches.append(image_positions)
-                image_memory_patch_batches.append(image_patches[image_valid])
-                image_memory_position_batches.append(image_positions)
-                if self.anoco_layer_consensus:
-                    image_layer_memory_batches.append(image_layers[:, image_valid])
-            memory_position_batches.append(positions)
+                if self.align_training_positions:
+                    image_memory_patches = image_patches[image_valid]
+                    image_memory_layers = image_layers[:, image_valid] if self.anoco_layer_consensus else None
+                    image_memory_fit_indices = sample_indices(len(image_memory_patches), image_index)
+                    image_memory_patch_batches.append(image_memory_patches[image_memory_fit_indices])
+                    image_memory_position_batches.append(image_positions[image_memory_fit_indices])
+                    if self.anoco_layer_consensus:
+                        image_layer_memory_batches.append(image_memory_layers[:, image_memory_fit_indices])
+                else:
+                    image_position_batches.append(image_positions[image_fit_indices])
             if self.secondary_pixel_image_size is not None:
                 self._set_extractor_image_size(self.secondary_pixel_image_size)
                 secondary_patches, secondary_grid = self.extractor.extract(image)
                 secondary_positions, secondary_valid = self._training_positions(secondary_grid, inverse_position_matrix)
-                secondary_patch_batches.append(secondary_patches)
-                secondary_memory_patch_batches.append(secondary_patches[secondary_valid])
-                secondary_position_batches.append(secondary_positions)
+                secondary_fit_indices = sample_indices(len(secondary_patches), image_index)
+                secondary_patch_batches.append(secondary_patches[secondary_fit_indices])
+                if self.align_training_positions:
+                    secondary_memory_patches = secondary_patches[secondary_valid]
+                    secondary_memory_fit_indices = sample_indices(len(secondary_memory_patches), image_index)
+                    secondary_memory_patch_batches.append(secondary_memory_patches[secondary_memory_fit_indices])
+                    secondary_position_batches.append(secondary_positions[secondary_memory_fit_indices])
+                else:
+                    secondary_position_batches.append(secondary_positions[secondary_fit_indices])
             self.reference_shape = grid
         if not patch_batches:
             raise ValueError("No normal images were provided")
@@ -624,6 +661,7 @@ class DefectFusion:
             "anoco_weight": self.anoco_weight,
             "anoco_layer_consensus": self.anoco_layer_consensus,
             "memory_max_patches": self.normal_memory.max_patches,
+            "normal_fit_max_patches": self.normal_fit_max_patches,
             "knn_chunk_size": self.normal_memory.query_chunk_size,
             "knn_backend": self.normal_memory.backend,
             "knn_dtype": self.normal_memory.dtype,
@@ -701,7 +739,7 @@ class DefectFusion:
     @classmethod
     def load(cls, path, extractor):
         state = json.loads(Path(path).read_text(encoding="utf-8"))
-        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), image_min_component_size=state.get("image_min_component_size", 1), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_affinity=state.get("anoco_affinity", "softmax"), anoco_anchor_ranking=state.get("anoco_anchor_ranking", "mean"), anoco_norm_compatibility=state.get("anoco_norm_compatibility", False), anoco_weight=state.get("anoco_weight", 0.5), anoco_layer_consensus=state.get("anoco_layer_consensus", False), memory_max_patches=state.get("memory_max_patches", 50000), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()), pixel_image_size=state.get("pixel_image_size"), image_head_image_size=state.get("image_head_image_size"), secondary_pixel_image_size=state.get("secondary_pixel_image_size"), pixel_multiscale_weight=state.get("pixel_multiscale_weight", 0.5))
+        obj = cls(extractor, alpha=state.get("alpha", 0.5), unknown_threshold=state.get("unknown_threshold", 0.35), top_k_ratio=state.get("top_k_ratio", 0.05), image_score=state.get("image_score", "mean"), image_top_ratio=state.get("image_top_ratio", 0.01), image_fusion_stage=state.get("image_fusion_stage", "patch"), image_spatial_weight=state.get("image_spatial_weight", 0.0), image_min_component_size=state.get("image_min_component_size", 1), type_matching=state.get("type_matching", "prototype_mean"), map_postprocess=state.get("map_postprocess", "none"), gaussian_sigma=state.get("gaussian_sigma", 1.0), anomaly_method=state.get("anomaly_method", "pca"), pca_residual_metric=state.get("pca_residual_metric", "squared_l2"), knn_weight=state.get("knn_weight", 0.5), anoco_neighbors=state.get("anoco_neighbors", 16), anoco_query_weight=state.get("anoco_query_weight", 1.0), anoco_temperature=state.get("anoco_temperature", 0.07), anoco_affinity=state.get("anoco_affinity", "softmax"), anoco_anchor_ranking=state.get("anoco_anchor_ranking", "mean"), anoco_norm_compatibility=state.get("anoco_norm_compatibility", False), anoco_weight=state.get("anoco_weight", 0.5), anoco_layer_consensus=state.get("anoco_layer_consensus", False), memory_max_patches=state.get("memory_max_patches", 50000), normal_fit_max_patches=state.get("normal_fit_max_patches", 0), knn_chunk_size=state.get("knn_chunk_size", 256), knn_backend=state.get("knn_backend", "auto"), knn_dtype=state.get("knn_dtype", "float32"), knn_spatial_radius=state.get("knn_spatial_radius", -1.0), align_training_positions=state.get("align_training_positions", False), dual_branch=state.get("dual_branch", False), fusion_mode=state.get("fusion_mode", "fixed"), gate_temperature=state.get("gate_temperature", 1.0), test_augmentations=state.get("test_augmentations", ()), pixel_image_size=state.get("pixel_image_size"), image_head_image_size=state.get("image_head_image_size"), secondary_pixel_image_size=state.get("secondary_pixel_image_size"), pixel_multiscale_weight=state.get("pixel_multiscale_weight", 0.5))
         obj.subspace = NormalSubspace.from_dict(state["subspace"])
         if obj.dual_branch and "image_subspace" in state:
             obj.image_subspace = NormalSubspace.from_dict(state["image_subspace"])
