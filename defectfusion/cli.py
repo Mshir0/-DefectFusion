@@ -14,7 +14,7 @@ from .features import DinoFeatureExtractor
 from .pipeline import DefectFusion, NormalTrainingView
 from .mvtec import evaluate_mvtec, evaluate_samples
 from .reporting import experiment_output_dir, write_metrics_csv
-from .settings import image_size_overrides as parse_image_size_overrides
+from .settings import image_size_overrides as parse_image_size_overrides, unit_interval_overrides
 from .visa import load_visa_categories
 
 
@@ -188,6 +188,7 @@ def main(argv=None):
     e.add_argument("--anoco-weight", type=float, default=None, help="ANoCo contribution in calibrated pca_anoco fusion")
     e.add_argument("--pixel-anoco-weight", type=float, default=None, help="auxiliary ANoCo contribution in the calibrated pixel PCA+kNN branch")
     e.add_argument("--pixel-anoco-categories", nargs="+", default=None, help="apply the pixel ANoCo residual only to these categories")
+    e.add_argument("--pixel-anoco-weight-override", action="append", default=None, metavar="CATEGORY=WEIGHT", help="override pixel ANoCo weight for one category; repeatable")
     e.add_argument("--anoco-layer-consensus", action="store_true", help="replace aggregate-layer ANoCo with the median calibrated drift across selected layers")
     e.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None, help="fixed weight or normal-tail-calibrated patch gate")
     e.add_argument("--gate-temperature", type=float, default=None, help="soft gate temperature; lower values select one expert more strongly")
@@ -314,6 +315,7 @@ def main(argv=None):
             pixel_image_size_overrides = parse_image_size_overrides(a.pixel_image_size_override if a.pixel_image_size_override is not None else cfg.get("pixel_image_size_overrides", {}))
             image_head_size_overrides = parse_image_size_overrides(a.image_head_size_override if a.image_head_size_override is not None else cfg.get("image_head_size_overrides", {}))
             pixel_multiscale_size_overrides = parse_image_size_overrides(a.pixel_multiscale_size_override if a.pixel_multiscale_size_override is not None else cfg.get("pixel_multiscale_size_overrides", {}))
+            pixel_anoco_weight_overrides = unit_interval_overrides(a.pixel_anoco_weight_override if a.pixel_anoco_weight_override is not None else cfg.get("pixel_anoco_weight_overrides", {}), "Pixel ANoCo weight")
         except ValueError as exc:
             p.error(str(exc))
         if (pixel_image_size_overrides or image_head_size_overrides) and not dual_branch:
@@ -328,7 +330,7 @@ def main(argv=None):
         else:
             categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
         available_categories = {category.name for category in categories}
-        override_categories = set(image_size_overrides) | set(pixel_image_size_overrides) | set(image_head_size_overrides) | set(pixel_multiscale_size_overrides)
+        override_categories = set(image_size_overrides) | set(pixel_image_size_overrides) | set(image_head_size_overrides) | set(pixel_multiscale_size_overrides) | set(pixel_anoco_weight_overrides)
         unknown_overrides = sorted((affine_categories | component_reject_categories | knn_spatial_categories | pixel_anoco_categories | override_categories) - available_categories)
         if unknown_overrides: p.error(f"unknown override categories: {', '.join(unknown_overrides)}")
         if knn_spatial_categories and knn_spatial_radius < 0:
@@ -370,7 +372,10 @@ def main(argv=None):
             if category_name in affine_categories and "affine" not in category_augmentations:
                 category_augmentations.append("affine")
             category_component_size = image_min_component_size if not component_reject_categories or category_name in component_reject_categories else 1
-            category_pixel_anoco_weight = pixel_anoco_weight if not pixel_anoco_categories or category_name in pixel_anoco_categories else 0.0
+            category_pixel_anoco_weight = pixel_anoco_weight_overrides.get(
+                category_name,
+                pixel_anoco_weight if not pixel_anoco_categories or category_name in pixel_anoco_categories else 0.0,
+            )
             category_spatial_enabled = not knn_spatial_categories or category_name in knn_spatial_categories
             category_knn_spatial_radius = knn_spatial_radius if category_spatial_enabled else -1.0
             category_align_training_positions = align_training_positions or (category_name in knn_spatial_categories)
@@ -462,6 +467,7 @@ def main(argv=None):
             metrics["anoco_weight"] = anoco_weight if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else 0
             metrics["pixel_anoco_weight"] = category_pixel_anoco_weight if anomaly_method in {"pca_knn", "pca_knn_anoco"} else 0
             metrics["pixel_anoco_category_override"] = category_name in pixel_anoco_categories
+            metrics["pixel_anoco_weight_override"] = category_name in pixel_anoco_weight_overrides
             metrics["anoco_layer_consensus"] = anoco_layer_consensus if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else False
             metrics["fusion_mode"] = fusion_mode if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} else "none"
             metrics["gate_temperature"] = gate_temperature if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} and fusion_mode == "gated" else 0

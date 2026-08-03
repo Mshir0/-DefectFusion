@@ -505,7 +505,9 @@ Pixel-only experiments can add a calibrated ANoCo residual with
 `--pixel-anoco-weight 0.10`. The existing PCA/kNN mixture is retained as the
 base score, then blended with the calibrated ANoCo drift. Add
 `--pixel-anoco-categories cable transistor` to restrict that residual to
-selected categories. Use
+selected categories. A repeatable override such as
+`--pixel-anoco-weight-override cable=0.10` can retain a different validated
+weight for one category. Use
 `--knn-spatial-categories cable transistor` with a non-negative
 `--knn-spatial-radius` to enable local matching only for selected categories;
 their rotate/flip training positions are aligned automatically. Ready-to-run
