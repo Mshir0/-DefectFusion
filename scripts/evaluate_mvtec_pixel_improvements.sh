@@ -24,7 +24,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --dual-branch \
   --anomaly-method pca_knn_anoco \
   --knn-weight 0.5 \
-  --pixel-anoco-weight 0.10 \
+  --pixel-anoco-weight 0.15 \
   --pixel-anoco-categories cable transistor \
   --anoco-neighbors 16 \
   --anoco-query-weight 2.0 \
