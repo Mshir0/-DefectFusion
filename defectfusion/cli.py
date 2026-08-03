@@ -186,6 +186,7 @@ def main(argv=None):
     e.add_argument("--anoco-anchor-ranking", choices=["mean", "minimum"], default=None, help="combine query and anchor similarity when selecting normal neighbors")
     e.add_argument("--anoco-norm-compatibility", action="store_true", help="multiply ANoCo affinities by normalized feature-norm compatibility")
     e.add_argument("--anoco-weight", type=float, default=None, help="ANoCo contribution in calibrated pca_anoco fusion")
+    e.add_argument("--pixel-anoco-weight", type=float, default=None, help="auxiliary ANoCo contribution in the calibrated pixel PCA+kNN branch")
     e.add_argument("--anoco-layer-consensus", action="store_true", help="replace aggregate-layer ANoCo with the median calibrated drift across selected layers")
     e.add_argument("--fusion-mode", choices=["fixed", "gated"], default=None, help="fixed weight or normal-tail-calibrated patch gate")
     e.add_argument("--gate-temperature", type=float, default=None, help="soft gate temperature; lower values select one expert more strongly")
@@ -193,6 +194,7 @@ def main(argv=None):
     e.add_argument("--normal-fit-max-patches", type=int, default=None, help="maximum normal patches used to fit each branch; 0 keeps all")
     e.add_argument("--knn-chunk-size", type=int, default=None, help="query patches per kNN matrix chunk")
     e.add_argument("--knn-spatial-radius", type=float, default=None, help="normalized local kNN radius; -1 searches globally")
+    e.add_argument("--knn-spatial-categories", nargs="+", default=None, help="apply the local kNN radius only to these categories")
     e.add_argument("--align-training-positions", action="store_true", help="map rotate/flip normal augmentation positions back to canonical coordinates")
     e.add_argument("--dual-branch", action="store_true", help="use L2 features for image score and raw features for pixel map")
     e.add_argument("--test-augmentations", nargs="*", choices=["hflip", "vflip"], default=None, help="flip TTA views; identity is always included")
@@ -226,6 +228,7 @@ def main(argv=None):
     anoco_anchor_ranking = getattr(a, "anoco_anchor_ranking", None); anoco_anchor_ranking = anoco_anchor_ranking if anoco_anchor_ranking is not None else cfg.get("anoco_anchor_ranking", "mean")
     anoco_norm_compatibility = bool(getattr(a, "anoco_norm_compatibility", False) or cfg.get("anoco_norm_compatibility", False))
     anoco_weight = getattr(a, "anoco_weight", None); anoco_weight = anoco_weight if anoco_weight is not None else cfg.get("anoco_weight", 0.5)
+    pixel_anoco_weight = getattr(a, "pixel_anoco_weight", None); pixel_anoco_weight = pixel_anoco_weight if pixel_anoco_weight is not None else cfg.get("pixel_anoco_weight", 0.0)
     anoco_layer_consensus = bool(getattr(a, "anoco_layer_consensus", False) or cfg.get("anoco_layer_consensus", False))
     fusion_mode = getattr(a, "fusion_mode", None) or cfg.get("fusion_mode", "fixed")
     gate_temperature = getattr(a, "gate_temperature", None); gate_temperature = gate_temperature if gate_temperature is not None else cfg.get("gate_temperature", 1.0)
@@ -245,6 +248,9 @@ def main(argv=None):
     if anoco_query_weight <= 0: p.error("--anoco-query-weight must be positive")
     if anoco_temperature <= 0: p.error("--anoco-temperature must be positive")
     if not 0 <= anoco_weight <= 1: p.error("--anoco-weight must be in [0, 1]")
+    if not 0 <= pixel_anoco_weight <= 1: p.error("--pixel-anoco-weight must be in [0, 1]")
+    if pixel_anoco_weight > 0 and anomaly_method not in {"pca_knn", "pca_knn_anoco"}: p.error("--pixel-anoco-weight requires pca_knn or pca_knn_anoco")
+    if pixel_anoco_weight > 0 and fusion_mode != "fixed": p.error("--pixel-anoco-weight currently requires --fusion-mode fixed")
     if not 0 < image_top_ratio <= 1: p.error("--image-top-ratio must be in (0, 1]")
     if image_spatial_weight < 0: p.error("--image-spatial-weight must be non-negative")
     if not 0 <= pixel_multiscale_weight <= 1: p.error("--pixel-multiscale-weight must be in [0, 1]")
@@ -277,7 +283,7 @@ def main(argv=None):
         alpha = a.alpha if a.alpha is not None else cfg.get("alpha", 0.5)
         threshold = a.unknown_threshold if a.unknown_threshold is not None else cfg.get("unknown_threshold", 0.35)
         paths = _images(normal_dir, not a.non_recursive)
-        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=image_min_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
+        fusion = DefectFusion(extractor, alpha=alpha, unknown_threshold=threshold, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=image_min_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, pixel_anoco_weight=pixel_anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations).fit_normal(paths)
         proto_dir = a.prototype_dir or cfg.get("prototype_dir")
         if proto_dir:
             for label_dir in sorted(Path(proto_dir).iterdir()):
@@ -300,6 +306,7 @@ def main(argv=None):
         normal_augmentations = a.normal_augmentations or cfg.get("normal_augmentations", ["rotate"])
         affine_categories = set(a.affine_categories or cfg.get("affine_categories", []))
         component_reject_categories = set(a.component_reject_categories or cfg.get("component_reject_categories", []))
+        knn_spatial_categories = set(a.knn_spatial_categories or cfg.get("knn_spatial_categories", []))
         try:
             image_size_overrides = parse_image_size_overrides(a.image_size_override if a.image_size_override is not None else cfg.get("image_size_overrides", {}))
             pixel_image_size_overrides = parse_image_size_overrides(a.pixel_image_size_override if a.pixel_image_size_override is not None else cfg.get("pixel_image_size_overrides", {}))
@@ -309,9 +316,9 @@ def main(argv=None):
             p.error(str(exc))
         if (pixel_image_size_overrides or image_head_size_overrides) and not dual_branch:
             p.error("branch-specific image-size overrides require --dual-branch")
-        if align_training_positions and "affine" in normal_augmentations:
+        if align_training_positions and not knn_spatial_categories and "affine" in normal_augmentations:
             p.error("--align-training-positions does not yet support affine normal augmentation")
-        if align_training_positions and affine_categories:
+        if align_training_positions and not knn_spatial_categories and affine_categories:
             p.error("--align-training-positions does not yet support --affine-categories")
         no_augment_categories = a.no_augment_categories or cfg.get("no_augment_categories", ["transistor"])
         if is_visa:
@@ -320,8 +327,13 @@ def main(argv=None):
             categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
         available_categories = {category.name for category in categories}
         override_categories = set(image_size_overrides) | set(pixel_image_size_overrides) | set(image_head_size_overrides) | set(pixel_multiscale_size_overrides)
-        unknown_overrides = sorted((affine_categories | component_reject_categories | override_categories) - available_categories)
+        unknown_overrides = sorted((affine_categories | component_reject_categories | knn_spatial_categories | override_categories) - available_categories)
         if unknown_overrides: p.error(f"unknown override categories: {', '.join(unknown_overrides)}")
+        if knn_spatial_categories and knn_spatial_radius < 0:
+            p.error("--knn-spatial-categories requires --knn-spatial-radius in [0, 1]")
+        unsupported_spatial_affine = sorted(knn_spatial_categories & affine_categories)
+        if unsupported_spatial_affine:
+            p.error(f"spatial kNN position alignment does not support affine categories: {', '.join(unsupported_spatial_affine)}")
         if a.categories:
             requested_categories = set(a.categories)
             categories = [category for category in categories if category.name in requested_categories]
@@ -356,10 +368,13 @@ def main(argv=None):
             if category_name in affine_categories and "affine" not in category_augmentations:
                 category_augmentations.append("affine")
             category_component_size = image_min_component_size if not component_reject_categories or category_name in component_reject_categories else 1
+            category_spatial_enabled = not knn_spatial_categories or category_name in knn_spatial_categories
+            category_knn_spatial_radius = knn_spatial_radius if category_spatial_enabled else -1.0
+            category_align_training_positions = align_training_positions or (category_name in knn_spatial_categories)
             normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
             print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
-            print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} fit_max_patches={normal_fit_max_patches or 'all'}", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=knn_spatial_radius, align_training_positions=align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=pixel_multiscale_weight).fit_normal(normal_training_images)
+            print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} fit_max_patches={normal_fit_max_patches or 'all'} spatial_radius={category_knn_spatial_radius}", flush=True)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, pixel_anoco_weight=pixel_anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=category_knn_spatial_radius, image_knn_spatial_radius=-1.0 if knn_spatial_categories else None, align_training_positions=category_align_training_positions, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=pixel_multiscale_weight).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category_name}: backend={fusion.normal_memory.resolved_backend} "
@@ -442,6 +457,7 @@ def main(argv=None):
             metrics["memory_patch_count"] = memory_stats["patch_count"] if anomaly_method != "pca" else 0
             metrics["memory_bytes"] = memory_stats["bytes"] if anomaly_method != "pca" else 0
             metrics["anoco_weight"] = anoco_weight if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else 0
+            metrics["pixel_anoco_weight"] = pixel_anoco_weight if anomaly_method in {"pca_knn", "pca_knn_anoco"} else 0
             metrics["anoco_layer_consensus"] = anoco_layer_consensus if anomaly_method in {"pca_anoco", "pca_knn_anoco"} else False
             metrics["fusion_mode"] = fusion_mode if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} else "none"
             metrics["gate_temperature"] = gate_temperature if anomaly_method in {"pca_knn", "pca_anoco", "pca_knn_anoco"} and fusion_mode == "gated" else 0
@@ -450,7 +466,8 @@ def main(argv=None):
             metrics["knn_chunk_size"] = knn_chunk_size if anomaly_method != "pca" else 0
             metrics["knn_backend"] = fusion.normal_memory.resolved_backend if anomaly_method != "pca" else "none"
             metrics["knn_dtype"] = knn_dtype if anomaly_method != "pca" else "none"
-            metrics["knn_spatial_radius"] = knn_spatial_radius if anomaly_method != "pca" else -1
+            metrics["knn_spatial_radius"] = category_knn_spatial_radius if anomaly_method != "pca" else -1
+            metrics["knn_spatial_category_override"] = category_name in knn_spatial_categories
             metrics["align_training_positions"] = align_training_positions
             metrics["dual_branch"] = dual_branch
             metrics["test_augmentations"] = list(test_augmentations)

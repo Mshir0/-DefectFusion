@@ -500,6 +500,16 @@ For P0.3, `--image-fusion-stage patch` fuses calibrated PCA/kNN values per
 patch before Top-K aggregation. `score` aggregates PCA and kNN independently
 and then applies `--knn-weight`; the pixel map remains patch-first in both
 cases.
+
+Pixel-only experiments can add a calibrated ANoCo residual with
+`--pixel-anoco-weight 0.10`. The existing PCA/kNN mixture is retained as the
+base score, then blended with the calibrated ANoCo drift. Use
+`--knn-spatial-categories cable transistor` with a non-negative
+`--knn-spatial-radius` to enable local matching only for selected categories;
+their rotate/flip training positions are aligned automatically. Ready-to-run
+combined experiments are provided in
+`scripts/evaluate_mvtec_pixel_improvements.sh` and
+`scripts/evaluate_visa_pixel_improvements.sh`.
 With `--knn-backend auto`, a CUDA DINO extractor automatically uses Torch
 matrix multiplication and keeps the normalized memory bank on the same GPU.
 Use `--knn-backend torch` to require that path explicitly. `--knn-dtype

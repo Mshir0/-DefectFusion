@@ -574,6 +574,38 @@ class NormalPatchMemoryTest(unittest.TestCase):
         expected_image = 0.75 * fusion.image_subspace.calibrated(image_pca) + 0.25 * fusion.image_memory.calibrated_anoco(image_anoco)
         np.testing.assert_allclose(image_fused, expected_image)
 
+    def test_pixel_anoco_residual_preserves_base_pca_knn_ratio(self):
+        normal = np.array([[1, 0], [0, 1], [1, 1], [-1, 1]], dtype=np.float32)
+        query = np.array([[1, -1], [-1, -1]], dtype=np.float32)
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            knn_weight=0.4, pixel_anoco_weight=0.1, anoco_neighbors=2,
+        )
+        fusion.subspace.fit(normal)
+        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=2)
+
+        fused, pca, knn, _ = fusion._anomaly_scores(query)
+        anoco = fusion.normal_memory.score_anoco(query, neighbor_count=2)
+        base = (0.6 * fusion.subspace.calibrated(pca)
+                + 0.4 * fusion.normal_memory.calibrated(knn))
+        expected = 0.9 * base + 0.1 * fusion.normal_memory.calibrated_anoco(anoco)
+        np.testing.assert_allclose(fused, expected)
+
+    def test_pixel_anoco_requires_supported_fixed_fusion(self):
+        with self.assertRaisesRegex(ValueError, "requires pca_knn"):
+            DefectFusion(object(), anomaly_method="pca", pixel_anoco_weight=0.1)
+        with self.assertRaisesRegex(ValueError, "requires fixed fusion"):
+            DefectFusion(object(), anomaly_method="pca_knn", pixel_anoco_weight=0.1, fusion_mode="gated")
+
+    def test_pixel_spatial_radius_can_leave_image_memory_global(self):
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            knn_spatial_radius=0.1, image_knn_spatial_radius=-1.0,
+            align_training_positions=True,
+        )
+        self.assertEqual(fusion.normal_memory.spatial_radius, 0.1)
+        self.assertEqual(fusion.image_memory.spatial_radius, -1.0)
+
     def test_anoco_layer_consensus_uses_median_calibrated_drift(self):
         normal = np.array([
             [1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0],
@@ -675,6 +707,18 @@ class NormalPatchMemoryTest(unittest.TestCase):
             self.assertEqual(loaded.anoco_affinity, "cosine")
             self.assertEqual(loaded.anoco_anchor_ranking, "minimum")
             self.assertTrue(loaded.anoco_norm_compatibility)
+            np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
+
+    def test_pipeline_save_load_preserves_pixel_anoco_weight(self):
+        fusion = DefectFusion(object(), anomaly_method="pca_knn", pixel_anoco_weight=0.1, anoco_neighbors=2)
+        normal = np.eye(5, dtype=np.float32)
+        fusion.subspace.fit(normal)
+        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=2)
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "model.json"
+            fusion.save(state_path)
+            loaded = DefectFusion.load(state_path, object())
+            self.assertEqual(loaded.pixel_anoco_weight, 0.1)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_anoco_layer_consensus(self):

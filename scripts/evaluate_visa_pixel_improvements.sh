@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+python -m defectfusion.cli evaluate-visa \
+  --data-root /mnt/sda1/VisA_20220922 \
+  --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
+  --device cuda \
+  --normal-shots 1 \
+  --defect-shots 0 \
+  --seed 42 \
+  --image-size 672 \
+  --image-size-override macaroni2=896 \
+  --image-size-override pcb2=896 \
+  --image-size-override pcb3=896 \
+  --pixel-image-size-override fryum=896 \
+  --pixel-image-size-override macaroni1=896 \
+  --pixel-image-size-override pcb4=896 \
+  --image-head-size-override pcb4=896 \
+  --pixel-multiscale-size-override macaroni1=672 \
+  --pixel-multiscale-size-override macaroni2=672 \
+  --pixel-multiscale-size-override fryum=672 \
+  --pixel-multiscale-size-override pcb2=672 \
+  --pixel-multiscale-size-override pcb3=672 \
+  --pixel-multiscale-size-override pcb4=672 \
+  --pixel-multiscale-weight 0.25 \
+  --normal-augment-count 30 \
+  --normal-augmentations rotate \
+  --affine-categories macaroni1 macaroni2 \
+  --feature-layers=1,17,21,23 \
+  --layer-aggregation mean \
+  --layer-normalization none \
+  --dual-branch \
+  --anomaly-method pca_knn_anoco \
+  --knn-weight 0.5 \
+  --pixel-anoco-weight 0.10 \
+  --anoco-neighbors 16 \
+  --anoco-query-weight 1.0 \
+  --anoco-temperature 0.07 \
+  --anoco-affinity softmax \
+  --anoco-anchor-ranking mean \
+  --anoco-weight 0.25 \
+  --anoco-layer-consensus \
+  --fusion-mode fixed \
+  --image-score mtop1p \
+  --image-top-ratio 0.01 \
+  --image-min-component-size 2 \
+  --component-reject-categories macaroni1 macaroni2 \
+  --image-fusion-stage patch \
+  --memory-max-patches 50000 \
+  --knn-chunk-size 256 \
+  --knn-backend torch \
+  --knn-dtype float16 \
+  --knn-spatial-radius 0.10 \
+  --knn-spatial-categories pcb2 pcb3 pcb4 \
+  --map-postprocess none \
+  --output outputs/visa-pixel-anoco-multiscale-spatial
