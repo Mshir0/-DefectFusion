@@ -606,6 +606,30 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertEqual(fusion.normal_memory.spatial_radius, 0.1)
         self.assertEqual(fusion.image_memory.spatial_radius, -1.0)
 
+    def test_pixel_alignment_does_not_filter_image_or_layer_memories(self):
+        class Extractor:
+            resize_mode = "direct"
+            device = None
+
+            def extract_dual_layers(self, image):
+                features = np.arange(48, dtype=np.float32).reshape(16, 3)
+                return features, features + 0.25, np.stack([features + 0.5, features + 0.75]), (4, 4)
+
+        radians = np.deg2rad(45)
+        cosine, sine = np.cos(radians), np.sin(radians)
+        rotation = np.array([[cosine, sine, 0.0], [-sine, cosine, 0.0], [0.0, 0.0, 1.0]])
+        rotation[:2, 2] = 0.5 - rotation[:2, :2] @ np.array([0.5, 0.5])
+        fusion = DefectFusion(
+            Extractor(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            anoco_layer_consensus=True, memory_max_patches=0,
+            knn_spatial_radius=0.1, image_knn_spatial_radius=-1.0,
+            align_training_positions=True, align_image_training_positions=False,
+        ).fit_normal([NormalTrainingView(Image.new("RGB", (4, 4)), rotation)])
+        self.assertLess(len(fusion.normal_memory.features), 16)
+        self.assertEqual(len(fusion.image_memory.features), 16)
+        self.assertTrue(all(len(memory.features) == 16 for memory in fusion.image_layer_memories))
+        self.assertTrue(all(memory.spatial_radius == -1.0 for memory in fusion.image_layer_memories))
+
     def test_anoco_layer_consensus_uses_median_calibrated_drift(self):
         normal = np.array([
             [1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0],

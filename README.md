@@ -510,6 +510,9 @@ their rotate/flip training positions are aligned automatically. Ready-to-run
 combined experiments are provided in
 `scripts/evaluate_mvtec_pixel_improvements.sh` and
 `scripts/evaluate_visa_pixel_improvements.sh`.
+The follow-up MVTec run that isolates position alignment to the pixel branch
+and keeps multiscale evaluation on `cable` and `transistor` is
+`scripts/evaluate_mvtec_pixel_improvements_v2.sh`.
 With `--knn-backend auto`, a CUDA DINO extractor automatically uses Torch
 matrix multiplication and keeps the normalized memory bank on the same GPU.
 Use `--knn-backend torch` to require that path explicitly. `--knn-dtype
