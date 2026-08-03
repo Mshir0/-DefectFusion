@@ -14,6 +14,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --pixel-multiscale-size-override cable=672 \
   --pixel-multiscale-size-override transistor=672 \
   --pixel-multiscale-weight 0.25 \
+  --pixel-multiscale-weight-override transistor=0.15 \
   --resize-mode direct \
   --normal-augment-count 30 \
   --normal-augmentations rotate \
@@ -43,7 +44,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --knn-chunk-size 256 \
   --knn-backend torch \
   --knn-dtype float16 \
-  --knn-spatial-radius 0.15 \
+  --knn-spatial-radius 0.10 \
   --knn-spatial-categories cable transistor \
   --map-postprocess none \
   --type-matching bidirectional_patch \

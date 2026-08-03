@@ -164,6 +164,7 @@ def main(argv=None):
     e.add_argument("--image-head-size-override", action="append", default=None, metavar="CATEGORY=SIZE", help="override only the image-head input size; repeatable")
     e.add_argument("--pixel-multiscale-size-override", action="append", default=None, metavar="CATEGORY=SIZE", help="add a second pixel PCA/kNN resolution; repeatable")
     e.add_argument("--pixel-multiscale-weight", type=float, default=None, help="second pixel-resolution contribution after grid alignment")
+    e.add_argument("--pixel-multiscale-weight-override", action="append", default=None, metavar="CATEGORY=WEIGHT", help="override the second pixel-resolution weight for one category; repeatable")
     e.add_argument("--resize-mode", choices=["direct", "longest_pad"], default=None)
     e.add_argument("--output", default="outputs/mvtec-results", help="experiment output directory; a filename is converted to a same-stem directory")
     e.add_argument("--debias", action="store_true", help="apply INSID3 positional debiasing")
@@ -315,6 +316,7 @@ def main(argv=None):
             pixel_image_size_overrides = parse_image_size_overrides(a.pixel_image_size_override if a.pixel_image_size_override is not None else cfg.get("pixel_image_size_overrides", {}))
             image_head_size_overrides = parse_image_size_overrides(a.image_head_size_override if a.image_head_size_override is not None else cfg.get("image_head_size_overrides", {}))
             pixel_multiscale_size_overrides = parse_image_size_overrides(a.pixel_multiscale_size_override if a.pixel_multiscale_size_override is not None else cfg.get("pixel_multiscale_size_overrides", {}))
+            pixel_multiscale_weight_overrides = unit_interval_overrides(a.pixel_multiscale_weight_override if a.pixel_multiscale_weight_override is not None else cfg.get("pixel_multiscale_weight_overrides", {}), "Pixel multiscale weight")
             pixel_anoco_weight_overrides = unit_interval_overrides(a.pixel_anoco_weight_override if a.pixel_anoco_weight_override is not None else cfg.get("pixel_anoco_weight_overrides", {}), "Pixel ANoCo weight")
         except ValueError as exc:
             p.error(str(exc))
@@ -330,7 +332,7 @@ def main(argv=None):
         else:
             categories = [Path(a.data_dir)] if a.data_dir else sorted(x for x in Path(a.data_root).iterdir() if (x / "train" / "good").is_dir())
         available_categories = {category.name for category in categories}
-        override_categories = set(image_size_overrides) | set(pixel_image_size_overrides) | set(image_head_size_overrides) | set(pixel_multiscale_size_overrides) | set(pixel_anoco_weight_overrides)
+        override_categories = set(image_size_overrides) | set(pixel_image_size_overrides) | set(image_head_size_overrides) | set(pixel_multiscale_size_overrides) | set(pixel_multiscale_weight_overrides) | set(pixel_anoco_weight_overrides)
         unknown_overrides = sorted((affine_categories | component_reject_categories | knn_spatial_categories | pixel_anoco_categories | override_categories) - available_categories)
         if unknown_overrides: p.error(f"unknown override categories: {', '.join(unknown_overrides)}")
         if knn_spatial_categories and knn_spatial_radius < 0:
@@ -354,6 +356,7 @@ def main(argv=None):
             category_pixel_image_size = pixel_image_size_overrides.get(category_name, category_image_size)
             category_image_head_size = image_head_size_overrides.get(category_name, category_image_size)
             category_secondary_pixel_size = pixel_multiscale_size_overrides.get(category_name)
+            category_pixel_multiscale_weight = pixel_multiscale_weight_overrides.get(category_name, pixel_multiscale_weight)
             if category_secondary_pixel_size == category_pixel_image_size:
                 p.error(f"secondary pixel size must differ from primary pixel size for {category_name}")
             if extractor.image_size != category_pixel_image_size:
@@ -381,8 +384,8 @@ def main(argv=None):
             category_align_training_positions = align_training_positions or (category_name in knn_spatial_categories)
             normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
             print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
-            print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} fit_max_patches={normal_fit_max_patches or 'all'} spatial_radius={category_knn_spatial_radius} pixel_anoco_weight={category_pixel_anoco_weight}", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, pixel_anoco_weight=category_pixel_anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=category_knn_spatial_radius, image_knn_spatial_radius=-1.0 if knn_spatial_categories else None, align_training_positions=category_align_training_positions, align_image_training_positions=False if knn_spatial_categories else None, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=pixel_multiscale_weight).fit_normal(normal_training_images)
+            print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} pixel_multiscale_weight={category_pixel_multiscale_weight if category_secondary_pixel_size is not None else 0} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} fit_max_patches={normal_fit_max_patches or 'all'} spatial_radius={category_knn_spatial_radius} pixel_anoco_weight={category_pixel_anoco_weight}", flush=True)
+            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, pixel_anoco_weight=category_pixel_anoco_weight, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=category_knn_spatial_radius, image_knn_spatial_radius=-1.0 if knn_spatial_categories else None, align_training_positions=category_align_training_positions, align_image_training_positions=False if knn_spatial_categories else None, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=category_pixel_multiscale_weight).fit_normal(normal_training_images)
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category_name}: backend={fusion.normal_memory.resolved_backend} "
@@ -447,7 +450,8 @@ def main(argv=None):
             metrics["image_head_size_override"] = category_name in image_head_size_overrides
             metrics["secondary_pixel_image_size"] = category_secondary_pixel_size
             metrics["pixel_multiscale_size_override"] = category_name in pixel_multiscale_size_overrides
-            metrics["pixel_multiscale_weight"] = pixel_multiscale_weight if category_secondary_pixel_size is not None else 0
+            metrics["pixel_multiscale_weight"] = category_pixel_multiscale_weight if category_secondary_pixel_size is not None else 0
+            metrics["pixel_multiscale_weight_override"] = category_name in pixel_multiscale_weight_overrides
             metrics["resize_mode"] = resize_mode
             metrics["layer_aggregation"] = layer_aggregation
             metrics["layer_normalization"] = layer_normalization

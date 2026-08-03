@@ -101,6 +101,9 @@ primary pixel and image heads at 896:
 
 The option is category-scoped and disabled unless a secondary size override
 is supplied. Its size must differ from the effective primary pixel size.
+Use the repeatable `--pixel-multiscale-weight-override CATEGORY=WEIGHT` when a
+category needs a different secondary-scale contribution from the global
+`--pixel-multiscale-weight`.
 
 Every category JSON records the effective augmentation list, component size,
 and whether each override was active.
