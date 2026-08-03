@@ -510,7 +510,9 @@ base score, then blended with the calibrated ANoCo drift. Add
 `--pixel-anoco-categories cable transistor` to restrict that residual to
 selected categories. A repeatable override such as
 `--pixel-anoco-weight-override cable=0.10` can retain a different validated
-weight for one category. Use
+weight for one category. Pixel-only feature-norm compatibility can be enabled
+with `--pixel-anoco-norm-compatibility` and scoped using
+`--pixel-anoco-norm-compatibility-categories transistor`. Use
 `--knn-spatial-categories cable transistor` with a non-negative
 `--knn-spatial-radius` to enable local matching only for selected categories;
 their rotate/flip training positions are aligned automatically. Ready-to-run

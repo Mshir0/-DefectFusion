@@ -591,6 +591,30 @@ class NormalPatchMemoryTest(unittest.TestCase):
         expected = 0.9 * base + 0.1 * fusion.normal_memory.calibrated_anoco(anoco)
         np.testing.assert_allclose(fused, expected)
 
+    def test_pixel_anoco_norm_compatibility_is_independent_from_image_anoco(self):
+        fusion = DefectFusion(
+            object(), anomaly_method="pca_knn_anoco", dual_branch=True,
+            pixel_anoco_weight=0.1, pixel_anoco_norm_compatibility=True,
+            anoco_norm_compatibility=False,
+        )
+        self.assertTrue(fusion.pixel_anoco_norm_compatibility)
+        self.assertFalse(fusion.anoco_norm_compatibility)
+        normal = np.array([[1, 0], [0, 1], [1, 1], [-1, 1]], dtype=np.float32)
+        query = np.array([[1, -1], [-1, -1]], dtype=np.float32)
+        fusion.subspace.fit(normal)
+        fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=16, norm_compatibility=True)
+        fusion.image_subspace.fit(normal)
+        fusion.image_memory.fit(normal).fit_anoco_calibration(neighbor_count=16, norm_compatibility=False)
+        seen = {}
+        pixel_score = fusion.normal_memory.score_anoco
+        image_score = fusion.image_memory.score_anoco
+        fusion.normal_memory.score_anoco = lambda *args, **kwargs: (seen.setdefault("pixel", kwargs.get("norm_compatibility")), pixel_score(*args, **kwargs))[1]
+        fusion.image_memory.score_anoco = lambda *args, **kwargs: (seen.setdefault("image", kwargs.get("norm_compatibility")), image_score(*args, **kwargs))[1]
+        fusion._anomaly_scores(query)
+        fusion._image_score_bundle(query)
+        self.assertTrue(seen["pixel"])
+        self.assertFalse(seen["image"])
+
     def test_pixel_anoco_requires_supported_fixed_fusion(self):
         with self.assertRaisesRegex(ValueError, "requires pca_knn"):
             DefectFusion(object(), anomaly_method="pca", pixel_anoco_weight=0.1)
@@ -734,7 +758,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_pixel_anoco_weight(self):
-        fusion = DefectFusion(object(), anomaly_method="pca_knn", pixel_anoco_weight=0.1, anoco_neighbors=2)
+        fusion = DefectFusion(object(), anomaly_method="pca_knn", pixel_anoco_weight=0.1, pixel_anoco_norm_compatibility=True, anoco_neighbors=2)
         normal = np.eye(5, dtype=np.float32)
         fusion.subspace.fit(normal)
         fusion.normal_memory.fit(normal).fit_anoco_calibration(neighbor_count=2)
@@ -743,6 +767,7 @@ class NormalPatchMemoryTest(unittest.TestCase):
             fusion.save(state_path)
             loaded = DefectFusion.load(state_path, object())
             self.assertEqual(loaded.pixel_anoco_weight, 0.1)
+            self.assertTrue(loaded.pixel_anoco_norm_compatibility)
             np.testing.assert_allclose(loaded.normal_memory.anoco_calibration_scores, fusion.normal_memory.anoco_calibration_scores)
 
     def test_pipeline_save_load_preserves_anoco_layer_consensus(self):

@@ -14,7 +14,6 @@ python -m defectfusion.cli evaluate-mvtec \
   --pixel-multiscale-size-override cable=672 \
   --pixel-multiscale-size-override transistor=672 \
   --pixel-multiscale-weight 0.25 \
-  --pixel-multiscale-weight-override transistor=0.15 \
   --resize-mode direct \
   --normal-augment-count 30 \
   --normal-augmentations rotate \
@@ -28,6 +27,8 @@ python -m defectfusion.cli evaluate-mvtec \
   --pixel-anoco-weight 0.35 \
   --pixel-anoco-categories cable transistor \
   --pixel-anoco-weight-override cable=0.10 \
+  --pixel-anoco-norm-compatibility \
+  --pixel-anoco-norm-compatibility-categories transistor \
   --anoco-neighbors 16 \
   --anoco-query-weight 2.0 \
   --anoco-temperature 0.07 \
