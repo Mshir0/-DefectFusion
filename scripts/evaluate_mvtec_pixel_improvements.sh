@@ -43,7 +43,7 @@ python -m defectfusion.cli evaluate-mvtec \
   --knn-chunk-size 256 \
   --knn-backend torch \
   --knn-dtype float16 \
-  --knn-spatial-radius 0.10 \
+  --knn-spatial-radius 0.15 \
   --knn-spatial-categories cable transistor \
   --map-postprocess none \
   --type-matching bidirectional_patch \
