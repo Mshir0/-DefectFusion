@@ -34,7 +34,7 @@ python -m defectfusion.cli evaluate-visa \
   --knn-weight 0.5 \
   --pixel-anoco-weight 0.10 \
   --anoco-neighbors 16 \
-  --anoco-query-weight 1.0 \
+  --anoco-query-weight 2.0 \
   --anoco-temperature 0.07 \
   --anoco-affinity softmax \
   --anoco-anchor-ranking mean \
