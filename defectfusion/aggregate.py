@@ -12,7 +12,7 @@ METRIC_FIELDS = (
     "pixel_auroc", "pixel_aupr", "pixel_aupro", "pixel_f1_max",
     "defect_type_accuracy", "defect_type_macro_precision",
     "defect_type_macro_recall", "defect_type_macro_f1",
-    "defect_type_weighted_f1",
+    "defect_type_weighted_f1", "good_accuracy",
 )
 
 MACRO_FIELDS = (
@@ -24,8 +24,9 @@ MACRO_FIELDS = (
 
 CATEGORY_LEADING_FIELDS = (
     "experiment", "dataset", "normal_shots", "defect_shots", "seed",
-    "category", "images", "good_images", "good_predicted_normal",
-    "good_predicted_anomaly", "defect_images", "pixel_metric_images",
+    "category", "images", "good_images", "good_decision_images",
+    "good_predicted_normal", "good_predicted_anomaly", "good_accuracy",
+    "defect_images", "pixel_metric_images",
     "good_decision_threshold", "good_decision_threshold_source",
     "good_decision_reference_images", *METRIC_FIELDS, "total_seconds",
     "timing_threshold_calibration_seconds", "timing_prediction_seconds",
@@ -160,13 +161,13 @@ def main(argv=None) -> int:
         print(f"[summary] warning: {warning}", file=sys.stderr)
 
     macro_rows, _, _ = collect_results(Path(args.input))
-    print("experiment\tnormal\tdefect\tI-AUROC\tP-AUROC\tPRO\tP-F1\tType-F1")
+    print("experiment\tnormal\tdefect\tI-AUROC\tP-AUROC\tPRO\tP-F1\tType-F1\tGood-Acc")
     for row in macro_rows:
         print(
             f"{row['experiment']}\t{row['normal_shots']}\t{row['defect_shots']}\t"
             f"{_format_metric(row['image_auroc'])}\t{_format_metric(row['pixel_auroc'])}\t"
             f"{_format_metric(row['pixel_aupro'])}\t{_format_metric(row['pixel_f1_max'])}\t"
-            f"{_format_metric(row['defect_type_macro_f1'])}"
+            f"{_format_metric(row['defect_type_macro_f1'])}\t{_format_metric(row['good_accuracy'])}"
         )
     print(f"[summary] {count} experiments -> {macro_path}")
     print(f"[summary] category details -> {category_path}")

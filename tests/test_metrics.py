@@ -44,6 +44,7 @@ class AuproTest(unittest.TestCase):
                 output,
                 progress=False,
                 normal_reference_images=[normal_reference],
+                decision_threshold_source="normal_validation_max",
             )
             rows = {Path(row["image"]).stem: row for row in json.loads(output.read_text(encoding="utf-8"))}
 
@@ -53,12 +54,14 @@ class AuproTest(unittest.TestCase):
         self.assertEqual(rows["good"]["prediction_correct"], True)
         self.assertEqual(rows["defect"]["predicted_label"], "anomaly")
         self.assertEqual(metrics["good_images"], 1)
+        self.assertEqual(metrics["good_decision_images"], 1)
         self.assertEqual(metrics["good_predicted_normal"], 1)
         self.assertEqual(metrics["good_predicted_anomaly"], 0)
+        self.assertEqual(metrics["good_accuracy"], 1.0)
         self.assertEqual(metrics["defect_images"], 1)
         self.assertEqual(metrics["pixel_metric_images"], 1)
         self.assertEqual(metrics["good_decision_threshold"], 0.25)
-        self.assertEqual(metrics["good_decision_threshold_source"], "normal_reference_max")
+        self.assertEqual(metrics["good_decision_threshold_source"], "normal_validation_max")
         self.assertEqual(metrics["good_decision_reference_images"], 1)
         self.assertEqual(metrics["pixel_auroc"], 1.0)
 

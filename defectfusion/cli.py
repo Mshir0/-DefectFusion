@@ -24,6 +24,48 @@ def _images(root: str, recursive: bool = True) -> list[str]:
     return sorted(str(p) for p in Path(root).glob(pattern) if p.is_file() and p.suffix.lower() in allowed)
 
 
+def _normal_validation_images(root: str, category_name: str, category_count: int) -> list[str]:
+    """Resolve an independent normal validation set for one evaluation category."""
+
+    validation_root = Path(root)
+    if not validation_root.is_dir():
+        raise ValueError(f"normal validation directory does not exist: {validation_root}")
+    category_root = validation_root / category_name
+    if category_root.is_dir():
+        source = category_root
+    elif category_count == 1 and (
+        any(path.is_file() for path in validation_root.iterdir())
+        or (validation_root / "good").is_dir()
+        or (validation_root / "val").is_dir()
+        or (validation_root / "validation").is_dir()
+    ):
+        source = validation_root
+    else:
+        raise ValueError(
+            f"normal validation images for {category_name!r} were not found under {validation_root}; "
+            f"expected {validation_root / category_name}"
+        )
+    images = _images(str(source))
+    if not images:
+        raise ValueError(f"normal validation directory contains no images for {category_name!r}: {source}")
+    return images
+
+
+def _assert_independent_validation_images(category_name: str, validation_images, training_images, test_images) -> None:
+    """Reject calibration images that are also part of training or evaluation."""
+
+    validation_paths = {str(Path(image).resolve()) for image in validation_images}
+    training_paths = {str(Path(image).resolve()) for image in training_images}
+    test_paths = {str(Path(image).resolve()) for image in test_images}
+    training_overlap = sorted(validation_paths & training_paths)
+    test_overlap = sorted(validation_paths & test_paths)
+    if training_overlap or test_overlap:
+        overlaps = training_overlap + test_overlap
+        raise ValueError(
+            f"normal validation images for {category_name!r} overlap with the training or test split: {overlaps[0]}"
+        )
+
+
 def _config(path: str | None) -> dict:
     if not path:
         return {}
@@ -151,6 +193,7 @@ def main(argv=None):
     e.add_argument("--categories", nargs="+", help="evaluate only these category names")
     e.add_argument("--prototype-dir", help="optional defect prototypes; subdirectories are defect labels")
     e.add_argument("--normal-shots", type=int, default=-1, help="normal train/good references per category; -1 uses all")
+    e.add_argument("--normal-validation-dir", help="independent normal calibration root; use ROOT/<category>/ for multi-category evaluation")
     e.add_argument("--defect-shots", "--few-shot", dest="defect_shots", type=int, default=0, help="labeled defect exemplars per defect type")
     e.add_argument("--seed", type=int, default=42, help="seed used for reproducible normal and defect sampling")
     e.add_argument("--normal-augment-count", type=int, default=None, help="augmented views per normal shot; defaults to 30 in few-shot mode")
@@ -306,6 +349,9 @@ def main(argv=None):
         is_visa = a.cmd == "evaluate-visa"
         if is_visa and not a.data_root: p.error("evaluate-visa requires --data-root")
         if not is_visa and not a.data_dir and not a.data_root: p.error("evaluate-mvtec requires --data-dir or --data-root")
+        normal_validation_dir = getattr(a, "normal_validation_dir", None) or cfg.get("normal_validation_dir")
+        if normal_validation_dir and not Path(normal_validation_dir).is_dir():
+            p.error(f"normal validation directory does not exist: {normal_validation_dir}")
         if a.normal_shots == 0 or a.normal_shots < -1: p.error("--normal-shots must be -1 or a positive integer")
         if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
         if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
@@ -350,6 +396,24 @@ def main(argv=None):
             found_categories = {category.name for category in categories}
             missing_categories = sorted(requested_categories - found_categories)
             if missing_categories: p.error(f"unknown categories: {', '.join(missing_categories)}")
+        validation_images_by_category = {}
+        if normal_validation_dir:
+            for category in categories:
+                category_name = category.name
+                validation_images = _normal_validation_images(normal_validation_dir, category_name, len(categories))
+                if is_visa:
+                    training_images = [str(path) for path in category.normal_images]
+                    test_images = [str(sample.image) for sample in category.test_samples]
+                else:
+                    training_images = _images(str(category / "train" / "good"))
+                    test_images = _images(str(category / "test"))
+                _assert_independent_validation_images(
+                    category_name,
+                    validation_images,
+                    training_images,
+                    test_images,
+                )
+                validation_images_by_category[category_name] = validation_images
         output_dir = experiment_output_dir(a.output)
         category_output_dir = output_dir / "categories"
         category_output_dir.mkdir(parents=True, exist_ok=True)
@@ -373,6 +437,13 @@ def main(argv=None):
                 normal_rng = random.Random(a.seed)
                 normal_selected = sorted(normal_rng.sample(normal_candidates, min(a.normal_shots, len(normal_candidates))))
             print(f"[normal-shots] {category_name}: {len(normal_selected)}/{len(normal_candidates)}", flush=True)
+            validation_images = validation_images_by_category.get(category_name, [])
+            decision_reference_images = validation_images or normal_selected
+            decision_threshold_source = "normal_validation_max" if validation_images else "normal_reference_max"
+            if validation_images:
+                print(f"[normal-validation] {category_name}: {len(validation_images)} independent images", flush=True)
+            else:
+                print(f"[normal-validation] {category_name}: not supplied; using selected training normals", flush=True)
             augment_count = a.normal_augment_count if a.normal_augment_count is not None else (30 if a.normal_shots != -1 else 0)
             if category_name in no_augment_categories: augment_count = 0
             category_augmentations = list(normal_augmentations)
@@ -430,7 +501,8 @@ def main(argv=None):
                     samples,
                     result_path,
                     excluded_type_images=selected,
-                    normal_reference_images=normal_selected,
+                    normal_reference_images=decision_reference_images,
+                    decision_threshold_source=decision_threshold_source,
                 )
             else:
                 metrics = evaluate_mvtec(
@@ -438,11 +510,15 @@ def main(argv=None):
                     category,
                     result_path,
                     excluded_type_images=selected,
-                    normal_reference_images=normal_selected,
+                    normal_reference_images=decision_reference_images,
+                    decision_threshold_source=decision_threshold_source,
                 )
             metrics["dataset"] = "visa" if is_visa else "mvtec"
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]
+            metrics["normal_validation_dir"] = str(Path(normal_validation_dir)) if normal_validation_dir else None
+            metrics["normal_validation_images"] = [str(Path(x)) for x in validation_images]
+            metrics["normal_validation_image_count"] = len(validation_images)
             metrics["normal_augment_count"] = augment_count
             metrics["normal_augmentations"] = category_augmentations
             metrics["normal_training_views"] = len(normal_training_images)
@@ -517,7 +593,7 @@ def main(argv=None):
             "image_auroc", "image_aupr", "image_f1_max", "pixel_auroc", "pixel_aupr",
             "pixel_aupro", "pixel_f1_max",
             "defect_type_accuracy", "defect_type_macro_precision", "defect_type_macro_recall",
-            "defect_type_macro_f1", "defect_type_weighted_f1",
+            "defect_type_macro_f1", "defect_type_weighted_f1", "good_accuracy",
         )
         macro = {}
         for name in metric_names:

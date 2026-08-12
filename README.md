@@ -61,11 +61,17 @@ The command fits only on `train/good`, writes one JSON object per test image,
 and reports Image AUROC/AUPR/F1-MAX plus Pixel AUROC/AUPR/AUPRO/F1-MAX when ground-truth
 masks are available. AUPRO follows the MVTec convention and integrates the
 per-region overlap curve over `FPR <= 0.3`.
-Each test-image record also includes `predicted_label` (`good` or `anomaly`),
-calibrated from the maximum anomaly score of the selected normal training
-images. Test `good` images are reported through this image-level decision only
-and are excluded from pixel/localization metrics; they remain negative samples
-for the aggregate image-level ranking metrics.
+Each test-image record also includes `predicted_label` (`good` or `anomaly`).
+Use `--normal-validation-dir /path/to/normal-validation` to calibrate that
+decision from an independent normal set. For a multi-category run, arrange it
+as `/path/to/normal-validation/<category>/...`; for one selected category, the
+argument may point directly to its normal-image directory. Calibration images
+must not overlap training or test images. `summary.csv` reports `good_accuracy`
+(correctly predicted normal test images divided by decided normal test images),
+plus its underlying counts. Without this option, the command remains compatible
+and uses the selected training normals, marked as `normal_reference_max` in the
+result. Test `good` images are excluded from pixel/localization metrics but
+remain negative samples for aggregate image-level ranking metrics.
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSON file per
 category. For a multi-category run, `--output` stores the final combined JSON

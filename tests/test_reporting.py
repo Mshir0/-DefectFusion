@@ -18,7 +18,8 @@ class ReportingTest(unittest.TestCase):
         metrics = [{
             "category": "bottle", "images": 10, "image_auroc": 0.9,
             "image_f1_max": 0.85, "pixel_auroc": 0.8, "pixel_f1_max": 0.75,
-            "good_images": 4, "good_predicted_normal": 3, "good_predicted_anomaly": 1,
+            "good_images": 4, "good_decision_images": 4,
+            "good_predicted_normal": 3, "good_predicted_anomaly": 1, "good_accuracy": 0.75,
             "defect_images": 6, "pixel_metric_images": 6,
             "good_decision_threshold": 0.42,
             "good_decision_threshold_source": "normal_reference_max",
@@ -41,8 +42,10 @@ class ReportingTest(unittest.TestCase):
         self.assertEqual(rows[0]["image_f1_max"], "0.85")
         self.assertEqual(rows[0]["pixel_f1_max"], "0.75")
         self.assertEqual(rows[0]["good_images"], "4")
+        self.assertEqual(rows[0]["good_decision_images"], "4")
         self.assertEqual(rows[0]["good_predicted_normal"], "3")
         self.assertEqual(rows[0]["good_predicted_anomaly"], "1")
+        self.assertEqual(rows[0]["good_accuracy"], "0.75")
         self.assertEqual(rows[0]["pixel_metric_images"], "6")
         self.assertEqual(rows[0]["good_decision_threshold"], "0.42")
         self.assertEqual(rows[0]["good_decision_threshold_source"], "normal_reference_max")

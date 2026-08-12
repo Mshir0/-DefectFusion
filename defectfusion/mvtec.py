@@ -186,8 +186,8 @@ def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
 
-def _normal_reference_threshold(fusion, normal_reference_images):
-    """Return a decision threshold from normal training-reference images.
+def _normal_reference_threshold(fusion, normal_reference_images, source):
+    """Return a decision threshold from independent normal reference images.
 
     Image-level AUROC and related ranking metrics do not need a threshold, but
     a per-image ``good``/``anomaly`` result does.  Calibrating from the normal
@@ -206,7 +206,7 @@ def _normal_reference_threshold(fusion, normal_reference_images):
         if not np.isfinite(score):
             raise ValueError(f"Normal reference produced a non-finite anomaly score: {image}")
         scores.append(score)
-    return max(scores), "normal_reference_max", len(scores), time.perf_counter() - started
+    return max(scores), source, len(scores), time.perf_counter() - started
 
 
 def evaluate_samples(
@@ -219,15 +219,17 @@ def evaluate_samples(
     excluded_images=None,
     excluded_type_images=None,
     normal_reference_images=None,
+    decision_threshold_source="normal_reference_max",
 ):
     """Evaluate image/mask records shared by MVTec AD and VisA."""
     excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
     excluded_type_images = {str(Path(p).resolve()) for p in (excluded_type_images or [])}
     rows, image_y, image_s, pixel_masks, pixel_maps = [], [], [], [], []
     started = time.perf_counter()
-    decision_threshold, decision_threshold_source, reference_count, threshold_seconds = _normal_reference_threshold(
+    decision_threshold, resolved_threshold_source, reference_count, threshold_seconds = _normal_reference_threshold(
         fusion,
         normal_reference_images,
+        decision_threshold_source,
     )
     prediction_seconds = 0.0
     pixel_preparation_seconds = 0.0
@@ -246,7 +248,7 @@ def evaluate_samples(
                 "predicted_label": "unavailable",
                 "prediction_correct": None,
                 "decision_threshold": None,
-                "decision_threshold_source": decision_threshold_source,
+                "decision_threshold_source": resolved_threshold_source,
             })
         else:
             predicted_anomaly = float(result["anomaly_score"]) > decision_threshold
@@ -255,7 +257,7 @@ def evaluate_samples(
                 "predicted_label": "anomaly" if predicted_anomaly else "good",
                 "prediction_correct": predicted_anomaly == bool(truth),
                 "decision_threshold": decision_threshold,
-                "decision_threshold_source": decision_threshold_source,
+                "decision_threshold_source": resolved_threshold_source,
             })
         # Good images only receive an image-level normal/anomaly decision.
         # Pixel metrics are based solely on defective samples with masks.
@@ -276,20 +278,25 @@ def evaluate_samples(
     output.write_text(json.dumps(rows, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     output_seconds = time.perf_counter() - output_started
     good_rows = [row for row in rows if not row["ground_truth_anomaly"]]
+    good_decision_rows = [row for row in good_rows if row["predicted_anomaly"] is not None]
+    good_predicted_normal = sum(row["predicted_label"] == "good" for row in good_decision_rows)
     defect_rows = [row for row in rows if row["ground_truth_anomaly"]]
     metrics = {
         "category": category,
         "images": len(rows),
         "good_images": len(good_rows),
-        "good_predicted_normal": sum(row["predicted_label"] == "good" for row in good_rows),
-        "good_predicted_anomaly": sum(row["predicted_label"] == "anomaly" for row in good_rows),
+        "good_decision_images": len(good_decision_rows),
+        "good_predicted_normal": good_predicted_normal,
+        "good_predicted_anomaly": sum(row["predicted_label"] == "anomaly" for row in good_decision_rows),
         "defect_images": len(defect_rows),
         "pixel_metric_images": len(pixel_masks),
         "good_decision_threshold": decision_threshold,
-        "good_decision_threshold_source": decision_threshold_source,
+        "good_decision_threshold_source": resolved_threshold_source,
         "good_decision_reference_images": reference_count,
         "results": str(output),
     }
+    if good_decision_rows:
+        metrics["good_accuracy"] = good_predicted_normal / len(good_decision_rows)
     metrics_started = time.perf_counter()
     if len(set(image_y)) > 1:
         metrics["image_auroc"], metrics["image_aupr"], metrics["image_f1_max"] = compute_binary_metrics(image_y, image_s)
@@ -333,6 +340,7 @@ def evaluate_mvtec(
     excluded_images=None,
     excluded_type_images=None,
     normal_reference_images=None,
+    decision_threshold_source="normal_reference_max",
 ):
     """Evaluate a fitted model on one MVTec category and write JSON predictions."""
     root = Path(category_dir)
@@ -352,4 +360,5 @@ def evaluate_mvtec(
         excluded_images=excluded_images,
         excluded_type_images=excluded_type_images,
         normal_reference_images=normal_reference_images,
+        decision_threshold_source=decision_threshold_source,
     )

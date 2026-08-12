@@ -32,6 +32,7 @@ class AggregateResultsTest(unittest.TestCase):
             "macro_average": {
                 "image_auroc": 0.95,
                 "pixel_auroc": 0.96,
+                "good_accuracy": 0.8,
                 "future_metric": 0.97,
             },
             "categories": categories,
@@ -48,6 +49,7 @@ class AggregateResultsTest(unittest.TestCase):
         self.assertEqual(macro[0]["images"], 30)
         self.assertEqual(macro[0]["total_seconds"], 8.0)
         self.assertEqual(macro[0]["peak_memory_bytes"], 2000)
+        self.assertEqual(macro[0]["good_accuracy"], 0.8)
         self.assertEqual(macro[0]["future_metric"], 0.97)
         self.assertEqual(categories[0]["timing_prediction_seconds"], 2.0)
 

@@ -11,7 +11,8 @@ def experiment_output_dir(output: str) -> Path:
 
 def write_metrics_csv(path: Path, category_metrics: list[dict], macro: dict) -> None:
     fields = [
-        "category", "images", "good_images", "good_predicted_normal", "good_predicted_anomaly",
+        "category", "images", "good_images", "good_decision_images", "good_predicted_normal",
+        "good_predicted_anomaly", "good_accuracy",
         "defect_images", "pixel_metric_images", "good_decision_threshold",
         "good_decision_threshold_source", "good_decision_reference_images",
         "image_auroc", "image_aupr", "image_f1_max",
