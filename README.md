@@ -123,6 +123,23 @@ Results are written to `outputs/mvtec-gaussian-ablation/<category>/none`,
 combined `comparison.csv`. Compare Pixel AUPR and AUPRO; image-level metrics
 should remain unchanged because map post-processing does not change image scores.
 
+To make the same single-category comparison with RGB-guided DenseCRF, install
+the optional dependency and run:
+
+```bash
+python -m pip install -e '.[crf]'
+bash scripts/compare_mvtec_crf.sh
+
+# Optional category override.
+CATEGORY=screw bash scripts/compare_mvtec_crf.sh
+```
+
+The default category is `leather`. Results are written to
+`outputs/mvtec-crf-ablation/<category>/none`,
+`outputs/mvtec-crf-ablation/<category>/crf`, and the combined
+`comparison.csv`. DenseCRF only refines the pixel anomaly map, so image scores,
+normal/defect decisions, and image-level metrics should be identical.
+
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSON file per
 category. For a multi-category run, `--output` stores the final combined JSON
