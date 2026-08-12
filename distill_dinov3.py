@@ -17,11 +17,10 @@ Example::
         --output outputs/dinov3-vit-s-distilled \
         --epochs 10 --adaptation lora
 
-Each selected category gets its own output directory containing
-``student_base`` (the untouched HF model), an adapter/projection checkpoint,
-processor files, a JSON training log, and ``student_merged``.  The latter is a
-standard Hugging Face model directory that can be passed directly to
-DefectFusion's existing ``--model`` option.
+Each selected category gets its own output directory containing a lightweight
+LoRA adapter, a JSON training configuration, and a JSON training log. Original
+ViT-S weights are never copied into the output directory. Automatic evaluation
+reloads ``--student-model`` and attaches the saved adapter.
 """
 
 from __future__ import annotations
@@ -601,15 +600,6 @@ class LoRALinear(nn.Module):
     def forward(self, inputs: Tensor) -> Tensor:
         return self.base(inputs) + self.lora_B(self.dropout(self.lora_A(inputs))) * self.scaling
 
-    def merge(self) -> None:
-        """Merge the adapter into the base weight for zero-overhead inference."""
-
-        with torch.no_grad():
-            delta = self.lora_B.weight @ self.lora_A.weight
-            self.base.weight.add_(delta.to(self.base.weight) * self.scaling)
-            self.lora_B.weight.zero_()
-
-
 _QKV_LEAF_NAMES = {"qkv", "q_proj", "k_proj", "v_proj", "query", "key", "value"}
 
 
@@ -666,20 +656,6 @@ def inject_lora(
     return injected
 
 
-def _unfreeze_last_blocks(model: nn.Module, last_n_blocks: int) -> list[str]:
-    total_blocks = int(getattr(getattr(model, "config", None), "num_hidden_layers", last_n_blocks) or last_n_blocks)
-    cutoff = max(0, total_blocks - int(last_n_blocks))
-    changed = []
-    for name, parameter in model.named_parameters():
-        block = _module_block_index(name)
-        if block is not None and block >= cutoff:
-            parameter.requires_grad_(True)
-            changed.append(name)
-    if not changed:
-        raise RuntimeError("Could not identify transformer blocks for local fine-tuning")
-    return changed
-
-
 def configure_student_trainable(
     model: nn.Module,
     adaptation: str = "lora",
@@ -688,21 +664,12 @@ def configure_student_trainable(
     lora_alpha: float = 16.0,
     lora_dropout: float = 0.05,
 ) -> list[str]:
-    """Freeze the backbone and enable LoRA or final-block parameters + norms."""
+    """Freeze ViT-S and enable only LoRA weights for adapter-only export."""
 
-    if adaptation not in {"lora", "local"}:
-        raise ValueError("adaptation must be 'lora' or 'local'")
+    if adaptation != "lora":
+        raise ValueError("Only LoRA adaptation supports the adapter-only output format")
     model.requires_grad_(False)
-    if adaptation == "lora":
-        adapted = inject_lora(model, lora_rank, lora_alpha, lora_dropout, last_n_blocks)
-    else:
-        adapted = _unfreeze_last_blocks(model, last_n_blocks)
-    # LayerNorm affine parameters are cheap and stabilize few-shot adaptation.
-    for module in model.modules():
-        if isinstance(module, nn.LayerNorm):
-            for parameter in module.parameters():
-                parameter.requires_grad_(True)
-    return adapted
+    return inject_lora(model, lora_rank, lora_alpha, lora_dropout, last_n_blocks)
 
 
 class DistillationStudent(nn.Module):
@@ -929,6 +896,10 @@ def _count_parameters(model: nn.Module) -> tuple[int, int]:
     return int(total), int(trainable)
 
 
+def _lora_parameter_count(backbone: nn.Module) -> int:
+    return int(sum(parameter.numel() for name, parameter in backbone.named_parameters() if "lora_" in name))
+
+
 def _json_default(value):
     if isinstance(value, Path):
         return str(value)
@@ -939,100 +910,88 @@ def _json_default(value):
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
-def save_student_checkpoint(
-    output_dir: str | Path,
-    student: DistillationStudent,
-    processor,
-    config: dict,
-    teacher_centroid: Tensor,
-    student_centroid: Tensor,
-    epoch: int = 0,
-    metrics: dict | None = None,
-    save_base_model: bool = True,
-) -> Path:
-    """Save adapter/projection state, metadata, centroids, and optional base HF model."""
+def save_lora_adapter(output_dir: str | Path, student: DistillationStudent, config: dict) -> Path:
+    """Save only LoRA tensors; ViT-S, LayerNorm, and projection weights are not exported."""
 
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    base_dir = root / "student_base"
-    if save_base_model and not base_dir.exists():
-        try:
-            student.backbone.save_pretrained(base_dir)
-        except Exception as exc:  # pragma: no cover - depends on HF wrapper
-            warnings.warn(f"Could not save student_base via save_pretrained: {exc}", RuntimeWarning)
-            torch.save({k: v.detach().cpu() for k, v in student.backbone.state_dict().items()}, root / "student_base_state.pt")
-    try:
-        processor.save_pretrained(root / "processor")
-    except Exception as exc:  # pragma: no cover - custom processors
-        warnings.warn(f"Could not save processor: {exc}", RuntimeWarning)
-    trainable_state = {name: parameter.detach().cpu() for name, parameter in student.named_parameters() if parameter.requires_grad}
-    checkpoint = {
-        "format": 1,
-        "epoch": int(epoch),
-        "student_state": trainable_state,
-        "teacher_centroid": teacher_centroid.detach().cpu(),
-        "student_centroid": student_centroid.detach().cpu(),
-        "config": config,
-        "metrics": metrics or {},
+    lora_state = {
+        name: parameter.detach().cpu()
+        for name, parameter in student.backbone.named_parameters()
+        if "lora_" in name
     }
-    path = root / "distill_checkpoint.pt"
-    torch.save(checkpoint, path)
-    (root / "training_config.json").write_text(json.dumps(config, ensure_ascii=True, indent=2, default=_json_default) + "\n", encoding="utf-8")
+    if not lora_state:
+        raise RuntimeError("No LoRA parameters were found to save")
+    path = root / "lora_adapter.pt"
+    torch.save({"format": 1, "adapter_type": "lora", "lora_state": lora_state}, path)
+    (root / "training_config.json").write_text(
+        json.dumps(config, ensure_ascii=True, indent=2, default=_json_default) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
-def export_merged_student(
-    output_dir: str | Path,
-    student: DistillationStudent,
-    processor,
-) -> Path:
-    """Merge LoRA branches and export a standard Hugging Face backbone."""
-
-    targets = [name for name, module in student.backbone.named_modules() if isinstance(module, LoRALinear)]
-    # Replace deepest children first so dotted parent lookups remain valid.
-    for name in sorted(targets, key=lambda value: value.count("."), reverse=True):
-        module = student.backbone.get_submodule(name)
-        if not isinstance(module, LoRALinear):
-            continue
-        module.merge()
-        _set_submodule(student.backbone, name, module.base)
-    destination = Path(output_dir) / "student_merged"
-    destination.mkdir(parents=True, exist_ok=True)
-    student.backbone.save_pretrained(destination)
-    processor.save_pretrained(destination)
-    return destination
+def _adapter_config(adapter_path: str | Path) -> dict:
+    config_path = Path(adapter_path).parent / "training_config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"LoRA adapter configuration does not exist: {config_path}")
+    return json.loads(config_path.read_text(encoding="utf-8"))
 
 
-def load_student_checkpoint(checkpoint_dir: str | Path, device: str | torch.device | None = None) -> DistillationStudent:
-    """Reconstruct a student from ``save_student_checkpoint`` output."""
+def load_lora_adapter_into_backbone(
+    backbone: nn.Module,
+    adapter_path: str | Path,
+    config: dict | None = None,
+    base_model: str | Path | None = None,
+) -> dict:
+    """Inject a saved LoRA adapter into a freshly loaded compatible ViT-S."""
 
-    from transformers import AutoModel
-
-    root = Path(checkpoint_dir)
-    checkpoint = torch.load(root / "distill_checkpoint.pt", map_location="cpu")
-    config = checkpoint["config"]
-    base_dir = root / "student_base"
-    if base_dir.is_dir():
-        backbone = AutoModel.from_pretrained(base_dir)
-    else:
-        backbone = AutoModel.from_pretrained(config["student_model"])
-        fallback = root / "student_base_state.pt"
-        if fallback.is_file():
-            backbone.load_state_dict(torch.load(fallback, map_location="cpu"))
-    if config.get("adaptation") == "lora":
-        inject_lora(
-            backbone,
-            rank=int(config["lora_rank"]),
-            alpha=float(config["lora_alpha"]),
-            dropout=float(config["lora_dropout"]),
-            last_n_blocks=int(config["last_n_blocks"]),
-            target_names=config.get("lora_targets"),
+    path = Path(adapter_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"LoRA adapter does not exist: {path}")
+    adapter_config = config or _adapter_config(path)
+    if adapter_config.get("adaptation") != "lora":
+        raise ValueError("The adapter configuration is not a LoRA run")
+    if base_model is not None and str(adapter_config.get("student_model")) != str(base_model):
+        raise ValueError(
+            "LoRA adapter was trained for a different student model: "
+            f"expected {adapter_config.get('student_model')!r}, got {str(base_model)!r}"
         )
-    pairs = tuple(tuple(pair) for pair in config["layer_pairs"])
-    student = DistillationStudent(backbone, pairs, int(config["teacher_dim"]), int(config["student_dim"]))
-    student.load_state_dict(checkpoint["student_state"], strict=False)
-    target = torch.device(device) if device is not None else _device(None)
-    return student.to(target).eval()
+    targets = adapter_config.get("lora_targets")
+    if not targets:
+        raise ValueError("The adapter configuration does not list LoRA target modules")
+    try:
+        base_device = next(backbone.parameters()).device
+    except StopIteration:  # pragma: no cover - Hugging Face backbones have parameters
+        base_device = torch.device("cpu")
+    inject_lora(
+        backbone,
+        rank=int(adapter_config["lora_rank"]),
+        alpha=float(adapter_config["lora_alpha"]),
+        dropout=float(adapter_config["lora_dropout"]),
+        last_n_blocks=int(adapter_config["last_n_blocks"]),
+        target_names=targets,
+    )
+    checkpoint = torch.load(path, map_location="cpu")
+    if checkpoint.get("adapter_type") != "lora" or not isinstance(checkpoint.get("lora_state"), dict):
+        raise ValueError(f"Unsupported LoRA adapter format: {path}")
+    lora_state = checkpoint["lora_state"]
+    expected = {name for name, _parameter in backbone.named_parameters() if "lora_" in name}
+    missing = sorted(expected - set(lora_state))
+    unexpected = sorted(set(lora_state) - expected)
+    if missing or unexpected:
+        detail = []
+        if missing:
+            detail.append("missing=" + ", ".join(missing))
+        if unexpected:
+            detail.append("unexpected=" + ", ".join(unexpected))
+        raise ValueError("LoRA adapter does not match the requested ViT-S: " + "; ".join(detail))
+    backbone.load_state_dict(lora_state, strict=False)
+    # LoRA modules are constructed on CPU. Keep an already-loaded CUDA model
+    # on its original device before the evaluator starts feature extraction.
+    backbone.to(base_device)
+    backbone.requires_grad_(False)
+    return adapter_config
 
 
 def set_seed(seed: int) -> None:
@@ -1090,7 +1049,7 @@ def evaluate_distilled_students(
     output_root: str | Path,
     groups: dict[str, list[ImageRecord]],
 ) -> dict:
-    """Evaluate merged students with the existing DefectFusion metric pipeline.
+    """Evaluate LoRA-adapted students with the existing DefectFusion metric pipeline.
 
     The evaluator intentionally delegates AUROC, AUPR, F1-max, and AUPRO to
     ``defectfusion.mvtec``.  This keeps the generated JSON/CSV layout and all
@@ -1118,12 +1077,16 @@ def evaluate_distilled_students(
         normal_paths = [record.image_path for record in records if not record.is_anomaly]
         if not normal_paths:
             raise ValueError(f"{args.dataset}/{category_name} has no normal images for evaluation")
-        model_dir = output_root / category_name / "student_merged"
-        if not model_dir.is_dir():
-            raise FileNotFoundError(f"Merged student model does not exist: {model_dir}")
-        print(f"[evaluate] {args.dataset}/{category_name}: normal={len(normal_paths)} model={model_dir}", flush=True)
+        adapter_path = output_root / category_name / "lora_adapter.pt"
+        if not adapter_path.is_file():
+            raise FileNotFoundError(f"LoRA adapter does not exist: {adapter_path}")
+        print(
+            f"[evaluate] {args.dataset}/{category_name}: normal={len(normal_paths)} "
+            f"base={args.student_model} adapter={adapter_path}",
+            flush=True,
+        )
         extractor = DinoFeatureExtractor(
-            str(model_dir),
+            str(args.student_model),
             image_size=args.eval_image_size,
             resize_mode=args.eval_resize_mode,
             device=args.device,
@@ -1131,6 +1094,8 @@ def evaluate_distilled_students(
             layer_aggregation=args.eval_layer_aggregation,
             layer_normalization=args.eval_layer_normalization,
         )
+        load_lora_adapter_into_backbone(extractor.model, adapter_path, base_model=args.student_model)
+        extractor.model.eval()
         fusion = DefectFusion(
             extractor,
             top_k_ratio=args.eval_top_k_ratio,
@@ -1174,7 +1139,8 @@ def evaluate_distilled_students(
                 "defect_shots": args.defect_shots,
                 "defect_shot_images": [str(Path(path)) for path in excluded],
                 "seed": args.seed,
-                "model": str(model_dir),
+                "model": str(args.student_model),
+                "lora_adapter": str(adapter_path),
                 "feature_layers": list(_parse_layers(args.eval_feature_layers)),
                 "image_size": args.eval_image_size,
                 "resize_mode": args.eval_resize_mode,
@@ -1245,10 +1211,6 @@ def _train_records(
             raise ValueError(
                 f"--image-size ({args.image_size}) must be divisible by the {name} patch size ({patch_size})"
             )
-    # Save the pristine base before LoRA changes module names.
-    student_backbone.save_pretrained(output_dir / "student_base")
-    student_processor.save_pretrained(output_dir / "processor")
-
     layer_pairs = resolve_layer_pairs(
         teacher,
         student_backbone,
@@ -1285,6 +1247,7 @@ def _train_records(
     scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
     history = []
     total_params, trainable_params = _count_parameters(student)
+    lora_params = _lora_parameter_count(student.backbone)
 
     for epoch in range(1, int(args.epochs) + 1):
         student.train()
@@ -1346,13 +1309,30 @@ def _train_records(
         print(json.dumps(epoch_metrics, ensure_ascii=True, sort_keys=True), flush=True)
         if args.save_every > 0 and epoch % args.save_every == 0:
             epoch_config = _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_targets)
-            save_student_checkpoint(output_dir / f"epoch-{epoch:04d}", student, student_processor, epoch_config, teacher_centroid, student_centroid, epoch=epoch, metrics=epoch_metrics, save_base_model=False)
+            epoch_config.update({"epoch": epoch, "metrics": epoch_metrics})
+            save_lora_adapter(output_dir / f"epoch-{epoch:04d}", student, epoch_config)
 
     config = _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_targets)
-    config.update({"total_parameters": total_params, "trainable_parameters": trainable_params, "history": history})
-    checkpoint = save_student_checkpoint(output_dir, student, student_processor, config, teacher_centroid, student_centroid, epoch=int(args.epochs), metrics=history[-1])
-    merged_model = export_merged_student(output_dir, student, student_processor)
-    summary = {"checkpoint": str(checkpoint), "merged_model": str(merged_model), "output": str(output_dir), "total_parameters": total_params, "trainable_parameters": trainable_params, "history": history, "normal_images": len(normal_paths), "defect_images": sum(record.is_anomaly for record in records)}
+    config.update(
+        {
+            "total_parameters": total_params,
+            "trainable_parameters": trainable_params,
+            "lora_parameters": lora_params,
+            "history": history,
+        }
+    )
+    config.update({"epoch": int(args.epochs), "metrics": history[-1]})
+    adapter = save_lora_adapter(output_dir, student, config)
+    summary = {
+        "lora_adapter": str(adapter),
+        "output": str(output_dir),
+        "total_parameters": total_params,
+        "trainable_parameters": trainable_params,
+        "lora_parameters": lora_params,
+        "history": history,
+        "normal_images": len(normal_paths),
+        "defect_images": sum(record.is_anomaly for record in records),
+    }
     (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=True, indent=2, default=_json_default) + "\n", encoding="utf-8")
     return summary
 
@@ -1456,7 +1436,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--feature-layers", default=",".join(str(x) for x in DEFAULT_FEATURE_LAYERS))
     parser.add_argument("--teacher-layers")
     parser.add_argument("--student-layers")
-    parser.add_argument("--adaptation", choices=("lora", "local"), default="lora")
+    parser.add_argument("--adaptation", choices=("lora",), default="lora", help="LoRA is required because only adapter weights are exported")
     parser.add_argument("--last-n-blocks", type=int, default=4)
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--lora-alpha", type=float, default=16.0)
@@ -1477,10 +1457,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--save-every", type=int, default=0, help="also save epoch checkpoints; 0 saves only the final checkpoint")
+    parser.add_argument("--save-every", type=int, default=0, help="also save epoch LoRA adapters; 0 saves only the final adapter")
 
     evaluation = parser.add_argument_group("post-training evaluation")
-    evaluation.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True, help="evaluate each merged student with DefectFusion after training")
+    evaluation.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True, help="evaluate each LoRA-adapted student with DefectFusion after training")
     evaluation.add_argument("--eval-image-size", type=int, default=None, help="detector input size; defaults to --image-size")
     evaluation.add_argument("--eval-feature-layers", default=None, help="student hidden states used by the detector; defaults to --feature-layers")
     evaluation.add_argument("--eval-resize-mode", choices=("direct", "longest_pad"), default="direct")

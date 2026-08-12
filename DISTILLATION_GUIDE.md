@@ -9,9 +9,11 @@ calls the existing DefectFusion evaluator so metric definitions stay identical.
 
 The script freezes a DINOv3 ViT-B teacher and adapts one DINOv3 ViT-S student
 per selected category. It uses hidden states 1, 6, and 12 for patch-feature
-distillation, anomaly-map distillation, QKV LoRA in the final four blocks, and
-trainable LayerNorm/projection parameters. After every MVTec/VisA run it also
-evaluates the merged student with the project's existing DefectFusion
+distillation, anomaly-map distillation, and QKV LoRA in the final four blocks.
+The ViT-S base and its LayerNorms remain frozen. Projection heads exist only
+while computing the training loss and are discarded after training. After every
+MVTec/VisA run, the script reloads the original ViT-S checkpoint, attaches the
+saved LoRA adapter, and evaluates it with the project's existing DefectFusion
 evaluator. This reports the same image-level AUROC/AUPR/F1-max and pixel-level
 AUROC/AUPR/AUPRO/F1-max metrics as `evaluate-mvtec` and `evaluate-visa`.
 
@@ -122,10 +124,7 @@ Each category is trained independently:
 ```text
 outputs/mvtec-distilled/
   bottle/
-    student_base/
-    processor/
-    distill_checkpoint.pt
-    student_merged/
+    lora_adapter.pt
     training_config.json
     summary.json
   cable/
@@ -137,25 +136,24 @@ outputs/mvtec-distilled/
   summary.json
 ```
 
-`student_merged/` is a standard Hugging Face model with LoRA weights merged.
-The automatic `evaluation/` directory uses the same JSON and CSV layout as the
-existing evaluator. Its detector defaults are PCA, `--eval-image-size` equal
-to the training image size, and the same selected ViT-S hidden states. Override
-them through explicit `--eval-*` flags, for example
+`lora_adapter.pt` contains only the trained LoRA matrices. It does not contain
+the ViT-S base weights, LayerNorm weights, projection heads, processor files,
+or teacher weights. Keep the original `--student-model` checkpoint available:
+automatic evaluation reloads that checkpoint and attaches each category's
+adapter in memory. `summary.json` records both `trainable_parameters` (LoRA
+plus training-only projection heads) and `lora_parameters` (the weights that
+are actually saved). The automatic `evaluation/` directory uses the same JSON
+and CSV layout as the existing evaluator. Its detector defaults are PCA,
+`--eval-image-size` equal to the training image size, and the same selected
+ViT-S hidden states. Override them through explicit `--eval-*` flags, for example
 `--eval-anomaly-method pca_knn --eval-dual-branch --eval-knn-dtype float16`.
-Use `--no-evaluate` to export a model without the post-training evaluation.
-
-The merged model can also be evaluated manually through the existing CLI:
-
-```bash
-python -m defectfusion.cli evaluate-mvtec \
-  --data-root ./datasets/mvtec_anomaly --categories bottle \
-  --model ./outputs/mvtec-distilled/bottle/student_merged \
-  --feature-layers=1,6,12 --image-size 672 --device cuda \
-  --normal-shots 8 --defect-shots 0 \
-  --dual-branch --anomaly-method pca_knn_anoco \
-  --anoco-layer-consensus --output outputs/mvtec-bottle-eval
-```
+Use `--no-evaluate` to skip post-training evaluation while retaining only the
+adapter artifact. The generic `defectfusion` CLI accepts complete Hugging Face
+models, so the adapter-only workflow uses `distill_dinov3.py`'s automatic
+post-training evaluation with the same `--student-model` used during training.
+Existing full-model artifacts from earlier runs are not deleted automatically;
+use a new `--output` directory or remove those old directories after checking
+their contents.
 
 Run `python distill_dinov3.py --help` for all LoRA, loss, precision, and
-checkpoint options.
+adapter snapshot options.

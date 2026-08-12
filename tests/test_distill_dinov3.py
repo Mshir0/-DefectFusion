@@ -22,8 +22,10 @@ from distill_dinov3 import (
     _selected_defect_paths,
     evaluate_distilled_students,
     inject_lora,
+    load_lora_adapter_into_backbone,
     masks_to_patch_weights,
     resolve_layer_pairs,
+    save_lora_adapter,
     validate_args,
 )
 
@@ -83,9 +85,13 @@ class DistillationTests(unittest.TestCase):
 
     def test_post_training_evaluation_uses_engine_output_layout(self):
         class FakeExtractor:
+            instances = []
+
             def __init__(self, model_name, **kwargs):
                 self.model_name = model_name
                 self.device = kwargs["device"]
+                self.model = TinyBackbone()
+                self.__class__.instances.append(self)
 
         class FakeFusion:
             def __init__(self, extractor, **kwargs):
@@ -107,7 +113,9 @@ class DistillationTests(unittest.TestCase):
             normal = normal_dir / "normal.png"
             Image.new("RGB", (8, 8)).save(normal)
             output = root / "output"
-            (output / "bottle" / "student_merged").mkdir(parents=True)
+            adapter = output / "bottle" / "lora_adapter.pt"
+            adapter.parent.mkdir(parents=True)
+            adapter.write_bytes(b"adapter")
             used_defect = category / "test" / "crack" / "used.png"
             used_defect.parent.mkdir(parents=True)
             Image.new("RGB", (8, 8)).save(used_defect)
@@ -133,7 +141,7 @@ class DistillationTests(unittest.TestCase):
             args = SimpleNamespace(
                 dataset="mvtec", data_root=str(root / "data"), split_csv=None,
                 categories=["bottle"], device="cpu", normal_shots=1,
-                defect_shots=1, seed=42, eval_image_size=448,
+                defect_shots=1, seed=42, student_model="base-vit-s", eval_image_size=448,
                 eval_feature_layers="1,6,12", eval_resize_mode="direct",
                 eval_layer_aggregation="mean", eval_layer_normalization="none",
                 eval_top_k_ratio=0.05, eval_image_score="mtop1p",
@@ -151,11 +159,15 @@ class DistillationTests(unittest.TestCase):
             }
             with patch("defectfusion.features.DinoFeatureExtractor", FakeExtractor), patch(
                 "defectfusion.pipeline.DefectFusion", FakeFusion
-            ), patch("defectfusion.mvtec.evaluate_mvtec", fake_evaluate_mvtec):
+            ), patch("defectfusion.mvtec.evaluate_mvtec", fake_evaluate_mvtec), patch(
+                "distill_dinov3.load_lora_adapter_into_backbone"
+            ) as load_adapter:
                 summary = evaluate_distilled_students(args, output, groups)
 
             self.assertEqual(calls["normal_paths"], [str(normal)])
             self.assertEqual(calls["excluded"], [str(used_defect)])
+            self.assertEqual(FakeExtractor.instances[0].model_name, "base-vit-s")
+            load_adapter.assert_called_once_with(FakeExtractor.instances[0].model, adapter, base_model="base-vit-s")
             self.assertAlmostEqual(summary["macro_average"]["pixel_aupro"], 0.3)
             self.assertTrue((output / "evaluation" / "results.json").is_file())
             self.assertTrue((output / "evaluation" / "summary.csv").is_file())
@@ -202,9 +214,45 @@ class DistillationTests(unittest.TestCase):
         configure_student_trainable(model, adaptation="lora", last_n_blocks=1, lora_rank=2)
 
         self.assertFalse(model.patch_embed.weight.requires_grad)
-        self.assertTrue(model.encoder.layer[0].norm.weight.requires_grad)
+        self.assertFalse(model.encoder.layer[0].norm.weight.requires_grad)
         self.assertTrue(model.encoder.layer[3].attention.query.lora_A.weight.requires_grad)
         self.assertFalse(model.encoder.layer[3].attention.query.base.weight.requires_grad)
+        with self.assertRaises(ValueError):
+            configure_student_trainable(TinyBackbone(depth=4), adaptation="local", last_n_blocks=1, lora_rank=2)
+
+    def test_adapter_artifact_contains_only_lora_tensors(self):
+        source = TinyBackbone(depth=4)
+        targets = configure_student_trainable(source, adaptation="lora", last_n_blocks=1, lora_rank=2)
+        for name, parameter in source.named_parameters():
+            if "lora_" in name:
+                parameter.data.fill_(0.125 if name.endswith("lora_A.weight") else -0.25)
+        config = {
+            "adaptation": "lora",
+            "lora_rank": 2,
+            "lora_alpha": 16.0,
+            "lora_dropout": 0.05,
+            "last_n_blocks": 1,
+            "lora_targets": targets,
+            "student_model": "tiny-vit-s",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = save_lora_adapter(root, SimpleNamespace(backbone=source), config)
+            saved = torch.load(adapter, map_location="cpu")
+            self.assertEqual(set(path.name for path in root.iterdir()), {"lora_adapter.pt", "training_config.json"})
+            self.assertTrue(saved["lora_state"])
+            self.assertTrue(all("lora_" in name for name in saved["lora_state"]))
+            self.assertFalse(any("patch_embed" in name for name in saved["lora_state"]))
+
+            restored = TinyBackbone(depth=4)
+            load_lora_adapter_into_backbone(restored, adapter, base_model="tiny-vit-s")
+            expected = dict(source.named_parameters())
+            actual = dict(restored.named_parameters())
+            for name, value in saved["lora_state"].items():
+                self.assertTrue(torch.equal(actual[name], expected[name]))
+            self.assertTrue(all(not parameter.requires_grad for parameter in restored.parameters()))
+            with self.assertRaises(ValueError):
+                load_lora_adapter_into_backbone(TinyBackbone(depth=4), adapter, base_model="wrong-vit-s")
 
     def test_layer_pair_validation_and_depth_mapping(self):
         teacher = TinyBackbone(depth=8)

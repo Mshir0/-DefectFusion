@@ -33,7 +33,7 @@ Training options:
   --device DEVICE           Torch device. Default: cuda.
   --image-size N            Training and evaluation input size. Default: 448.
   --feature-layers CSV      Hidden-state layers. Default: 1,6,12.
-  --adaptation MODE         lora or local. Default: lora.
+  --adaptation MODE         Must be lora; only LoRA weights are exported. Default: lora.
   --last-n-blocks N         Final transformer blocks adapted. Default: 4.
   --lora-rank N             LoRA rank when --adaptation lora. Default: 8.
   --seed N                  Random seed. Default: 42.
@@ -187,6 +187,10 @@ if [[ ! -d "$visa_root" ]]; then
 fi
 if [[ -n "$visa_split_csv" && ! -f "$visa_split_csv" ]]; then
   printf 'VisA split CSV does not exist: %s\n' "$visa_split_csv" >&2
+  exit 2
+fi
+if [[ "$adaptation" != "lora" ]]; then
+  printf 'Only --adaptation lora is supported because outputs contain LoRA weights only.\n' >&2
   exit 2
 fi
 
