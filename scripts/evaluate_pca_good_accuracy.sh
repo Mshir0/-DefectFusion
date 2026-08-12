@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Main DefectFusion PCA evaluation only. No distilled student model, kNN,
-# ANoCo, or dual branch is used. The validation roots calibrate good/anomaly
-# decisions and make the reported good_accuracy independent of train/test data.
+# ANoCo, or dual branch is used. Good/anomaly decisions use the selected
+# normal training images as the threshold reference.
 
 DATASET="${DATASET:-all}"
 PYTHON="${PYTHON:-python}"
@@ -19,9 +19,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/pca-good-accuracy}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
 
 MVTEC_DATA_ROOT="${MVTEC_DATA_ROOT:-/mnt/sda1/mvtec_anomaly}"
-MVTEC_NORMAL_VALIDATION_DIR="${MVTEC_NORMAL_VALIDATION_DIR:-/mnt/sda1/mvtec_normal_validation}"
 VISA_DATA_ROOT="${VISA_DATA_ROOT:-/mnt/sda1/VisA_20220922}"
-VISA_NORMAL_VALIDATION_DIR="${VISA_NORMAL_VALIDATION_DIR:-/mnt/sda1/visa_normal_validation}"
 VISA_SPLIT_CSV="${VISA_SPLIT_CSV:-}"
 
 if [[ "$DATASET" != "mvtec" && "$DATASET" != "visa" && "$DATASET" != "all" ]]; then
@@ -104,7 +102,6 @@ PY
 run_mvtec() {
   local output="$OUTPUT_ROOT/mvtec"
   require_directory MVTEC_DATA_ROOT "$MVTEC_DATA_ROOT"
-  require_directory MVTEC_NORMAL_VALIDATION_DIR "$MVTEC_NORMAL_VALIDATION_DIR"
 
   if [[ "$SKIP_COMPLETED" == "1" && -f "$output/summary.csv" ]]; then
     printf '[main-pca] skipping MVTec (complete: %s)\n' "$output/summary.csv"
@@ -115,7 +112,6 @@ run_mvtec() {
   printf '[main-pca] starting MVTec PCA evaluation for all categories\n'
   "$PYTHON" -m defectfusion.cli evaluate-mvtec \
     --data-root "$MVTEC_DATA_ROOT" \
-    --normal-validation-dir "$MVTEC_NORMAL_VALIDATION_DIR" \
     "${common_args[@]}" \
     --no-augment-categories transistor \
     --output "$output"
@@ -127,7 +123,6 @@ run_visa() {
   local output="$OUTPUT_ROOT/visa"
   local -a visa_args=()
   require_directory VISA_DATA_ROOT "$VISA_DATA_ROOT"
-  require_directory VISA_NORMAL_VALIDATION_DIR "$VISA_NORMAL_VALIDATION_DIR"
   if [[ -n "$VISA_SPLIT_CSV" ]]; then
     if [[ ! -f "$VISA_SPLIT_CSV" ]]; then
       printf 'VISA_SPLIT_CSV does not exist: %s\n' "$VISA_SPLIT_CSV" >&2
@@ -145,7 +140,6 @@ run_visa() {
   printf '[main-pca] starting VisA PCA evaluation for all categories\n'
   "$PYTHON" -m defectfusion.cli evaluate-visa \
     --data-root "$VISA_DATA_ROOT" \
-    --normal-validation-dir "$VISA_NORMAL_VALIDATION_DIR" \
     "${common_args[@]}" \
     --image-size-override macaroni2=896 \
     --image-size-override pcb2=896 \

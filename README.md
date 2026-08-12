@@ -77,7 +77,9 @@ To run the main PCA evaluator for all MVTec AD and VisA categories and print
 the normal-test decision counts plus `good_accuracy`, use
 [`scripts/evaluate_pca_good_accuracy.sh`](scripts/evaluate_pca_good_accuracy.sh).
 It retains the dataset-specific preprocessing from the existing evaluation
-scripts but does not invoke distillation, kNN, ANoCo, or the dual branch:
+scripts, uses the selected normal training images as the decision threshold
+reference (`normal_reference_max`), and does not invoke distillation, kNN,
+ANoCo, or the dual branch.
 
 ```bash
 bash scripts/evaluate_pca_good_accuracy.sh
@@ -85,7 +87,6 @@ bash scripts/evaluate_pca_good_accuracy.sh
 # Override the paths and run only VisA.
 DATASET=visa \
 VISA_DATA_ROOT=/data/VisA \
-VISA_NORMAL_VALIDATION_DIR=/data/visa_normal_validation \
 MODEL=/data/dinov3-vitl16-pretrain-lvd1689m \
 bash scripts/evaluate_pca_good_accuracy.sh
 ```
