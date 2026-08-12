@@ -90,6 +90,31 @@ using test defects is data leakage in the standard unsupervised protocol.
 If it is set above zero, the selected test images are excluded from the final
 automatic evaluation so reported metrics remain held-out.
 
+## All MVTec AD and VisA Categories
+
+`scripts/distill_all_mvtec_visa.sh` runs the standalone trainer once for each
+dataset. It deliberately omits `--categories`, so `distill_dinov3.py` discovers
+and trains every valid category sequentially, then writes one project-standard
+evaluation summary per dataset. Dataset and model paths are explicit script
+arguments; no environment variables or server-specific paths are read.
+
+```bash
+bash scripts/distill_all_mvtec_visa.sh \
+  --mvtec-root /mnt/sda1/mvtec_anomaly \
+  --visa-root /mnt/sda1/VisA_20220922 \
+  --teacher-model /mnt/sda1/DINOv3/dinov3-vitb16-pretrain-lvd1689m \
+  --student-model /mnt/sda1/DINOv3/dinov3-vits16-pretrain-lvd1689m \
+  --output-root ./outputs/dinov3-all-8shot
+```
+
+The default is the same 8-shot, 448-pixel, rank-8 LoRA configuration used by
+the focused example. Use `--normal-shots -1` to train each category with all
+available normal images. After a completed run, `--skip-completed` skips a
+dataset only when its `evaluation/results.json` exists. The results are stored
+under `./outputs/dinov3-all-8shot/mvtec/` and
+`./outputs/dinov3-all-8shot/visa/`, each with `evaluation/results.json` and
+`evaluation/summary.csv` containing the existing project's metrics.
+
 ## Outputs
 
 Each category is trained independently:
