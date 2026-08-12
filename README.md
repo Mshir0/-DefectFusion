@@ -107,6 +107,22 @@ decision accuracy, and the four confusion counts: `good_predicted_normal` (TN),
 `defect_predicted_normal` (FN). Use balanced accuracy to compare thresholds so
 that a higher normal accuracy cannot hide a loss of defect recall.
 
+To compare the raw anomaly map against Gaussian smoothing on one MVTec class,
+run the focused ablation below. It defaults to `leather` and `sigma=1.0`; both
+runs use exactly the same PCA and threshold settings.
+
+```bash
+bash scripts/compare_mvtec_gaussian.sh
+
+# Optional category and sigma overrides.
+CATEGORY=screw GAUSSIAN_SIGMA=0.5 bash scripts/compare_mvtec_gaussian.sh
+```
+
+Results are written to `outputs/mvtec-gaussian-ablation/<category>/none`,
+`outputs/mvtec-gaussian-ablation/<category>/gaussian-sigma-<sigma>`, and the
+combined `comparison.csv`. Compare Pixel AUPR and AUPRO; image-level metrics
+should remain unchanged because map post-processing does not change image scores.
+
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSON file per
 category. For a multi-category run, `--output` stores the final combined JSON
