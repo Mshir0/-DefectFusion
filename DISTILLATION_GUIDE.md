@@ -16,6 +16,9 @@ MVTec/VisA run, the script reloads the original ViT-S checkpoint, attaches the
 saved LoRA adapter, and evaluates it with the project's existing DefectFusion
 evaluator. This reports the same image-level AUROC/AUPR/F1-max and pixel-level
 AUROC/AUPR/AUPRO/F1-max metrics as `evaluate-mvtec` and `evaluate-visa`.
+It also writes a thresholded `good`/`anomaly` result for every test image. The
+threshold is the maximum score over the selected normal training images; normal
+test images are not included in pixel/localization metrics.
 
 ## Installation
 

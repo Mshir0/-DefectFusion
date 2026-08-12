@@ -61,6 +61,11 @@ The command fits only on `train/good`, writes one JSON object per test image,
 and reports Image AUROC/AUPR/F1-MAX plus Pixel AUROC/AUPR/AUPRO/F1-MAX when ground-truth
 masks are available. AUPRO follows the MVTec convention and integrates the
 per-region overlap curve over `FPR <= 0.3`.
+Each test-image record also includes `predicted_label` (`good` or `anomaly`),
+calibrated from the maximum anomaly score of the selected normal training
+images. Test `good` images are reported through this image-level decision only
+and are excluded from pixel/localization metrics; they remain negative samples
+for the aggregate image-level ranking metrics.
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSON file per
 category. For a multi-category run, `--output` stores the final combined JSON
@@ -141,7 +146,8 @@ columns, fits each object only on normal training rows, and evaluates the test
 rows with their listed masks. Without a root split CSV, it discovers each
 category's `Data` directory and pairs anomaly images and masks by filename stem;
 selected normal shots are excluded from the normal test pool. Output layout and
-metrics match MVTec evaluation.
+metrics match MVTec evaluation, including the per-image `good`/`anomaly`
+decision and the exclusion of normal test images from pixel metrics.
 
 Aggregate every completed experiment under `outputs` with:
 

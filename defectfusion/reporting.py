@@ -11,7 +11,10 @@ def experiment_output_dir(output: str) -> Path:
 
 def write_metrics_csv(path: Path, category_metrics: list[dict], macro: dict) -> None:
     fields = [
-        "category", "images", "image_auroc", "image_aupr", "image_f1_max",
+        "category", "images", "good_images", "good_predicted_normal", "good_predicted_anomaly",
+        "defect_images", "pixel_metric_images", "good_decision_threshold",
+        "good_decision_threshold_source", "good_decision_reference_images",
+        "image_auroc", "image_aupr", "image_f1_max",
         "pixel_auroc", "pixel_aupr", "pixel_aupro", "pixel_f1_max", "defect_type_accuracy",
         "defect_type_macro_precision", "defect_type_macro_recall", "defect_type_macro_f1",
         "defect_type_weighted_f1", "total_seconds", "memory_patch_count", "memory_bytes",

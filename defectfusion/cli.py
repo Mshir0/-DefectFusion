@@ -424,9 +424,22 @@ def main(argv=None):
             result_path = category_output_dir / f"{category_name}.json"
             if is_visa:
                 samples = [(x.image, x.defect_type, x.anomalous, x.mask) for x in category.test_samples]
-                metrics = evaluate_samples(fusion, category_name, samples, result_path, excluded_type_images=selected)
+                metrics = evaluate_samples(
+                    fusion,
+                    category_name,
+                    samples,
+                    result_path,
+                    excluded_type_images=selected,
+                    normal_reference_images=normal_selected,
+                )
             else:
-                metrics = evaluate_mvtec(fusion, category, result_path, excluded_type_images=selected)
+                metrics = evaluate_mvtec(
+                    fusion,
+                    category,
+                    result_path,
+                    excluded_type_images=selected,
+                    normal_reference_images=normal_selected,
+                )
             metrics["dataset"] = "visa" if is_visa else "mvtec"
             metrics["normal_shots"] = a.normal_shots
             metrics["normal_shot_images"] = [str(Path(x)) for x in normal_selected]

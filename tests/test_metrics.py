@@ -6,10 +6,62 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from defectfusion.mvtec import compute_aupro, compute_binary_auroc_aupr, compute_binary_metrics, evaluate_mvtec
+from defectfusion.mvtec import compute_aupro, compute_binary_auroc_aupr, compute_binary_metrics, evaluate_mvtec, evaluate_samples
 
 
 class AuproTest(unittest.TestCase):
+    def test_good_samples_get_a_thresholded_decision_without_pixel_metrics(self):
+        class Fusion:
+            scores = {"normal-reference": 0.25, "good": 0.20, "defect": 0.80}
+
+            def predict(self, image):
+                score = self.scores[Path(image).stem]
+                anomaly_map = np.array([[0.0, 0.0], [0.0, 0.0]], dtype=np.float32)
+                if Path(image).stem == "defect":
+                    anomaly_map[0, 0] = 1.0
+                return {
+                    "image": image,
+                    "anomaly_score": score,
+                    "anomaly_map": anomaly_map.tolist(),
+                    "defect_type": "unknown",
+                    "defect_type_score": 0.0,
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normal_reference = root / "normal-reference.png"
+            good = root / "good.png"
+            defect = root / "defect.png"
+            mask = root / "defect_mask.png"
+            for image in (normal_reference, good, defect):
+                Image.new("RGB", (2, 2)).save(image)
+            Image.fromarray(np.array([[255, 0], [0, 0]], dtype=np.uint8)).save(mask)
+            output = root / "results.json"
+            metrics = evaluate_samples(
+                Fusion(),
+                "bottle",
+                [(good, "good", False, None), (defect, "crack", True, mask)],
+                output,
+                progress=False,
+                normal_reference_images=[normal_reference],
+            )
+            rows = {Path(row["image"]).stem: row for row in json.loads(output.read_text(encoding="utf-8"))}
+
+        self.assertEqual(rows["good"]["ground_truth_anomaly"], False)
+        self.assertEqual(rows["good"]["predicted_anomaly"], False)
+        self.assertEqual(rows["good"]["predicted_label"], "good")
+        self.assertEqual(rows["good"]["prediction_correct"], True)
+        self.assertEqual(rows["defect"]["predicted_label"], "anomaly")
+        self.assertEqual(metrics["good_images"], 1)
+        self.assertEqual(metrics["good_predicted_normal"], 1)
+        self.assertEqual(metrics["good_predicted_anomaly"], 0)
+        self.assertEqual(metrics["defect_images"], 1)
+        self.assertEqual(metrics["pixel_metric_images"], 1)
+        self.assertEqual(metrics["good_decision_threshold"], 0.25)
+        self.assertEqual(metrics["good_decision_threshold_source"], "normal_reference_max")
+        self.assertEqual(metrics["good_decision_reference_images"], 1)
+        self.assertEqual(metrics["pixel_auroc"], 1.0)
+
     def test_evaluation_writes_json_array_not_jsonl(self):
         class Fusion:
             def predict(self, image):

@@ -1121,6 +1121,7 @@ def evaluate_distilled_students(
                 category_dir,
                 result_path,
                 excluded_images=excluded,
+                normal_reference_images=normal_paths,
             )
         else:
             samples = [(sample.image, sample.defect_type, sample.anomalous, sample.mask) for sample in category.test_samples]
@@ -1130,6 +1131,7 @@ def evaluate_distilled_students(
                 samples,
                 result_path,
                 excluded_images=excluded,
+                normal_reference_images=normal_paths,
             )
         metrics.update(
             {

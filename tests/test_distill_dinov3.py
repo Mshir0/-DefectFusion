@@ -124,6 +124,7 @@ class DistillationTests(unittest.TestCase):
             def fake_evaluate_mvtec(fusion, category_dir, result_path, **kwargs):
                 calls["normal_paths"] = fusion.normal_paths
                 calls["excluded"] = kwargs["excluded_images"]
+                calls["normal_reference_images"] = kwargs["normal_reference_images"]
                 Path(result_path).write_text("[]\n", encoding="utf-8")
                 return {
                     "category": Path(category_dir).name,
@@ -166,6 +167,7 @@ class DistillationTests(unittest.TestCase):
 
             self.assertEqual(calls["normal_paths"], [str(normal)])
             self.assertEqual(calls["excluded"], [str(used_defect)])
+            self.assertEqual(calls["normal_reference_images"], [str(normal)])
             self.assertEqual(FakeExtractor.instances[0].model_name, "base-vit-s")
             load_adapter.assert_called_once_with(FakeExtractor.instances[0].model, adapter, base_model="base-vit-s")
             self.assertAlmostEqual(summary["macro_average"]["pixel_aupro"], 0.3)

@@ -186,6 +186,29 @@ def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
 
+def _normal_reference_threshold(fusion, normal_reference_images):
+    """Return a decision threshold from normal training-reference images.
+
+    Image-level AUROC and related ranking metrics do not need a threshold, but
+    a per-image ``good``/``anomaly`` result does.  Calibrating from the normal
+    images used to fit the detector avoids using test labels for that decision.
+    """
+
+    references = [Path(image) for image in (normal_reference_images or [])]
+    if not references:
+        return None, "unavailable", 0, 0.0
+
+    started = time.perf_counter()
+    scores = []
+    for image in references:
+        result = fusion.predict(str(image))
+        score = float(result["anomaly_score"])
+        if not np.isfinite(score):
+            raise ValueError(f"Normal reference produced a non-finite anomaly score: {image}")
+        scores.append(score)
+    return max(scores), "normal_reference_max", len(scores), time.perf_counter() - started
+
+
 def evaluate_samples(
     fusion,
     category,
@@ -195,12 +218,17 @@ def evaluate_samples(
     progress=True,
     excluded_images=None,
     excluded_type_images=None,
+    normal_reference_images=None,
 ):
     """Evaluate image/mask records shared by MVTec AD and VisA."""
     excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
     excluded_type_images = {str(Path(p).resolve()) for p in (excluded_type_images or [])}
     rows, image_y, image_s, pixel_masks, pixel_maps = [], [], [], [], []
     started = time.perf_counter()
+    decision_threshold, decision_threshold_source, reference_count, threshold_seconds = _normal_reference_threshold(
+        fusion,
+        normal_reference_images,
+    )
     prediction_seconds = 0.0
     pixel_preparation_seconds = 0.0
     for image, defect, truth, mask_path in samples:
@@ -212,14 +240,29 @@ def evaluate_samples(
         prediction_seconds += time.perf_counter() - prediction_started
         result.update({"category": category, "ground_truth_type": defect, "ground_truth_anomaly": bool(truth)})
         mask_path = None if mask_path is None else Path(mask_path)
-        if (mask_path is not None and mask_path.exists()) or not truth:
+        if decision_threshold is None:
+            result.update({
+                "predicted_anomaly": None,
+                "predicted_label": "unavailable",
+                "prediction_correct": None,
+                "decision_threshold": None,
+                "decision_threshold_source": decision_threshold_source,
+            })
+        else:
+            predicted_anomaly = float(result["anomaly_score"]) > decision_threshold
+            result.update({
+                "predicted_anomaly": predicted_anomaly,
+                "predicted_label": "anomaly" if predicted_anomaly else "good",
+                "prediction_correct": predicted_anomaly == bool(truth),
+                "decision_threshold": decision_threshold,
+                "decision_threshold_source": decision_threshold_source,
+            })
+        # Good images only receive an image-level normal/anomaly decision.
+        # Pixel metrics are based solely on defective samples with masks.
+        if truth and mask_path is not None and mask_path.exists():
             pixel_started = time.perf_counter()
             from PIL import Image as PILImage
-            if mask_path is not None and mask_path.exists():
-                mask = np.asarray(PILImage.open(mask_path).convert("L")) > 0
-            else:
-                with PILImage.open(image) as source:
-                    mask = np.zeros((source.height, source.width), dtype=bool)
+            mask = np.asarray(PILImage.open(mask_path).convert("L")) > 0
             score = np.asarray(result["anomaly_map"], dtype=np.float32)
             # Resize the coarse patch map to the mask resolution for pixel metrics.
             score = np.asarray(PILImage.fromarray(score.astype("float32"), mode="F").resize(mask.shape[::-1], PILImage.Resampling.BILINEAR))
@@ -232,7 +275,21 @@ def evaluate_samples(
     output_started = time.perf_counter()
     output.write_text(json.dumps(rows, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     output_seconds = time.perf_counter() - output_started
-    metrics = {"category": category, "images": len(rows), "results": str(output)}
+    good_rows = [row for row in rows if not row["ground_truth_anomaly"]]
+    defect_rows = [row for row in rows if row["ground_truth_anomaly"]]
+    metrics = {
+        "category": category,
+        "images": len(rows),
+        "good_images": len(good_rows),
+        "good_predicted_normal": sum(row["predicted_label"] == "good" for row in good_rows),
+        "good_predicted_anomaly": sum(row["predicted_label"] == "anomaly" for row in good_rows),
+        "defect_images": len(defect_rows),
+        "pixel_metric_images": len(pixel_masks),
+        "good_decision_threshold": decision_threshold,
+        "good_decision_threshold_source": decision_threshold_source,
+        "good_decision_reference_images": reference_count,
+        "results": str(output),
+    }
     metrics_started = time.perf_counter()
     if len(set(image_y)) > 1:
         metrics["image_auroc"], metrics["image_aupr"], metrics["image_f1_max"] = compute_binary_metrics(image_y, image_s)
@@ -243,13 +300,13 @@ def evaluate_samples(
             metrics["pixel_auroc"], metrics["pixel_aupr"], metrics["pixel_f1_max"] = compute_binary_metrics(pixel_y, pixel_s)
             del pixel_y, pixel_s
             metrics["pixel_aupro"] = compute_aupro(pixel_maps, pixel_masks)
-    defect_rows = [
+    defect_type_rows = [
         r for r in rows
         if r["ground_truth_anomaly"]
         and str(Path(r["image"]).resolve()) not in excluded_type_images
     ]
-    true_types = [r["ground_truth_type"] for r in defect_rows]
-    pred_types = [r["defect_type"] for r in defect_rows]
+    true_types = [r["ground_truth_type"] for r in defect_type_rows]
+    pred_types = [r["defect_type"] for r in defect_type_rows]
     type_metrics_enabled = bool(excluded_type_images) or any(p != "unknown" for p in pred_types)
     if true_types and type_metrics_enabled:
         metrics.update(compute_type_metrics(true_types, pred_types))
@@ -257,6 +314,7 @@ def evaluate_samples(
         metrics["defect_type_note"] = "No prototypes supplied; type metrics are unavailable"
     metrics_seconds = time.perf_counter() - metrics_started
     metrics["timing_seconds"] = {
+        "threshold_calibration": threshold_seconds,
         "prediction": prediction_seconds,
         "pixel_preparation": pixel_preparation_seconds,
         "json_output": output_seconds,
@@ -274,6 +332,7 @@ def evaluate_mvtec(
     progress=True,
     excluded_images=None,
     excluded_type_images=None,
+    normal_reference_images=None,
 ):
     """Evaluate a fitted model on one MVTec category and write JSON predictions."""
     root = Path(category_dir)
@@ -292,4 +351,5 @@ def evaluate_mvtec(
         progress=progress,
         excluded_images=excluded_images,
         excluded_type_images=excluded_type_images,
+        normal_reference_images=normal_reference_images,
     )
