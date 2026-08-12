@@ -186,27 +186,29 @@ def _images(path):
     return sorted(p for p in Path(path).glob("*.*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
 
 
-def _normal_reference_threshold(fusion, normal_reference_images, source):
-    """Return a decision threshold from independent normal reference images.
+def _normal_reference_threshold(fusion, normal_reference_images, source, quantile=1.0):
+    """Return a decision threshold from normal reference-image scores.
 
     Image-level AUROC and related ranking metrics do not need a threshold, but
     a per-image ``good``/``anomaly`` result does.  Calibrating from the normal
     images used to fit the detector avoids using test labels for that decision.
     """
 
-    references = [Path(image) for image in (normal_reference_images or [])]
+    if not 0 < quantile <= 1:
+        raise ValueError("decision threshold quantile must be in (0, 1]")
+    references = list(normal_reference_images or [])
     if not references:
         return None, "unavailable", 0, 0.0
 
     started = time.perf_counter()
     scores = []
     for image in references:
-        result = fusion.predict(str(image))
+        result = fusion.predict(image)
         score = float(result["anomaly_score"])
         if not np.isfinite(score):
             raise ValueError(f"Normal reference produced a non-finite anomaly score: {image}")
         scores.append(score)
-    return max(scores), source, len(scores), time.perf_counter() - started
+    return float(np.quantile(scores, quantile)), source, len(scores), time.perf_counter() - started
 
 
 def evaluate_samples(
@@ -220,6 +222,7 @@ def evaluate_samples(
     excluded_type_images=None,
     normal_reference_images=None,
     decision_threshold_source="normal_reference_max",
+    decision_threshold_quantile=1.0,
 ):
     """Evaluate image/mask records shared by MVTec AD and VisA."""
     excluded_images = {str(Path(p).resolve()) for p in (excluded_images or [])}
@@ -230,6 +233,7 @@ def evaluate_samples(
         fusion,
         normal_reference_images,
         decision_threshold_source,
+        decision_threshold_quantile,
     )
     prediction_seconds = 0.0
     pixel_preparation_seconds = 0.0
@@ -292,6 +296,7 @@ def evaluate_samples(
         "pixel_metric_images": len(pixel_masks),
         "good_decision_threshold": decision_threshold,
         "good_decision_threshold_source": resolved_threshold_source,
+        "good_decision_quantile": decision_threshold_quantile,
         "good_decision_reference_images": reference_count,
         "results": str(output),
     }
@@ -341,6 +346,7 @@ def evaluate_mvtec(
     excluded_type_images=None,
     normal_reference_images=None,
     decision_threshold_source="normal_reference_max",
+    decision_threshold_quantile=1.0,
 ):
     """Evaluate a fitted model on one MVTec category and write JSON predictions."""
     root = Path(category_dir)
@@ -361,4 +367,5 @@ def evaluate_mvtec(
         excluded_type_images=excluded_type_images,
         normal_reference_images=normal_reference_images,
         decision_threshold_source=decision_threshold_source,
+        decision_threshold_quantile=decision_threshold_quantile,
     )

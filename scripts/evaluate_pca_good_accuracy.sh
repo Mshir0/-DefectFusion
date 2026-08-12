@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Main DefectFusion PCA evaluation only. No distilled student model, kNN,
-# ANoCo, or dual branch is used. Good/anomaly decisions use the selected
-# normal training images as the threshold reference.
+# ANoCo, or dual branch is used. Good/anomaly decisions use the 99.5th
+# percentile of normal training-view scores, including rotation augmentations.
 
 DATASET="${DATASET:-all}"
 PYTHON="${PYTHON:-python}"
@@ -12,6 +12,7 @@ DEVICE="${DEVICE:-cuda}"
 NORMAL_SHOTS="${NORMAL_SHOTS:-8}"
 NORMAL_AUGMENT_COUNT="${NORMAL_AUGMENT_COUNT:-}"
 NORMAL_FIT_MAX_PATCHES="${NORMAL_FIT_MAX_PATCHES:-0}"
+NORMAL_DECISION_QUANTILE="${NORMAL_DECISION_QUANTILE:-0.995}"
 IMAGE_SIZE="${IMAGE_SIZE:-672}"
 FEATURE_LAYERS="${FEATURE_LAYERS:-1,17,21,23}"
 SEED="${SEED:-42}"
@@ -47,6 +48,7 @@ common_args=(
   --normal-augment-count "$NORMAL_AUGMENT_COUNT"
   --normal-augmentations rotate
   --normal-fit-max-patches "$NORMAL_FIT_MAX_PATCHES"
+  --normal-decision-quantile "$NORMAL_DECISION_QUANTILE"
   --image-size "$IMAGE_SIZE"
   --resize-mode direct
   --feature-layers="$FEATURE_LAYERS"
@@ -82,7 +84,7 @@ with open(summary_path, encoding="utf-8-sig", newline="") as stream:
     rows = list(csv.DictReader(stream))
 
 print(f"[main-pca] {dataset_name} normal-test decisions")
-print("category\tgood_images\tpredicted_normal\tpredicted_anomaly\tgood_accuracy")
+print("category\tgood_images\tpredicted_normal\tpredicted_anomaly\tgood_accuracy\tthreshold_source\tquantile")
 for row in rows:
     if row.get("category") != "macro_average":
         print("\t".join([
@@ -91,6 +93,8 @@ for row in rows:
             row.get("good_predicted_normal", ""),
             row.get("good_predicted_anomaly", ""),
             row.get("good_accuracy", ""),
+            row.get("good_decision_threshold_source", ""),
+            row.get("good_decision_quantile", ""),
         ]))
 
 macro = next((row for row in rows if row.get("category") == "macro_average"), None)

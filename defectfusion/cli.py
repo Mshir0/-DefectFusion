@@ -194,6 +194,7 @@ def main(argv=None):
     e.add_argument("--prototype-dir", help="optional defect prototypes; subdirectories are defect labels")
     e.add_argument("--normal-shots", type=int, default=-1, help="normal train/good references per category; -1 uses all")
     e.add_argument("--normal-validation-dir", help="independent normal calibration root; use ROOT/<category>/ for multi-category evaluation")
+    e.add_argument("--normal-decision-quantile", type=float, default=None, help="normal-score quantile for good/anomaly decisions; explicit use calibrates from normal training views when no validation directory is supplied")
     e.add_argument("--defect-shots", "--few-shot", dest="defect_shots", type=int, default=0, help="labeled defect exemplars per defect type")
     e.add_argument("--seed", type=int, default=42, help="seed used for reproducible normal and defect sampling")
     e.add_argument("--normal-augment-count", type=int, default=None, help="augmented views per normal shot; defaults to 30 in few-shot mode")
@@ -352,6 +353,15 @@ def main(argv=None):
         normal_validation_dir = getattr(a, "normal_validation_dir", None) or cfg.get("normal_validation_dir")
         if normal_validation_dir and not Path(normal_validation_dir).is_dir():
             p.error(f"normal validation directory does not exist: {normal_validation_dir}")
+        decision_quantile_argument = getattr(a, "normal_decision_quantile", None)
+        decision_quantile_configured = decision_quantile_argument is not None or "normal_decision_quantile" in cfg
+        normal_decision_quantile = (
+            decision_quantile_argument
+            if decision_quantile_argument is not None
+            else cfg.get("normal_decision_quantile", 1.0)
+        )
+        if not 0 < normal_decision_quantile <= 1:
+            p.error("--normal-decision-quantile must be in (0, 1]")
         if a.normal_shots == 0 or a.normal_shots < -1: p.error("--normal-shots must be -1 or a positive integer")
         if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
         if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
@@ -438,12 +448,6 @@ def main(argv=None):
                 normal_selected = sorted(normal_rng.sample(normal_candidates, min(a.normal_shots, len(normal_candidates))))
             print(f"[normal-shots] {category_name}: {len(normal_selected)}/{len(normal_candidates)}", flush=True)
             validation_images = validation_images_by_category.get(category_name, [])
-            decision_reference_images = validation_images or normal_selected
-            decision_threshold_source = "normal_validation_max" if validation_images else "normal_reference_max"
-            if validation_images:
-                print(f"[normal-validation] {category_name}: {len(validation_images)} independent images", flush=True)
-            else:
-                print(f"[normal-validation] {category_name}: not supplied; using selected training normals", flush=True)
             augment_count = a.normal_augment_count if a.normal_augment_count is not None else (30 if a.normal_shots != -1 else 0)
             if category_name in no_augment_categories: augment_count = 0
             category_augmentations = list(normal_augmentations)
@@ -462,6 +466,21 @@ def main(argv=None):
             category_align_training_positions = align_training_positions or (category_name in knn_spatial_categories)
             normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
             print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
+            if validation_images:
+                decision_reference_images = validation_images
+                decision_threshold_source = "normal_validation_max" if normal_decision_quantile == 1 else "normal_validation_quantile"
+                print(f"[normal-validation] {category_name}: {len(validation_images)} independent images, quantile={normal_decision_quantile:.4g}", flush=True)
+            elif decision_quantile_configured:
+                decision_reference_images = normal_training_images
+                decision_threshold_source = (
+                    "normal_training_augmented_quantile"
+                    if augment_count > 0 else "normal_training_quantile"
+                )
+                print(f"[normal-decision] {category_name}: {len(decision_reference_images)} training views, quantile={normal_decision_quantile:.4g}", flush=True)
+            else:
+                decision_reference_images = normal_selected
+                decision_threshold_source = "normal_reference_max"
+                print(f"[normal-decision] {category_name}: {len(normal_selected)} selected training normals, maximum score", flush=True)
             print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} pixel_multiscale_weight={category_pixel_multiscale_weight if category_secondary_pixel_size is not None else 0} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} fit_max_patches={normal_fit_max_patches or 'all'} spatial_radius={category_knn_spatial_radius} pixel_anoco_weight={category_pixel_anoco_weight} pixel_anoco_norm_compatibility={category_pixel_anoco_norm_compatibility}", flush=True)
             fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, pixel_anoco_weight=category_pixel_anoco_weight, pixel_anoco_norm_compatibility=category_pixel_anoco_norm_compatibility, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=category_knn_spatial_radius, image_knn_spatial_radius=-1.0 if knn_spatial_categories else None, align_training_positions=category_align_training_positions, align_image_training_positions=False if knn_spatial_categories else None, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=category_pixel_multiscale_weight).fit_normal(normal_training_images)
             if anomaly_method != "pca":
@@ -503,6 +522,7 @@ def main(argv=None):
                     excluded_type_images=selected,
                     normal_reference_images=decision_reference_images,
                     decision_threshold_source=decision_threshold_source,
+                    decision_threshold_quantile=normal_decision_quantile,
                 )
             else:
                 metrics = evaluate_mvtec(
@@ -512,6 +532,7 @@ def main(argv=None):
                     excluded_type_images=selected,
                     normal_reference_images=decision_reference_images,
                     decision_threshold_source=decision_threshold_source,
+                    decision_threshold_quantile=normal_decision_quantile,
                 )
             metrics["dataset"] = "visa" if is_visa else "mvtec"
             metrics["normal_shots"] = a.normal_shots
@@ -519,6 +540,7 @@ def main(argv=None):
             metrics["normal_validation_dir"] = str(Path(normal_validation_dir)) if normal_validation_dir else None
             metrics["normal_validation_images"] = [str(Path(x)) for x in validation_images]
             metrics["normal_validation_image_count"] = len(validation_images)
+            metrics["normal_decision_quantile"] = normal_decision_quantile
             metrics["normal_augment_count"] = augment_count
             metrics["normal_augmentations"] = category_augmentations
             metrics["normal_training_views"] = len(normal_training_images)

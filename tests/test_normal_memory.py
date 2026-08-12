@@ -295,6 +295,16 @@ class NormalPatchMemoryTest(unittest.TestCase):
             anomaly_map,
         )
 
+    def test_predict_accepts_normal_training_view(self):
+        fusion = DefectFusion(self._resolution_extractor(), anomaly_method="pca")
+        image = Image.new("RGB", (8, 8))
+        fusion.fit_normal([NormalTrainingView(image)])
+
+        result = fusion.predict(NormalTrainingView(image))
+
+        self.assertEqual(result["image"], "<normal-training-view>")
+        self.assertTrue(np.isfinite(result["anomaly_score"]))
+
     def test_tta_rejects_unknown_transforms(self):
         with self.assertRaises(ValueError):
             DefectFusion(object(), test_augmentations=["rotate45"])

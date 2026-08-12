@@ -77,9 +77,10 @@ To run the main PCA evaluator for all MVTec AD and VisA categories and print
 the normal-test decision counts plus `good_accuracy`, use
 [`scripts/evaluate_pca_good_accuracy.sh`](scripts/evaluate_pca_good_accuracy.sh).
 It retains the dataset-specific preprocessing from the existing evaluation
-scripts, uses the selected normal training images as the decision threshold
-reference (`normal_reference_max`), and does not invoke distillation, kNN,
-ANoCo, or the dual branch.
+scripts, calibrates the good/anomaly threshold from the 99.5th percentile of
+normal training-view scores (including rotation augmentations), and does not
+invoke distillation, kNN, ANoCo, or the dual branch. Set
+`NORMAL_DECISION_QUANTILE=0.99` before the command to use the 99th percentile.
 
 ```bash
 bash scripts/evaluate_pca_good_accuracy.sh

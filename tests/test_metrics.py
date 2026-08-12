@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 from defectfusion.mvtec import compute_aupro, compute_binary_auroc_aupr, compute_binary_metrics, evaluate_mvtec, evaluate_samples
+from defectfusion.pipeline import NormalTrainingView
 
 
 class AuproTest(unittest.TestCase):
@@ -62,8 +63,48 @@ class AuproTest(unittest.TestCase):
         self.assertEqual(metrics["pixel_metric_images"], 1)
         self.assertEqual(metrics["good_decision_threshold"], 0.25)
         self.assertEqual(metrics["good_decision_threshold_source"], "normal_validation_max")
+        self.assertEqual(metrics["good_decision_quantile"], 1.0)
         self.assertEqual(metrics["good_decision_reference_images"], 1)
         self.assertEqual(metrics["pixel_auroc"], 1.0)
+
+    def test_training_augmentation_scores_use_requested_decision_quantile(self):
+        class Fusion:
+            def __init__(self, view_scores):
+                self.view_scores = view_scores
+
+            def predict(self, image):
+                if isinstance(image, NormalTrainingView):
+                    score = self.view_scores[id(image)]
+                else:
+                    score = 0.75
+                return {
+                    "image": str(image), "anomaly_score": score,
+                    "anomaly_map": [[0.0, 0.0], [0.0, 0.0]],
+                    "defect_type": "unknown", "defect_type_score": 0.0,
+                }
+
+        references = [NormalTrainingView(Image.new("RGB", (2, 2))) for _ in range(4)]
+        view_scores = {id(view): score for view, score in zip(references, (0.1, 0.2, 0.4, 0.8))}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            good = root / "good.png"
+            output = root / "results.json"
+            metrics = evaluate_samples(
+                Fusion(view_scores),
+                "bottle",
+                [(good, "good", False, None)],
+                output,
+                progress=False,
+                normal_reference_images=references,
+                decision_threshold_source="normal_training_augmented_quantile",
+                decision_threshold_quantile=0.995,
+            )
+
+        self.assertAlmostEqual(metrics["good_decision_threshold"], np.quantile([0.1, 0.2, 0.4, 0.8], 0.995))
+        self.assertEqual(metrics["good_decision_threshold_source"], "normal_training_augmented_quantile")
+        self.assertEqual(metrics["good_decision_quantile"], 0.995)
+        self.assertEqual(metrics["good_decision_reference_images"], 4)
+        self.assertEqual(metrics["good_accuracy"], 1.0)
 
     def test_evaluation_writes_json_array_not_jsonl(self):
         class Fusion:

@@ -641,8 +641,17 @@ class DefectFusion:
         return anomaly_map
 
     def predict(self, image_path):
-        image = Image.open(image_path).convert("RGB")
-        base = self._predict_single(image, image_path)
+        """Predict from an image path or an in-memory normal training view."""
+        if isinstance(image_path, NormalTrainingView):
+            image = image_path.image.copy().convert("RGB")
+            image_name = "<normal-training-view>"
+        elif isinstance(image_path, Image.Image):
+            image = image_path.copy().convert("RGB")
+            image_name = "<in-memory-image>"
+        else:
+            image = Image.open(image_path).convert("RGB")
+            image_name = image_path
+        base = self._predict_single(image, image_name)
         if not self.test_augmentations:
             base["test_augmentations"] = []
             base["tta_view_scores"] = [float(base["anomaly_score"])]
@@ -651,7 +660,7 @@ class DefectFusion:
         views = [("identity", base)]
         for augmentation in self.test_augmentations:
             transformed = self._test_view(image, augmentation)
-            views.append((augmentation, self._predict_single(transformed, image_path)))
+            views.append((augmentation, self._predict_single(transformed, image_name)))
         view_scores = [float(result["anomaly_score"]) for _, result in views]
         maps = [self._restore_test_map(result["anomaly_map"], name) for name, result in views]
         base["anomaly_map"] = np.mean(maps, axis=0).tolist()

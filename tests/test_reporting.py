@@ -23,6 +23,7 @@ class ReportingTest(unittest.TestCase):
             "defect_images": 6, "pixel_metric_images": 6,
             "good_decision_threshold": 0.42,
             "good_decision_threshold_source": "normal_reference_max",
+            "good_decision_quantile": 1.0,
             "good_decision_reference_images": 8,
             "defect_type_accuracy": 0.7, "defect_type_macro_precision": 0.6,
             "defect_type_macro_recall": 0.65, "defect_type_macro_f1": 0.62,
@@ -49,6 +50,7 @@ class ReportingTest(unittest.TestCase):
         self.assertEqual(rows[0]["pixel_metric_images"], "6")
         self.assertEqual(rows[0]["good_decision_threshold"], "0.42")
         self.assertEqual(rows[0]["good_decision_threshold_source"], "normal_reference_max")
+        self.assertEqual(rows[0]["good_decision_quantile"], "1.0")
         self.assertEqual(rows[0]["total_seconds"], "12.5")
         self.assertEqual(rows[0]["memory_patch_count"], "123")
         self.assertEqual(rows[0]["memory_bytes"], "456")
