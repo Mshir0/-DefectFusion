@@ -1,30 +1,33 @@
-"""Parameter-efficient DINOv3 teacher/student distillation for few-shot AD.
+"""Standalone DINOv3 teacher/student distillation for MVTec AD and VisA.
 
 This module deliberately keeps the existing DefectFusion inference pipeline
 unchanged.  It trains a deployable ViT-S backbone using a frozen ViT-B
 teacher, multi-layer patch-token distillation, anomaly-map distillation, and a
-small normal-compactness/margin objective.  Defect images and their masks are
-optional; when they are supplied, the masks increase the feature-distillation
-weight in the synthetic-defect region.
+small normal-compactness/margin objective.  MVTec AD and VisA are parsed
+directly by this file.  Test defects are excluded by default; when explicitly
+selected, their masks increase the feature-distillation weight in defect
+regions.
 
 Example::
 
-    python -m defectfusion.distill_finetune \
-        --normal-dir data/train/good \
-        --defect-dir data/synthetic/images \
-        --mask-dir data/synthetic/masks \
+    python distill_dinov3.py \
+        --dataset mvtec --data-root ./datasets/mvtec_anomaly \
+        --categories bottle \
         --output outputs/dinov3-vit-s-distilled \
         --epochs 10 --adaptation lora
 
-The output directory contains ``student_base`` (the untouched HF model), an
-adapter/projection checkpoint, processor files, a JSON training log, and
-``student_merged``.  The latter is a standard Hugging Face model directory
-that can be passed directly to DefectFusion's existing ``--model`` option.
+Each selected category gets its own output directory containing
+``student_base`` (the untouched HF model), an adapter/projection checkpoint,
+processor files, a JSON training log, and ``student_merged``.  The latter is a
+standard Hugging Face model directory that can be passed directly to
+DefectFusion's existing ``--model`` option.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
 import math
 import random
@@ -57,6 +60,16 @@ class ImageRecord:
     image_path: str
     mask_path: str | None
     is_anomaly: bool
+    defect_type: str | None = None
+
+
+@dataclass(frozen=True)
+class DatasetCategory:
+    """Dataset-native normal references and optional labeled defect samples."""
+
+    name: str
+    normal_images: tuple[Path, ...]
+    defect_samples: tuple[ImageRecord, ...]
 
 
 def _iter_images(root: str | Path) -> list[Path]:
@@ -129,6 +142,208 @@ def _find_mask(
         if candidate.is_file():
             return candidate
     return index.get(image.stem.lower())
+
+
+def _stable_seed(seed: int, namespace: str) -> int:
+    digest = hashlib.sha256(namespace.encode("utf-8")).digest()
+    return (int.from_bytes(digest[:8], "little") ^ int(seed)) % (2**32)
+
+
+def _sample_paths(paths: Sequence[Path], shots: int, seed: int, namespace: str) -> list[Path]:
+    """Deterministically select a requested few-shot subset without replacement."""
+
+    values = sorted((Path(path) for path in paths), key=lambda path: path.as_posix().lower())
+    if shots == -1 or shots >= len(values):
+        return values
+    if shots <= 0:
+        return []
+    return sorted(random.Random(_stable_seed(seed, namespace)).sample(values, shots), key=lambda path: path.as_posix().lower())
+
+
+def _mvtec_categories(root: str | Path) -> list[DatasetCategory]:
+    """Load standard MVTec AD category folders without importing project modules."""
+
+    data_root = Path(root)
+    if not data_root.is_dir():
+        raise FileNotFoundError(f"MVTec data root does not exist: {data_root}")
+    categories: list[DatasetCategory] = []
+    for category_dir in sorted(item for item in data_root.iterdir() if item.is_dir()):
+        normal = _iter_images(category_dir / "train" / "good") if (category_dir / "train" / "good").is_dir() else []
+        if not normal:
+            continue
+        defects = []
+        test_dir = category_dir / "test"
+        if test_dir.is_dir():
+            for defect_dir in sorted(item for item in test_dir.iterdir() if item.is_dir() and item.name != "good"):
+                for image in _iter_images(defect_dir):
+                    mask = category_dir / "ground_truth" / defect_dir.name / f"{image.stem}_mask.png"
+                    defects.append(ImageRecord(str(image), str(mask) if mask.is_file() else None, True, defect_dir.name))
+        categories.append(DatasetCategory(category_dir.name, tuple(normal), tuple(defects)))
+    if not categories:
+        raise ValueError(f"No MVTec AD categories with train/good images found in {data_root}")
+    return categories
+
+
+def _csv_value(row: dict, *names: str) -> str:
+    normalized = {str(key).strip().lower(): value for key, value in row.items()}
+    for name in names:
+        value = normalized.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _csv_path(root: Path, value: str) -> Path | None:
+    if not value or value.lower() in {"none", "nan"}:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else root / path
+
+
+def _visa_raw_categories(root: Path) -> list[DatasetCategory]:
+    categories = []
+    for category_dir in sorted(item for item in root.iterdir() if item.is_dir()):
+        data_dir = category_dir / "Data"
+        normal_dir = data_dir / "Images" / "Normal"
+        anomaly_dir = data_dir / "Images" / "Anomaly"
+        if not normal_dir.is_dir():
+            continue
+        normal = _iter_images(normal_dir)
+        masks = _mask_index(data_dir / "Masks" / "Anomaly" if (data_dir / "Masks" / "Anomaly").is_dir() else None)
+        defects = [
+            ImageRecord(str(image), str(mask) if (mask := _find_mask(image, anomaly_dir, data_dir / "Masks" / "Anomaly", masks)) else None, True, "anomaly")
+            for image in (_iter_images(anomaly_dir) if anomaly_dir.is_dir() else [])
+        ]
+        if normal:
+            categories.append(DatasetCategory(category_dir.name, tuple(normal), tuple(defects)))
+    if not categories:
+        raise ValueError(f"No raw VisA categories with Data/Images/Normal found in {root}")
+    return categories
+
+
+def _visa_categories(root: str | Path, split_csv: str | Path | None = None) -> list[DatasetCategory]:
+    """Load VisA official 1-class splits, with raw-release layout fallback."""
+
+    data_root = Path(root)
+    if not data_root.is_dir():
+        raise FileNotFoundError(f"VisA data root does not exist: {data_root}")
+    split_path = Path(split_csv) if split_csv else data_root / "split_csv" / "1cls.csv"
+    if not split_path.is_file():
+        if split_csv is not None:
+            raise FileNotFoundError(f"VisA split CSV does not exist: {split_path}")
+        warnings.warn(
+            "VisA 1cls.csv was not found; the raw layout fallback treats every "
+            "Data/Images/Normal image as a training reference.",
+            RuntimeWarning,
+        )
+        return _visa_raw_categories(data_root)
+    groups: dict[str, dict[str, list]] = {}
+    with split_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        columns = {str(name).strip().lower() for name in (reader.fieldnames or [])}
+        required = {"object", "split", "label", "image"}
+        if not required.issubset(columns):
+            raise ValueError(f"VisA split CSV requires columns {sorted(required)}; found {sorted(columns)}")
+        for row in reader:
+            category = _csv_value(row, "object")
+            split = _csv_value(row, "split").lower()
+            label = _csv_value(row, "label").lower()
+            image = _csv_path(data_root, _csv_value(row, "image"))
+            if not category or image is None or not image.is_file():
+                continue
+            group = groups.setdefault(category, {"normal": [], "defect": []})
+            anomalous = label not in {"normal", "good", "0"}
+            if split == "train" and not anomalous:
+                group["normal"].append(image)
+            elif split == "test" and anomalous:
+                mask = _csv_path(data_root, _csv_value(row, "mask"))
+                defect_type = _csv_value(row, "defect_type", "type") or "anomaly"
+                group["defect"].append(ImageRecord(str(image), str(mask) if mask is not None and mask.is_file() else None, True, defect_type))
+    categories = [
+        DatasetCategory(name, tuple(sorted(group["normal"])), tuple(sorted(group["defect"], key=lambda record: record.image_path)))
+        for name, group in sorted(groups.items())
+        if group["normal"]
+    ]
+    if not categories:
+        raise ValueError(f"No VisA training-normal records found in {split_path}")
+    return categories
+
+
+def dataset_record_groups(args: argparse.Namespace) -> tuple[dict[str, list[ImageRecord]], dict[str, dict[str, int]]]:
+    """Build training records for MVTec or VisA from CLI paths only.
+
+    Defect images always come from the test partition and are opt-in through
+    ``--defect-shots``.  Their only purpose is the optional mask-weighted
+    distillation term; no test defect is selected by default.
+    """
+
+    if args.dataset == "folder":
+        records = discover_records(
+            normal_dir=args.normal_dir,
+            defect_dir=args.defect_dir,
+            mask_dir=args.mask_dir,
+            data_root=args.data_root,
+            max_normal_images=args.max_normal_images,
+            max_defect_images=args.max_defect_images,
+        )
+        return {"folder": records}, {"folder": {"normal": sum(not record.is_anomaly for record in records), "defect": sum(record.is_anomaly for record in records)}}
+    if args.data_root is None:
+        raise ValueError("--data-root is required for --dataset mvtec or --dataset visa")
+    categories = _mvtec_categories(args.data_root) if args.dataset == "mvtec" else _visa_categories(args.data_root, args.split_csv)
+    requested = set(args.categories or [])
+    names = {category.name for category in categories}
+    missing = sorted(requested - names)
+    if missing:
+        raise ValueError(f"Unknown {args.dataset} categories: {', '.join(missing)}")
+    if requested:
+        categories = [category for category in categories if category.name in requested]
+    if not categories:
+        raise ValueError("No categories selected for distillation")
+
+    groups: dict[str, list[ImageRecord]] = {}
+    counts: dict[str, dict[str, int]] = {}
+    for category in categories:
+        normal = _sample_paths(category.normal_images, args.normal_shots, args.seed, f"{args.dataset}:normal:{category.name}")
+        if args.max_normal_images > 0:
+            normal = normal[: args.max_normal_images]
+        if not normal:
+            raise ValueError(f"{args.dataset}/{category.name} has no selected normal images")
+        selected_defects: list[ImageRecord] = []
+        if args.defect_shots > 0:
+            by_type: dict[str, list[ImageRecord]] = {}
+            for record in category.defect_samples:
+                by_type.setdefault(record.defect_type or "anomaly", []).append(record)
+            for defect_type, candidates in sorted(by_type.items()):
+                selected_paths = set(
+                    str(path) for path in _sample_paths(
+                        [Path(record.image_path) for record in candidates],
+                        args.defect_shots,
+                        args.seed,
+                        f"{args.dataset}:defect:{category.name}:{defect_type}",
+                    )
+                )
+                selected_defects.extend(record for record in candidates if record.image_path in selected_paths)
+        if args.max_defect_images > 0:
+            selected_defects = selected_defects[: args.max_defect_images]
+        missing_masks = sum(record.mask_path is None for record in selected_defects)
+        if missing_masks:
+            warnings.warn(
+                f"{args.dataset}/{category.name}: {missing_masks} selected defect images have no mask; "
+                "they use only the anomaly-margin loss.",
+                RuntimeWarning,
+            )
+        groups[category.name] = [ImageRecord(str(path), None, False, "good") for path in normal] + selected_defects
+        counts[category.name] = {"normal": len(normal), "defect": len(selected_defects)}
+    if not groups:
+        raise ValueError("No images selected for distillation")
+    return groups, counts
+
+
+def dataset_records(args: argparse.Namespace) -> tuple[list[ImageRecord], dict[str, dict[str, int]]]:
+    """Backward-compatible flattened view of the dataset-specific groups."""
+
+    groups, counts = dataset_record_groups(args)
+    return [record for records in groups.values() for record in records], counts
 
 
 def discover_records(
@@ -813,36 +1028,33 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def train(args: argparse.Namespace) -> dict:
-    """Run teacher/student distillation and return the final training summary."""
+def _train_records(
+    args: argparse.Namespace,
+    records: Sequence[ImageRecord],
+    output_dir: str | Path,
+    teacher: nn.Module,
+    teacher_processor,
+    device: torch.device,
+) -> dict:
+    """Train and export one independent student for one category."""
 
     from transformers import AutoImageProcessor, AutoModel
 
-    set_seed(int(args.seed))
-    device = _device(args.device)
-    if hasattr(torch, "set_float32_matmul_precision"):
-        torch.set_float32_matmul_precision("high")
-
-    records = discover_records(
-        normal_dir=args.normal_dir,
-        defect_dir=args.defect_dir,
-        mask_dir=args.mask_dir,
-        data_root=args.data_root,
-        max_normal_images=args.max_normal_images,
-        max_defect_images=args.max_defect_images,
-    )
-    normal_paths = [record.image_path for record in records if not record.is_anomaly]
-    teacher = AutoModel.from_pretrained(args.teacher_model).to(device).eval()
-    student_backbone = AutoModel.from_pretrained(args.student_model)
-    teacher.requires_grad_(False)
-    teacher_processor = AutoImageProcessor.from_pretrained(args.teacher_model)
-    student_processor = AutoImageProcessor.from_pretrained(args.student_model)
-
-    # Save the pristine base before LoRA changes module names.  The compact
-    # adapter checkpoint can then always be reconstructed without serializing
-    # another complete trained backbone.
-    output_dir = Path(args.output)
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    normal_paths = [record.image_path for record in records if not record.is_anomaly]
+    if not normal_paths:
+        raise ValueError("Each category must contain at least one normal image")
+
+    student_backbone = AutoModel.from_pretrained(args.student_model)
+    student_processor = AutoImageProcessor.from_pretrained(args.student_model)
+    for name, backbone in (("teacher", teacher), ("student", student_backbone)):
+        patch_size = _patch_size(backbone)
+        if args.image_size % patch_size:
+            raise ValueError(
+                f"--image-size ({args.image_size}) must be divisible by the {name} patch size ({patch_size})"
+            )
+    # Save the pristine base before LoRA changes module names.
     student_backbone.save_pretrained(output_dir / "student_base")
     student_processor.save_pretrained(output_dir / "processor")
 
@@ -863,18 +1075,20 @@ def train(args: argparse.Namespace) -> dict:
     )
     student_dim, teacher_dim = _model_dim(student_backbone), _model_dim(teacher)
     student = DistillationStudent(student_backbone, layer_pairs, teacher_dim, student_dim).to(device)
-
     teacher_layers_for_centroid = tuple(pair[0] for pair in layer_pairs)
     student_layers_for_centroid = tuple(pair[1] for pair in layer_pairs)
-    teacher_centroid = estimate_normal_centroid(teacher, teacher_processor, normal_paths, teacher_layers_for_centroid, args.image_size, device, args.centroid_batch_size)
-    student_centroid = estimate_normal_centroid(student.backbone, student_processor, normal_paths, student_layers_for_centroid, args.image_size, device, args.centroid_batch_size)
-    # The centroid is a fixed pre-training reference; this avoids a moving
-    # target that could make the normal-compactness loss degenerate.
-    student_centroid = student_centroid.detach()
-    teacher_centroid = teacher_centroid.detach()
+    teacher_centroid = estimate_normal_centroid(teacher, teacher_processor, normal_paths, teacher_layers_for_centroid, args.image_size, device, args.centroid_batch_size).detach()
+    student_centroid = estimate_normal_centroid(student.backbone, student_processor, normal_paths, student_layers_for_centroid, args.image_size, device, args.centroid_batch_size).detach()
 
     dataset = ImageMaskDataset(records)
-    loader = DataLoader(dataset, batch_size=max(1, args.batch_size), shuffle=True, num_workers=max(0, args.num_workers), collate_fn=_collate, pin_memory=device.type == "cuda")
+    loader = DataLoader(
+        dataset,
+        batch_size=max(1, args.batch_size),
+        shuffle=True,
+        num_workers=max(0, args.num_workers),
+        collate_fn=_collate,
+        pin_memory=device.type == "cuda",
+    )
     optimizer = torch.optim.AdamW(_trainable_parameter_groups(student, args.lr, args.head_lr, args.weight_decay))
     amp_enabled = bool(args.amp and device.type == "cuda")
     scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
@@ -895,20 +1109,17 @@ def train(args: argparse.Namespace) -> dict:
                 teacher_layers, teacher_grid = extract_patch_features(teacher, teacher_inputs["pixel_values"], teacher_layers_for_centroid)
             with _autocast(device, amp_enabled):
                 student_output = student(student_inputs["pixel_values"])
-                student_layers = student_output["layers"]
                 projected_layers = student_output["projected_layers"]
                 student_grid = student_output["grid"]
-                target_grid = teacher_grid
-                if student_grid != target_grid:
-                    student_layers = [_resize_tokens(layer, student_grid, target_grid) for layer in student_layers]
-                    projected_layers = [_resize_tokens(layer, student_grid, target_grid) for layer in projected_layers]
-                    student_features = _resize_tokens(student_output["aggregate"], student_grid, target_grid)
+                if student_grid != teacher_grid:
+                    projected_layers = [_resize_tokens(layer, student_grid, teacher_grid) for layer in projected_layers]
+                    student_features = _resize_tokens(student_output["aggregate"], student_grid, teacher_grid)
                 else:
                     student_features = student_output["aggregate"]
-                expected_patches = target_grid[0] * target_grid[1]
+                expected_patches = teacher_grid[0] * teacher_grid[1]
                 if any(layer.shape[1] != expected_patches for layer in teacher_layers):
                     raise ValueError("Teacher hidden-state patch counts are inconsistent")
-                patch_weights = masks_to_patch_weights(masks, teacher_inputs["pixel_values"].shape[-2:], target_grid, device, args.mask_alpha)
+                patch_weights = masks_to_patch_weights(masks, teacher_inputs["pixel_values"].shape[-2:], teacher_grid, device, args.mask_alpha)
                 losses = compute_distillation_losses(
                     teacher_layers,
                     projected_layers,
@@ -941,50 +1152,51 @@ def train(args: argparse.Namespace) -> dict:
         epoch_metrics = {key: value / batches for key, value in running.items()}
         epoch_metrics["epoch"] = epoch
         history.append(epoch_metrics)
-        print(json.dumps(epoch_metrics, ensure_ascii=True, sort_keys=True))
+        print(json.dumps(epoch_metrics, ensure_ascii=True, sort_keys=True), flush=True)
         if args.save_every > 0 and epoch % args.save_every == 0:
             epoch_config = _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_targets)
-            save_student_checkpoint(
-                output_dir / f"epoch-{epoch:04d}",
-                student,
-                student_processor,
-                epoch_config,
-                teacher_centroid,
-                student_centroid,
-                epoch=epoch,
-                metrics=epoch_metrics,
-                save_base_model=False,
-            )
+            save_student_checkpoint(output_dir / f"epoch-{epoch:04d}", student, student_processor, epoch_config, teacher_centroid, student_centroid, epoch=epoch, metrics=epoch_metrics, save_base_model=False)
 
     config = _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_targets)
-    config["total_parameters"] = total_params
-    config["trainable_parameters"] = trainable_params
-    config["history"] = history
-    checkpoint = save_student_checkpoint(
-        output_dir,
-        student,
-        student_processor,
-        config,
-        teacher_centroid,
-        student_centroid,
-        epoch=int(args.epochs),
-        metrics=history[-1],
-    )
+    config.update({"total_parameters": total_params, "trainable_parameters": trainable_params, "history": history})
+    checkpoint = save_student_checkpoint(output_dir, student, student_processor, config, teacher_centroid, student_centroid, epoch=int(args.epochs), metrics=history[-1])
     merged_model = export_merged_student(output_dir, student, student_processor)
-    summary = {
-        "checkpoint": str(checkpoint),
-        "merged_model": str(merged_model),
-        "output": str(output_dir),
-        "total_parameters": total_params,
-        "trainable_parameters": trainable_params,
-        "history": history,
-    }
+    summary = {"checkpoint": str(checkpoint), "merged_model": str(merged_model), "output": str(output_dir), "total_parameters": total_params, "trainable_parameters": trainable_params, "history": history, "normal_images": len(normal_paths), "defect_images": sum(record.is_anomaly for record in records)}
     (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=True, indent=2, default=_json_default) + "\n", encoding="utf-8")
+    return summary
+
+
+def train(args: argparse.Namespace) -> dict:
+    """Train one independent student per selected MVTec/VisA category."""
+
+    from transformers import AutoImageProcessor, AutoModel
+
+    set_seed(int(args.seed))
+    device = _device(args.device)
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+    groups, counts = dataset_record_groups(args)
+    teacher = AutoModel.from_pretrained(args.teacher_model).to(device).eval()
+    teacher.requires_grad_(False)
+    teacher_processor = AutoImageProcessor.from_pretrained(args.teacher_model)
+    root = Path(args.output)
+    root.mkdir(parents=True, exist_ok=True)
+    summaries = {}
+    for category, records in groups.items():
+        set_seed(_stable_seed(args.seed, f"{args.dataset}:train:{category}"))
+        print(f"[distill] {args.dataset}/{category}: normal={counts[category]['normal']} defect={counts[category]['defect']}", flush=True)
+        summaries[category] = _train_records(args, records, root / category, teacher, teacher_processor, device)
+    summary = {"dataset": args.dataset, "data_root": args.data_root, "categories": counts, "outputs": summaries}
+    (root / "summary.json").write_text(json.dumps(summary, ensure_ascii=True, indent=2, default=_json_default) + "\n", encoding="utf-8")
     return summary
 
 
 def _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_targets):
     return {
+        "dataset": args.dataset,
+        "data_root": args.data_root,
+        "normal_shots": int(args.normal_shots),
+        "defect_shots": int(args.defect_shots),
         "teacher_model": args.teacher_model,
         "student_model": args.student_model,
         "image_size": int(args.image_size),
@@ -1007,14 +1219,27 @@ def _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_target
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="DINOv3 ViT-B teacher -> ViT-S LoRA/local distillation")
-    parser.add_argument("--normal-dir")
-    parser.add_argument("--defect-dir")
-    parser.add_argument("--mask-dir")
-    parser.add_argument("--data-root")
-    parser.add_argument("--teacher-model", default=DEFAULT_TEACHER)
-    parser.add_argument("--student-model", default=DEFAULT_STUDENT)
-    parser.add_argument("--output", required=True)
+    parser = argparse.ArgumentParser(
+        description="Standalone DINOv3 ViT-B -> ViT-S distillation for MVTec AD and VisA",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    data = parser.add_argument_group("dataset")
+    data.add_argument("--dataset", choices=("mvtec", "visa", "folder"), required=True)
+    data.add_argument("--data-root", help="MVTec/VisA root; required for dataset=mvtec or visa")
+    data.add_argument("--split-csv", help="VisA 1cls.csv; defaults to <data-root>/split_csv/1cls.csv")
+    data.add_argument("--categories", nargs="+", help="categories to train; omit to train all categories independently")
+    data.add_argument("--normal-shots", type=int, default=-1, help="normal train images per category; -1 uses all")
+    data.add_argument("--defect-shots", type=int, default=0, help="opt-in test defects per defect type; 0 avoids test leakage")
+    data.add_argument("--normal-dir", help="dataset=folder only")
+    data.add_argument("--defect-dir", help="optional dataset=folder defect images")
+    data.add_argument("--mask-dir", help="optional dataset=folder defect masks")
+    data.add_argument("--max-normal-images", type=int, default=0, help="debug cap per category; 0 means unlimited")
+    data.add_argument("--max-defect-images", type=int, default=0, help="debug cap per category; 0 means unlimited")
+
+    model = parser.add_argument_group("models and output")
+    model.add_argument("--teacher-model", default=DEFAULT_TEACHER, help="Hugging Face identifier or local model directory")
+    model.add_argument("--student-model", default=DEFAULT_STUDENT, help="Hugging Face identifier or local model directory")
+    model.add_argument("--output", required=True)
     parser.add_argument("--image-size", type=int, default=448)
     parser.add_argument("--feature-layers", default=",".join(str(x) for x in DEFAULT_FEATURE_LAYERS))
     parser.add_argument("--teacher-layers")
@@ -1036,8 +1261,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mask-alpha", type=float, default=2.0)
     parser.add_argument("--margin", type=float, default=0.2)
     parser.add_argument("--top-ratio", type=float, default=0.01)
-    parser.add_argument("--max-normal-images", type=int, default=0)
-    parser.add_argument("--max-defect-images", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device")
     parser.add_argument("--seed", type=int, default=42)
@@ -1046,17 +1269,58 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
-    if args.image_size <= 0 or args.epochs <= 0 or args.batch_size <= 0:
-        parser.error("image-size, epochs and batch-size must be positive")
-    if args.last_n_blocks <= 0 or args.lora_rank <= 0:
-        parser.error("last-n-blocks and lora-rank must be positive")
+def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Reject invalid combinations before loading either DINOv3 model."""
+
+    if args.image_size <= 0 or args.epochs <= 0 or args.batch_size <= 0 or args.centroid_batch_size <= 0:
+        parser.error("image-size, epochs, batch-size and centroid-batch-size must be positive")
+    if args.normal_shots == 0 or args.normal_shots < -1:
+        parser.error("normal-shots must be -1 or a positive integer")
+    if args.defect_shots < 0:
+        parser.error("defect-shots must be non-negative")
+    if args.max_normal_images < 0 or args.max_defect_images < 0:
+        parser.error("max-normal-images and max-defect-images must be non-negative")
+    if args.dataset in {"mvtec", "visa"} and not args.data_root:
+        parser.error("--data-root is required for --dataset mvtec or visa")
+    if args.dataset != "visa" and args.split_csv:
+        parser.error("--split-csv is only valid for --dataset visa")
+    if args.dataset == "folder" and not (args.normal_dir or args.data_root):
+        parser.error("--normal-dir or --data-root is required for --dataset folder")
+    if args.dataset != "folder" and any((args.normal_dir, args.defect_dir, args.mask_dir)):
+        parser.error("--normal-dir, --defect-dir and --mask-dir are only valid for --dataset folder")
+    if args.dataset == "folder" and args.categories:
+        parser.error("--categories is only valid for --dataset mvtec or visa")
+    if args.last_n_blocks <= 0 or args.lora_rank <= 0 or args.lora_alpha <= 0:
+        parser.error("last-n-blocks, lora-rank and lora-alpha must be positive")
+    if not 0 <= args.lora_dropout < 1:
+        parser.error("lora-dropout must be in [0, 1)")
+    if args.lr <= 0 or args.head_lr <= 0 or args.grad_clip <= 0:
+        parser.error("lr, head-lr and grad-clip must be positive")
+    if args.weight_decay < 0:
+        parser.error("weight-decay must be non-negative")
     if args.lambda_feature < 0 or args.lambda_map < 0 or args.mask_alpha < 0 or args.margin < 0:
         parser.error("loss weights and margin must be non-negative")
     if not 0 < args.top_ratio <= 1:
         parser.error("top-ratio must be in (0, 1]")
+    if args.num_workers < 0 or args.save_every < 0:
+        parser.error("num-workers and save-every must be non-negative")
+    if bool(args.teacher_layers) != bool(args.student_layers):
+        parser.error("--teacher-layers and --student-layers must be supplied together")
+    try:
+        _parse_layers(args.feature_layers)
+        if args.teacher_layers:
+            teacher_layers = _parse_layers(args.teacher_layers)
+            student_layers = _parse_layers(args.student_layers)
+            if len(teacher_layers) != len(student_layers):
+                parser.error("--teacher-layers and --student-layers must contain the same number of indices")
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    validate_args(parser, args)
     summary = train(args)
     print(json.dumps(summary, ensure_ascii=True, indent=2, default=_json_default))
 

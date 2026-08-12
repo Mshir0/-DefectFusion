@@ -1,14 +1,20 @@
 # DINOv3 Teacher-Student Distillation
 
-This training path freezes a DINOv3 ViT-B teacher and adapts a DINOv3 ViT-S
-student with QKV LoRA in the final four blocks. It distills patch tokens from
-hidden states 1, 6, and 12 and the resulting anomaly map. Synthetic masks, when
-available, increase the feature and map loss inside defect regions.
+All distillation code and dataset parsing live in the standalone
+`distill_dinov3.py` file. It does not read environment variables or depend on
+the DefectFusion package internals. Dataset, model, and output locations are
+provided as normal command-line arguments. Paths may be relative to the
+repository or absolute Linux paths.
 
-## 1. Linux environment
+The script freezes a DINOv3 ViT-B teacher and adapts one DINOv3 ViT-S student
+per selected category. It uses hidden states 1, 6, and 12 for patch-feature
+distillation, anomaly-map distillation, QKV LoRA in the final four blocks, and
+trainable LayerNorm/projection parameters.
 
-Use Python 3.10 or newer. Install the PyTorch build matching the server's CUDA
-version first, then install DefectFusion:
+## Installation
+
+Use Python 3.10 or newer. Install the PyTorch build matching the Linux
+server's CUDA version, followed by the project dependencies:
 
 ```bash
 git clone https://github.com/Mshir0/-DefectFusion.git
@@ -17,97 +23,97 @@ cd ./-DefectFusion
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-# Select the matching command at https://pytorch.org/get-started/locally/
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 pip install -e .
 ```
 
-The default model identifiers are Hugging Face DINOv3 checkpoints. If access
-requires authentication, run `hf auth login`. Offline/local model directories
-can be supplied through `TEACHER_MODEL` and `STUDENT_MODEL` instead.
+The default teacher and student are Hugging Face checkpoints. Pass local model
+directories to `--teacher-model` and `--student-model` for offline execution.
 
-## 2. Data layout
+## MVTec AD
 
-The recommended layout is:
-
-```text
-data/
-  normal/                 # normal training images
-  synthetic/images/       # optional generated defect images
-  synthetic/masks/        # optional binary masks
-```
-
-Mask files may use the image stem (`000.png`) or a suffix such as
-`000_mask.png`, `000_label.png`, or `000_seg.png`. Mirrored image/mask
-subdirectories are also supported. Defect images can be omitted for
-normal-only distillation.
-
-## 3. Train
-
-```bash
-chmod +x scripts/train_dinov3_distill.sh
-
-NORMAL_DIR=/data/normal \
-DEFECT_DIR=/data/synthetic/images \
-MASK_DIR=/data/synthetic/masks \
-OUTPUT_DIR=outputs/dinov3-vits-distilled \
-BATCH_SIZE=2 EPOCHS=10 \
-bash scripts/train_dinov3_distill.sh
-```
-
-For local weights:
-
-```bash
-TEACHER_MODEL=/models/dinov3-vitb16-pretrain-lvd1689m \
-STUDENT_MODEL=/models/dinov3-vits16-pretrain-lvd1689m \
-NORMAL_DIR=/data/normal \
-DEFECT_DIR=/data/synthetic/images \
-MASK_DIR=/data/synthetic/masks \
-bash scripts/train_dinov3_distill.sh
-```
-
-Useful overrides include `LORA_RANK=8`, `LAST_N_BLOCKS=4`, `MASK_ALPHA=2.0`,
-`LAMBDA_FEATURE=1.0`, `LAMBDA_MAP=1.0`, `IMAGE_SIZE=448`, and `AMP=0`. Reduce
-`BATCH_SIZE` and `CENTROID_BATCH_SIZE` first if GPU memory is insufficient.
-
-The final output contains:
+The script discovers each category from the standard layout:
 
 ```text
-outputs/dinov3-vits-distilled/
-  student_base/           # original ViT-S used to reconstruct adapters
-  processor/              # preprocessing config
-  distill_checkpoint.pt   # LoRA, LayerNorm, projections, centroids, metadata
-  student_merged/         # LoRA-merged standard Hugging Face ViT-S
-  training_config.json
+mvtec_anomaly/
+  bottle/
+    train/good/
+    test/<defect_type>/
+    ground_truth/<defect_type>/*_mask.png
+```
+
+Train selected categories with normal data only:
+
+```bash
+python distill_dinov3.py \
+  --dataset mvtec \
+  --data-root ./datasets/mvtec_anomaly \
+  --categories bottle cable \
+  --normal-shots 8 \
+  --defect-shots 0 \
+  --teacher-model ./models/dinov3-vitb16-pretrain-lvd1689m \
+  --student-model ./models/dinov3-vits16-pretrain-lvd1689m \
+  --output ./outputs/mvtec-distilled \
+  --epochs 10 --batch-size 2 --device cuda
+```
+
+Omit `--categories` to process every detected category. Use
+`--normal-shots -1` for all `train/good` images.
+
+## VisA
+
+The official `split_csv/1cls.csv` is used automatically. A custom split can be
+provided with `--split-csv`. If no split CSV exists, the script accepts the
+raw release layout `Data/Images/Normal`, `Data/Images/Anomaly`, and
+`Data/Masks/Anomaly`.
+
+```bash
+python distill_dinov3.py \
+  --dataset visa \
+  --data-root ./datasets/VisA_20220922 \
+  --categories candle capsules \
+  --normal-shots 8 \
+  --defect-shots 0 \
+  --teacher-model ./models/dinov3-vitb16-pretrain-lvd1689m \
+  --student-model ./models/dinov3-vits16-pretrain-lvd1689m \
+  --output ./outputs/visa-distilled \
+  --epochs 10 --batch-size 2 --device cuda
+```
+
+`--defect-shots N` explicitly selects up to N test defects per defect type and
+uses their masks for defect-weighted distillation. It defaults to `0` because
+using test defects is data leakage in the standard unsupervised protocol.
+
+## Outputs
+
+Each category is trained independently:
+
+```text
+outputs/mvtec-distilled/
+  bottle/
+    student_base/
+    processor/
+    distill_checkpoint.pt
+    student_merged/
+    training_config.json
+    summary.json
+  cable/
+    ...
   summary.json
 ```
 
-Use `student_merged/` as the model in the existing detector. Its valid default
-hidden states are `1,6,12`, not the ViT-L/7B setting `1,17,21,23`.
-
-## 4. Train and evaluate
-
-MVTec AD:
+`student_merged/` is a standard Hugging Face model with LoRA weights merged.
+It can be used directly by the existing detector. For example:
 
 ```bash
-RUN_EVAL=1 EVAL_KIND=mvtec \
-EVAL_DATA_ROOT=/data/mvtec_anomaly \
-NORMAL_DIR=/data/normal \
-DEFECT_DIR=/data/synthetic/images \
-MASK_DIR=/data/synthetic/masks \
-bash scripts/train_dinov3_distill.sh
+python -m defectfusion.cli evaluate-mvtec \
+  --data-root ./datasets/mvtec_anomaly --categories bottle \
+  --model ./outputs/mvtec-distilled/bottle/student_merged \
+  --feature-layers=1,6,12 --image-size 672 --device cuda \
+  --normal-shots 8 --defect-shots 0 \
+  --dual-branch --anomaly-method pca_knn_anoco \
+  --anoco-layer-consensus --output outputs/mvtec-bottle-eval
 ```
 
-VisA:
-
-```bash
-RUN_EVAL=1 EVAL_KIND=visa \
-EVAL_DATA_ROOT=/data/VisA_20220922 \
-NORMAL_DIR=/data/normal \
-DEFECT_DIR=/data/synthetic/images \
-MASK_DIR=/data/synthetic/masks \
-bash scripts/train_dinov3_distill.sh
-```
-
-To evaluate an already-trained model without retraining, use the existing CLI
-and set `--model /path/to/student_merged --feature-layers=1,6,12`.
+Run `python distill_dinov3.py --help` for all LoRA, loss, precision, and
+checkpoint options.

@@ -20,10 +20,10 @@ python -m defectfusion.cli fit --config configs/example.json
 python -m defectfusion.cli predict --model-state outputs/example-model.json --image examples/data/test.png
 ```
 
-For the DINOv3 ViT-B teacher to ViT-S LoRA distillation workflow, including
-Linux setup, synthetic-mask training, merged-model export, and evaluation, see
-[`DISTILLATION_GUIDE.md`](DISTILLATION_GUIDE.md). The ready-to-run entry point
-is `scripts/train_dinov3_distill.sh`.
+For standalone DINOv3 ViT-B to ViT-S LoRA distillation on MVTec AD or VisA,
+see [`DISTILLATION_GUIDE.md`](DISTILLATION_GUIDE.md). The complete training and
+dataset-loading entry point is `distill_dinov3.py`; it uses explicit CLI paths
+and does not depend on environment variables or a shell wrapper.
 
 `fit` learns the anomaly detector from `--normal-dir`. The optional
 `--prototype-dir` enables the separate defect-typing head; each subdirectory
