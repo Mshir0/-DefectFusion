@@ -1,15 +1,19 @@
 # DINOv3 Teacher-Student Distillation
 
 All distillation code and dataset parsing live in the standalone
-`distill_dinov3.py` file. It does not read environment variables or depend on
-the DefectFusion package internals. Dataset, model, and output locations are
+`distill_dinov3.py` file. It does not read environment variables or use a
+package-internal distillation module. Dataset, model, and output locations are
 provided as normal command-line arguments. Paths may be relative to the
-repository or absolute Linux paths.
+repository or absolute Linux paths. Its post-training evaluation deliberately
+calls the existing DefectFusion evaluator so metric definitions stay identical.
 
 The script freezes a DINOv3 ViT-B teacher and adapts one DINOv3 ViT-S student
 per selected category. It uses hidden states 1, 6, and 12 for patch-feature
 distillation, anomaly-map distillation, QKV LoRA in the final four blocks, and
-trainable LayerNorm/projection parameters.
+trainable LayerNorm/projection parameters. After every MVTec/VisA run it also
+evaluates the merged student with the project's existing DefectFusion
+evaluator. This reports the same image-level AUROC/AUPR/F1-max and pixel-level
+AUROC/AUPR/AUPRO/F1-max metrics as `evaluate-mvtec` and `evaluate-visa`.
 
 ## Installation
 
@@ -83,6 +87,8 @@ python distill_dinov3.py \
 `--defect-shots N` explicitly selects up to N test defects per defect type and
 uses their masks for defect-weighted distillation. It defaults to `0` because
 using test defects is data leakage in the standard unsupervised protocol.
+If it is set above zero, the selected test images are excluded from the final
+automatic evaluation so reported metrics remain held-out.
 
 ## Outputs
 
@@ -99,11 +105,22 @@ outputs/mvtec-distilled/
     summary.json
   cable/
     ...
+  evaluation/
+    categories/<category>.json
+    results.json
+    summary.csv
   summary.json
 ```
 
 `student_merged/` is a standard Hugging Face model with LoRA weights merged.
-It can be used directly by the existing detector. For example:
+The automatic `evaluation/` directory uses the same JSON and CSV layout as the
+existing evaluator. Its detector defaults are PCA, `--eval-image-size` equal
+to the training image size, and the same selected ViT-S hidden states. Override
+them through explicit `--eval-*` flags, for example
+`--eval-anomaly-method pca_knn --eval-dual-branch --eval-knn-dtype float16`.
+Use `--no-evaluate` to export a model without the post-training evaluation.
+
+The merged model can also be evaluated manually through the existing CLI:
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec \

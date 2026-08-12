@@ -23,7 +23,9 @@ python -m defectfusion.cli predict --model-state outputs/example-model.json --im
 For standalone DINOv3 ViT-B to ViT-S LoRA distillation on MVTec AD or VisA,
 see [`DISTILLATION_GUIDE.md`](DISTILLATION_GUIDE.md). The complete training and
 dataset-loading entry point is `distill_dinov3.py`; it uses explicit CLI paths
-and does not depend on environment variables or a shell wrapper.
+and does not depend on environment variables or a shell wrapper. MVTec/VisA
+runs automatically write the project's standard AUROC, AUPR, F1-max, and
+AUPRO evaluation results after distillation.
 
 `fit` learns the anomaly detector from `--normal-dir`. The optional
 `--prototype-dir` enables the separate defect-typing head; each subdirectory

@@ -3,6 +3,7 @@ import unittest
 from argparse import ArgumentParser
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 from PIL import Image
@@ -16,6 +17,10 @@ from distill_dinov3 import (
     configure_student_trainable,
     dataset_record_groups,
     discover_records,
+    _engine_metric_summary,
+    _selected_category_records,
+    _selected_defect_paths,
+    evaluate_distilled_students,
     inject_lora,
     masks_to_patch_weights,
     resolve_layer_pairs,
@@ -54,6 +59,107 @@ class TinyBackbone(nn.Module):
 
 
 class DistillationTests(unittest.TestCase):
+    def test_engine_metric_summary_matches_cli_macro_convention(self):
+        summary = _engine_metric_summary([
+            {"image_auroc": 0.8, "pixel_auroc": 0.6},
+            {"image_auroc": 1.0, "pixel_auroc": 0.9},
+            {"image_aupr": 0.7},
+        ])
+        self.assertAlmostEqual(summary["image_auroc"], 0.9)
+        self.assertAlmostEqual(summary["pixel_auroc"], 0.75)
+        self.assertAlmostEqual(summary["image_aupr"], 0.7)
+
+    def test_evaluation_category_and_defect_selection(self):
+        categories = [
+            SimpleNamespace(name="bottle"),
+            SimpleNamespace(name="cable"),
+        ]
+        self.assertEqual([item.name for item in _selected_category_records(categories, ["cable"])], ["cable"])
+        records = [
+            SimpleNamespace(image_path="normal.png", is_anomaly=False),
+            SimpleNamespace(image_path="used-defect.png", is_anomaly=True),
+        ]
+        self.assertEqual(_selected_defect_paths(records), ["used-defect.png"])
+
+    def test_post_training_evaluation_uses_engine_output_layout(self):
+        class FakeExtractor:
+            def __init__(self, model_name, **kwargs):
+                self.model_name = model_name
+                self.device = kwargs["device"]
+
+        class FakeFusion:
+            def __init__(self, extractor, **kwargs):
+                self.extractor = extractor
+                self.normal_paths = []
+
+            def fit_normal(self, paths):
+                self.normal_paths = list(paths)
+                return self
+
+            def memory_stats(self):
+                return {"patch_count": 0, "bytes": 0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            category = root / "data" / "bottle"
+            normal_dir = category / "train" / "good"
+            normal_dir.mkdir(parents=True)
+            normal = normal_dir / "normal.png"
+            Image.new("RGB", (8, 8)).save(normal)
+            output = root / "output"
+            (output / "bottle" / "student_merged").mkdir(parents=True)
+            used_defect = category / "test" / "crack" / "used.png"
+            used_defect.parent.mkdir(parents=True)
+            Image.new("RGB", (8, 8)).save(used_defect)
+            calls = {}
+
+            def fake_evaluate_mvtec(fusion, category_dir, result_path, **kwargs):
+                calls["normal_paths"] = fusion.normal_paths
+                calls["excluded"] = kwargs["excluded_images"]
+                Path(result_path).write_text("[]\n", encoding="utf-8")
+                return {
+                    "category": Path(category_dir).name,
+                    "images": 2,
+                    "image_auroc": 0.8,
+                    "image_aupr": 0.7,
+                    "image_f1_max": 0.6,
+                    "pixel_auroc": 0.5,
+                    "pixel_aupr": 0.4,
+                    "pixel_aupro": 0.3,
+                    "pixel_f1_max": 0.2,
+                    "timing_seconds": {"total": 0.1},
+                }
+
+            args = SimpleNamespace(
+                dataset="mvtec", data_root=str(root / "data"), split_csv=None,
+                categories=["bottle"], device="cpu", normal_shots=1,
+                defect_shots=1, seed=42, eval_image_size=448,
+                eval_feature_layers="1,6,12", eval_resize_mode="direct",
+                eval_layer_aggregation="mean", eval_layer_normalization="none",
+                eval_top_k_ratio=0.05, eval_image_score="mtop1p",
+                eval_image_top_ratio=0.01, eval_anomaly_method="pca",
+                eval_pca_residual_metric="squared_l2", eval_knn_weight=0.5,
+                eval_memory_max_patches=50000, eval_normal_fit_max_patches=0,
+                eval_knn_chunk_size=256, eval_knn_backend="auto",
+                eval_knn_dtype="float32", eval_dual_branch=False,
+            )
+            groups = {
+                "bottle": [
+                    ImageRecord(str(normal), None, False),
+                    ImageRecord(str(used_defect), None, True, "crack"),
+                ],
+            }
+            with patch("defectfusion.features.DinoFeatureExtractor", FakeExtractor), patch(
+                "defectfusion.pipeline.DefectFusion", FakeFusion
+            ), patch("defectfusion.mvtec.evaluate_mvtec", fake_evaluate_mvtec):
+                summary = evaluate_distilled_students(args, output, groups)
+
+            self.assertEqual(calls["normal_paths"], [str(normal)])
+            self.assertEqual(calls["excluded"], [str(used_defect)])
+            self.assertAlmostEqual(summary["macro_average"]["pixel_aupro"], 0.3)
+            self.assertTrue((output / "evaluation" / "results.json").is_file())
+            self.assertTrue((output / "evaluation" / "summary.csv").is_file())
+
     def test_cli_validation_rejects_invalid_training_values(self):
         parser = ArgumentParser()
         args = SimpleNamespace(
@@ -66,7 +172,15 @@ class DistillationTests(unittest.TestCase):
             weight_decay=1e-4, lambda_feature=1.0, lambda_map=1.0,
             mask_alpha=2.0, margin=0.2, top_ratio=0.01, num_workers=0,
             save_every=0, feature_layers="1,6,12", teacher_layers=None,
-            student_layers=None,
+            student_layers=None, evaluate=True, eval_image_size=None,
+            eval_feature_layers=None, eval_resize_mode="direct",
+            eval_layer_aggregation="mean", eval_layer_normalization="none",
+            eval_anomaly_method="pca", eval_pca_residual_metric="squared_l2",
+            eval_dual_branch=False, eval_knn_weight=0.5,
+            eval_memory_max_patches=50000, eval_normal_fit_max_patches=0,
+            eval_knn_chunk_size=256, eval_knn_backend="auto",
+            eval_knn_dtype="float32", eval_top_k_ratio=0.05,
+            eval_image_score="mtop1p", eval_image_top_ratio=0.01,
         )
         with self.assertRaises(SystemExit):
             validate_args(parser, args)

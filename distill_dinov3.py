@@ -1,12 +1,13 @@
 """Standalone DINOv3 teacher/student distillation for MVTec AD and VisA.
 
-This module deliberately keeps the existing DefectFusion inference pipeline
-unchanged.  It trains a deployable ViT-S backbone using a frozen ViT-B
-teacher, multi-layer patch-token distillation, anomaly-map distillation, and a
-small normal-compactness/margin objective.  MVTec AD and VisA are parsed
-directly by this file.  Test defects are excluded by default; when explicitly
-selected, their masks increase the feature-distillation weight in defect
-regions.
+This module keeps distillation and dataset parsing in one standalone file. It
+trains a deployable ViT-S backbone using a frozen ViT-B teacher, multi-layer
+patch-token distillation, anomaly-map distillation, and a small
+normal-compactness/margin objective. MVTec AD and VisA are parsed directly by
+this file. Test defects are excluded by default; when explicitly selected,
+their masks increase the feature-distillation weight in defect regions. The
+optional post-training evaluation reuses DefectFusion's existing metric code
+so its reported indicators match the project evaluator.
 
 Example::
 
@@ -51,6 +52,20 @@ MASK_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff")
 DEFAULT_TEACHER = "facebook/dinov3-vitb16-pretrain-lvd1689m"
 DEFAULT_STUDENT = "facebook/dinov3-vits16-pretrain-lvd1689m"
 DEFAULT_FEATURE_LAYERS = (1, 6, 12)
+ENGINE_METRIC_FIELDS = (
+    "image_auroc",
+    "image_aupr",
+    "image_f1_max",
+    "pixel_auroc",
+    "pixel_aupr",
+    "pixel_aupro",
+    "pixel_f1_max",
+    "defect_type_accuracy",
+    "defect_type_macro_precision",
+    "defect_type_macro_recall",
+    "defect_type_macro_f1",
+    "defect_type_weighted_f1",
+)
 
 
 @dataclass(frozen=True)
@@ -1028,6 +1043,182 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _evaluation_categories(args: argparse.Namespace) -> list[DatasetCategory]:
+    """Load the complete test split used by the project's evaluator."""
+
+    if args.dataset == "mvtec":
+        return _mvtec_categories(args.data_root)
+    if args.dataset == "visa":
+        # The training parser intentionally keeps only normal-train and
+        # anomalous-test records.  The project evaluator additionally needs
+        # VisA test-normal rows, so use its canonical category loader here.
+        from defectfusion.visa import load_visa_categories
+
+        return load_visa_categories(args.data_root, args.split_csv)
+    raise ValueError("Automatic evaluation is available only for --dataset mvtec or visa")
+
+
+def _selected_category_records(
+    categories: Sequence[DatasetCategory],
+    requested_categories: Sequence[str] | None,
+) -> list[DatasetCategory]:
+    requested = set(requested_categories or [])
+    if not requested:
+        return list(categories)
+    return [category for category in categories if category.name in requested]
+
+
+def _engine_metric_summary(metrics: Sequence[dict]) -> dict[str, float]:
+    """Use the same per-category macro averaging convention as the CLI."""
+
+    summary: dict[str, float] = {}
+    for name in ENGINE_METRIC_FIELDS:
+        values = [float(item[name]) for item in metrics if name in item]
+        if values:
+            summary[name] = sum(values) / len(values)
+    return summary
+
+
+def _selected_defect_paths(records: Sequence[ImageRecord]) -> list[str]:
+    """Return opt-in test defects so they are omitted from post-training scores."""
+
+    return [record.image_path for record in records if record.is_anomaly]
+
+
+def evaluate_distilled_students(
+    args: argparse.Namespace,
+    output_root: str | Path,
+    groups: dict[str, list[ImageRecord]],
+) -> dict:
+    """Evaluate merged students with the existing DefectFusion metric pipeline.
+
+    The evaluator intentionally delegates AUROC, AUPR, F1-max, and AUPRO to
+    ``defectfusion.mvtec``.  This keeps the generated JSON/CSV layout and all
+    metric definitions identical to ``evaluate-mvtec`` and ``evaluate-visa``.
+    """
+
+    from defectfusion.features import DinoFeatureExtractor
+    from defectfusion.mvtec import evaluate_mvtec, evaluate_samples
+    from defectfusion.pipeline import DefectFusion
+    from defectfusion.reporting import write_metrics_csv
+
+    output_root = Path(output_root)
+    evaluation_root = output_root / "evaluation"
+    categories_dir = evaluation_root / "categories"
+    categories_dir.mkdir(parents=True, exist_ok=True)
+    categories = _selected_category_records(_evaluation_categories(args), args.categories)
+    category_by_name = {category.name: category for category in categories}
+    missing = sorted(set(groups) - set(category_by_name))
+    if missing:
+        raise ValueError(f"Could not resolve evaluation categories: {', '.join(missing)}")
+
+    all_metrics: list[dict] = []
+    for category_name, records in groups.items():
+        category = category_by_name[category_name]
+        normal_paths = [record.image_path for record in records if not record.is_anomaly]
+        if not normal_paths:
+            raise ValueError(f"{args.dataset}/{category_name} has no normal images for evaluation")
+        model_dir = output_root / category_name / "student_merged"
+        if not model_dir.is_dir():
+            raise FileNotFoundError(f"Merged student model does not exist: {model_dir}")
+        print(f"[evaluate] {args.dataset}/{category_name}: normal={len(normal_paths)} model={model_dir}", flush=True)
+        extractor = DinoFeatureExtractor(
+            str(model_dir),
+            image_size=args.eval_image_size,
+            resize_mode=args.eval_resize_mode,
+            device=args.device,
+            feature_layers=_parse_layers(args.eval_feature_layers),
+            layer_aggregation=args.eval_layer_aggregation,
+            layer_normalization=args.eval_layer_normalization,
+        )
+        fusion = DefectFusion(
+            extractor,
+            top_k_ratio=args.eval_top_k_ratio,
+            image_score=args.eval_image_score,
+            image_top_ratio=args.eval_image_top_ratio,
+            anomaly_method=args.eval_anomaly_method,
+            pca_residual_metric=args.eval_pca_residual_metric,
+            knn_weight=args.eval_knn_weight,
+            memory_max_patches=args.eval_memory_max_patches,
+            normal_fit_max_patches=args.eval_normal_fit_max_patches,
+            knn_chunk_size=args.eval_knn_chunk_size,
+            knn_backend=args.eval_knn_backend,
+            knn_dtype=args.eval_knn_dtype,
+            dual_branch=args.eval_dual_branch,
+        ).fit_normal(normal_paths)
+        memory_stats = fusion.memory_stats()
+        excluded = _selected_defect_paths(records)
+        result_path = categories_dir / f"{category_name}.json"
+        if args.dataset == "mvtec":
+            category_dir = Path(args.data_root) / category_name
+            metrics = evaluate_mvtec(
+                fusion,
+                category_dir,
+                result_path,
+                excluded_images=excluded,
+            )
+        else:
+            samples = [(sample.image, sample.defect_type, sample.anomalous, sample.mask) for sample in category.test_samples]
+            metrics = evaluate_samples(
+                fusion,
+                category_name,
+                samples,
+                result_path,
+                excluded_images=excluded,
+            )
+        metrics.update(
+            {
+                "dataset": args.dataset,
+                "normal_shots": args.normal_shots,
+                "normal_shot_images": [str(Path(path)) for path in normal_paths],
+                "defect_shots": args.defect_shots,
+                "defect_shot_images": [str(Path(path)) for path in excluded],
+                "seed": args.seed,
+                "model": str(model_dir),
+                "feature_layers": list(_parse_layers(args.eval_feature_layers)),
+                "image_size": args.eval_image_size,
+                "resize_mode": args.eval_resize_mode,
+                "layer_aggregation": args.eval_layer_aggregation,
+                "layer_normalization": args.eval_layer_normalization,
+                "anomaly_method": args.eval_anomaly_method,
+                "pca_residual_metric": args.eval_pca_residual_metric,
+                "knn_weight": args.eval_knn_weight if args.eval_anomaly_method in {"pca_knn", "pca_knn_anoco"} else 0,
+                "dual_branch": args.eval_dual_branch,
+                "memory_max_patches": args.eval_memory_max_patches if args.eval_anomaly_method != "pca" else 0,
+                "normal_fit_max_patches": args.eval_normal_fit_max_patches,
+                "knn_chunk_size": args.eval_knn_chunk_size if args.eval_anomaly_method != "pca" else 0,
+                "knn_backend": fusion.normal_memory.resolved_backend if args.eval_anomaly_method != "pca" else "none",
+                "knn_dtype": args.eval_knn_dtype if args.eval_anomaly_method != "pca" else "none",
+                "memory_patch_count": memory_stats["patch_count"] if args.eval_anomaly_method != "pca" else 0,
+                "memory_bytes": memory_stats["bytes"] if args.eval_anomaly_method != "pca" else 0,
+                "metrics_file": str(result_path),
+            }
+        )
+        predictions = json.loads(result_path.read_text(encoding="utf-8"))
+        result_path.write_text(
+            json.dumps({"metrics": metrics, "predictions": predictions}, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        all_metrics.append(metrics)
+        del fusion, extractor
+        if str(args.device or "").startswith("cuda") or (args.device is None and torch.cuda.is_available()):
+            torch.cuda.empty_cache()
+
+    macro = _engine_metric_summary(all_metrics)
+    summary_path = evaluation_root / "results.json"
+    csv_path = evaluation_root / "summary.csv"
+    summary = {
+        "macro_average": macro,
+        "categories": all_metrics,
+        "summary_file": str(summary_path),
+        "summary_csv": str(csv_path),
+    }
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_metrics_csv(csv_path, all_metrics, macro)
+    print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
+    return summary
+
+
 def _train_records(
     args: argparse.Namespace,
     records: Sequence[ImageRecord],
@@ -1186,7 +1377,19 @@ def train(args: argparse.Namespace) -> dict:
         set_seed(_stable_seed(args.seed, f"{args.dataset}:train:{category}"))
         print(f"[distill] {args.dataset}/{category}: normal={counts[category]['normal']} defect={counts[category]['defect']}", flush=True)
         summaries[category] = _train_records(args, records, root / category, teacher, teacher_processor, device)
-    summary = {"dataset": args.dataset, "data_root": args.data_root, "categories": counts, "outputs": summaries}
+    evaluation = None
+    if args.evaluate:
+        del teacher, teacher_processor
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        evaluation = evaluate_distilled_students(args, root, groups)
+    summary = {
+        "dataset": args.dataset,
+        "data_root": args.data_root,
+        "categories": counts,
+        "outputs": summaries,
+        "evaluation": evaluation,
+    }
     (root / "summary.json").write_text(json.dumps(summary, ensure_ascii=True, indent=2, default=_json_default) + "\n", encoding="utf-8")
     return summary
 
@@ -1215,6 +1418,15 @@ def _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_target
         "margin": float(args.margin),
         "top_ratio": float(args.top_ratio),
         "seed": int(args.seed),
+        "evaluate": bool(args.evaluate),
+        "eval_image_size": int(args.eval_image_size),
+        "eval_feature_layers": list(_parse_layers(args.eval_feature_layers)),
+        "eval_resize_mode": args.eval_resize_mode,
+        "eval_layer_aggregation": args.eval_layer_aggregation,
+        "eval_layer_normalization": args.eval_layer_normalization,
+        "eval_anomaly_method": args.eval_anomaly_method,
+        "eval_pca_residual_metric": args.eval_pca_residual_metric,
+        "eval_dual_branch": bool(args.eval_dual_branch),
     }
 
 
@@ -1266,6 +1478,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save-every", type=int, default=0, help="also save epoch checkpoints; 0 saves only the final checkpoint")
+
+    evaluation = parser.add_argument_group("post-training evaluation")
+    evaluation.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True, help="evaluate each merged student with DefectFusion after training")
+    evaluation.add_argument("--eval-image-size", type=int, default=None, help="detector input size; defaults to --image-size")
+    evaluation.add_argument("--eval-feature-layers", default=None, help="student hidden states used by the detector; defaults to --feature-layers")
+    evaluation.add_argument("--eval-resize-mode", choices=("direct", "longest_pad"), default="direct")
+    evaluation.add_argument("--eval-layer-aggregation", choices=("mean", "concat"), default="mean")
+    evaluation.add_argument("--eval-layer-normalization", choices=("none", "l2"), default="none")
+    evaluation.add_argument("--eval-anomaly-method", choices=("pca", "knn", "pca_knn"), default="pca")
+    evaluation.add_argument("--eval-pca-residual-metric", choices=("squared_l2", "mahalanobis"), default="squared_l2")
+    evaluation.add_argument("--eval-dual-branch", action=argparse.BooleanOptionalAction, default=False)
+    evaluation.add_argument("--eval-knn-weight", type=float, default=0.5)
+    evaluation.add_argument("--eval-memory-max-patches", type=int, default=50000)
+    evaluation.add_argument("--eval-normal-fit-max-patches", type=int, default=0)
+    evaluation.add_argument("--eval-knn-chunk-size", type=int, default=256)
+    evaluation.add_argument("--eval-knn-backend", choices=("auto", "numpy", "torch"), default="auto")
+    evaluation.add_argument("--eval-knn-dtype", choices=("float32", "float16"), default="float32")
+    evaluation.add_argument("--eval-top-k-ratio", type=float, default=0.05)
+    evaluation.add_argument("--eval-image-score", choices=("mtop1p", "mean", "max", "p99"), default="mtop1p")
+    evaluation.add_argument("--eval-image-top-ratio", type=float, default=0.01)
     return parser
 
 
@@ -1315,6 +1547,28 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                 parser.error("--teacher-layers and --student-layers must contain the same number of indices")
     except ValueError as exc:
         parser.error(str(exc))
+    if args.eval_image_size is None:
+        args.eval_image_size = args.image_size
+    if args.eval_feature_layers is None:
+        args.eval_feature_layers = args.feature_layers
+    if args.eval_image_size <= 0:
+        parser.error("eval-image-size must be positive")
+    if not 0 <= args.eval_knn_weight <= 1:
+        parser.error("eval-knn-weight must be in [0, 1]")
+    if args.eval_memory_max_patches < 0:
+        parser.error("eval-memory-max-patches must be non-negative")
+    if args.eval_normal_fit_max_patches < 0:
+        parser.error("eval-normal-fit-max-patches must be non-negative")
+    if args.eval_knn_chunk_size <= 0:
+        parser.error("eval-knn-chunk-size must be positive")
+    if not 0 < args.eval_top_k_ratio <= 1 or not 0 < args.eval_image_top_ratio <= 1:
+        parser.error("eval-top-k-ratio and eval-image-top-ratio must be in (0, 1]")
+    try:
+        _parse_layers(args.eval_feature_layers)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.evaluate and args.dataset == "folder":
+        parser.error("automatic evaluation requires --dataset mvtec or visa; use --no-evaluate for --dataset folder")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
