@@ -33,6 +33,9 @@ class AggregateResultsTest(unittest.TestCase):
                 "image_auroc": 0.95,
                 "pixel_auroc": 0.96,
                 "good_accuracy": 0.8,
+                "defect_recall": 0.9,
+                "balanced_accuracy": 0.85,
+                "decision_accuracy": 0.88,
                 "future_metric": 0.97,
             },
             "categories": categories,
@@ -50,6 +53,9 @@ class AggregateResultsTest(unittest.TestCase):
         self.assertEqual(macro[0]["total_seconds"], 8.0)
         self.assertEqual(macro[0]["peak_memory_bytes"], 2000)
         self.assertEqual(macro[0]["good_accuracy"], 0.8)
+        self.assertEqual(macro[0]["defect_recall"], 0.9)
+        self.assertEqual(macro[0]["balanced_accuracy"], 0.85)
+        self.assertEqual(macro[0]["decision_accuracy"], 0.88)
         self.assertEqual(macro[0]["future_metric"], 0.97)
         self.assertEqual(categories[0]["timing_prediction_seconds"], 2.0)
 
@@ -60,13 +66,19 @@ class AggregateResultsTest(unittest.TestCase):
             output = root / "aggregate"
             macro_path, category_path, count, warnings = write_statistics(root, output)
             with macro_path.open(encoding="utf-8-sig", newline="") as stream:
-                macro_rows = list(csv.DictReader(stream))
+                macro_reader = csv.DictReader(stream)
+                macro_fields = list(macro_reader.fieldnames or [])
+                macro_rows = list(macro_reader)
             with category_path.open(encoding="utf-8-sig", newline="") as stream:
-                category_rows = list(csv.DictReader(stream))
+                category_reader = csv.DictReader(stream)
+                category_fields = list(category_reader.fieldnames or [])
+                category_rows = list(category_reader)
         self.assertEqual(count, 1)
         self.assertEqual(warnings, [])
         self.assertEqual(macro_rows[0]["image_auroc"], "0.95")
         self.assertEqual(len(category_rows), 2)
+        self.assertEqual(len(macro_fields), len(set(macro_fields)))
+        self.assertEqual(len(category_fields), len(set(category_fields)))
 
 
 if __name__ == "__main__":

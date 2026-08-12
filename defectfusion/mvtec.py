@@ -285,6 +285,8 @@ def evaluate_samples(
     good_decision_rows = [row for row in good_rows if row["predicted_anomaly"] is not None]
     good_predicted_normal = sum(row["predicted_label"] == "good" for row in good_decision_rows)
     defect_rows = [row for row in rows if row["ground_truth_anomaly"]]
+    defect_decision_rows = [row for row in defect_rows if row["predicted_anomaly"] is not None]
+    defect_predicted_anomaly = sum(row["predicted_label"] == "anomaly" for row in defect_decision_rows)
     metrics = {
         "category": category,
         "images": len(rows),
@@ -293,6 +295,9 @@ def evaluate_samples(
         "good_predicted_normal": good_predicted_normal,
         "good_predicted_anomaly": sum(row["predicted_label"] == "anomaly" for row in good_decision_rows),
         "defect_images": len(defect_rows),
+        "defect_decision_images": len(defect_decision_rows),
+        "defect_predicted_anomaly": defect_predicted_anomaly,
+        "defect_predicted_normal": sum(row["predicted_label"] == "good" for row in defect_decision_rows),
         "pixel_metric_images": len(pixel_masks),
         "good_decision_threshold": decision_threshold,
         "good_decision_threshold_source": resolved_threshold_source,
@@ -302,6 +307,13 @@ def evaluate_samples(
     }
     if good_decision_rows:
         metrics["good_accuracy"] = good_predicted_normal / len(good_decision_rows)
+    if defect_decision_rows:
+        metrics["defect_recall"] = defect_predicted_anomaly / len(defect_decision_rows)
+    if good_decision_rows and defect_decision_rows:
+        metrics["balanced_accuracy"] = 0.5 * (metrics["good_accuracy"] + metrics["defect_recall"])
+        metrics["decision_accuracy"] = (
+            good_predicted_normal + defect_predicted_anomaly
+        ) / (len(good_decision_rows) + len(defect_decision_rows))
     metrics_started = time.perf_counter()
     if len(set(image_y)) > 1:
         metrics["image_auroc"], metrics["image_aupr"], metrics["image_f1_max"] = compute_binary_metrics(image_y, image_s)

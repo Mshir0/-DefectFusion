@@ -74,15 +74,23 @@ result. Test `good` images are excluded from pixel/localization metrics but
 remain negative samples for aggregate image-level ranking metrics.
 
 To run the main PCA evaluator for all MVTec AD and VisA categories and print
-the normal-test decision counts plus `good_accuracy`, use
+the threshold confusion counts and balanced decision metrics, use
 [`scripts/evaluate_pca_good_accuracy.sh`](scripts/evaluate_pca_good_accuracy.sh).
 It retains the dataset-specific preprocessing from the existing evaluation
-scripts, calibrates the good/anomaly threshold from the 99.5th percentile of
-normal training-view scores (including rotation augmentations), and does not
-invoke distillation, kNN, ANoCo, or the dual branch. Set
-`NORMAL_DECISION_QUANTILE=0.99` before the command to use the 99th percentile.
+scripts and does not invoke distillation, kNN, ANoCo, or the dual branch. PCA
+fitting uses rotation views generated with `SEED=42`; threshold calibration
+uses a separate set of rotations generated with `NORMAL_DECISION_SEED=142`.
+Those held-out views do not participate in PCA fitting. Their 99.5th score
+percentile is the default threshold; set `NORMAL_DECISION_QUANTILE=0.99` to use
+the 99th percentile. `NORMAL_DECISION_AUGMENT_COUNT` controls the held-out views
+per normal shot and defaults to `NORMAL_AUGMENT_COUNT`.
 
 ```bash
+bash scripts/evaluate_pca_good_accuracy.sh
+
+# Compare the 99th percentile without overwriting the default output.
+NORMAL_DECISION_QUANTILE=0.99 \
+OUTPUT_ROOT=outputs/pca-good-accuracy-heldout-q99 \
 bash scripts/evaluate_pca_good_accuracy.sh
 
 # Override the paths and run only VisA.
@@ -91,6 +99,13 @@ VISA_DATA_ROOT=/data/VisA \
 MODEL=/data/dinov3-vitl16-pretrain-lvd1689m \
 bash scripts/evaluate_pca_good_accuracy.sh
 ```
+
+The default output root is `outputs/pca-good-accuracy-heldout`. In addition to
+`good_accuracy`, `summary.csv` reports defect recall, balanced accuracy, overall
+decision accuracy, and the four confusion counts: `good_predicted_normal` (TN),
+`good_predicted_anomaly` (FP), `defect_predicted_anomaly` (TP), and
+`defect_predicted_normal` (FN). Use balanced accuracy to compare thresholds so
+that a higher normal accuracy cannot hide a loss of defect recall.
 
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSON file per

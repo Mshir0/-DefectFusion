@@ -60,6 +60,12 @@ class AuproTest(unittest.TestCase):
         self.assertEqual(metrics["good_predicted_anomaly"], 0)
         self.assertEqual(metrics["good_accuracy"], 1.0)
         self.assertEqual(metrics["defect_images"], 1)
+        self.assertEqual(metrics["defect_decision_images"], 1)
+        self.assertEqual(metrics["defect_predicted_anomaly"], 1)
+        self.assertEqual(metrics["defect_predicted_normal"], 0)
+        self.assertEqual(metrics["defect_recall"], 1.0)
+        self.assertEqual(metrics["balanced_accuracy"], 1.0)
+        self.assertEqual(metrics["decision_accuracy"], 1.0)
         self.assertEqual(metrics["pixel_metric_images"], 1)
         self.assertEqual(metrics["good_decision_threshold"], 0.25)
         self.assertEqual(metrics["good_decision_threshold_source"], "normal_validation_max")
@@ -67,7 +73,7 @@ class AuproTest(unittest.TestCase):
         self.assertEqual(metrics["good_decision_reference_images"], 1)
         self.assertEqual(metrics["pixel_auroc"], 1.0)
 
-    def test_training_augmentation_scores_use_requested_decision_quantile(self):
+    def test_reference_scores_use_requested_decision_quantile(self):
         class Fusion:
             def __init__(self, view_scores):
                 self.view_scores = view_scores
@@ -96,15 +102,54 @@ class AuproTest(unittest.TestCase):
                 output,
                 progress=False,
                 normal_reference_images=references,
-                decision_threshold_source="normal_training_augmented_quantile",
+                decision_threshold_source="normal_augmentation_holdout_quantile",
                 decision_threshold_quantile=0.995,
             )
 
         self.assertAlmostEqual(metrics["good_decision_threshold"], np.quantile([0.1, 0.2, 0.4, 0.8], 0.995))
-        self.assertEqual(metrics["good_decision_threshold_source"], "normal_training_augmented_quantile")
+        self.assertEqual(metrics["good_decision_threshold_source"], "normal_augmentation_holdout_quantile")
         self.assertEqual(metrics["good_decision_quantile"], 0.995)
         self.assertEqual(metrics["good_decision_reference_images"], 4)
         self.assertEqual(metrics["good_accuracy"], 1.0)
+
+    def test_threshold_metrics_report_false_positive_and_false_negative_counts(self):
+        class Fusion:
+            scores = {
+                "reference": 0.5,
+                "good-correct": 0.2,
+                "good-wrong": 0.8,
+                "defect-correct": 0.9,
+                "defect-wrong": 0.3,
+            }
+
+            def predict(self, image):
+                return {
+                    "image": str(image), "anomaly_score": self.scores[Path(image).stem],
+                    "anomaly_map": [[0.0, 0.0], [0.0, 0.0]],
+                    "defect_type": "unknown", "defect_type_score": 0.0,
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            samples = [
+                (root / "good-correct.png", "good", False, None),
+                (root / "good-wrong.png", "good", False, None),
+                (root / "defect-correct.png", "defect", True, None),
+                (root / "defect-wrong.png", "defect", True, None),
+            ]
+            metrics = evaluate_samples(
+                Fusion(), "widget", samples, root / "results.json", progress=False,
+                normal_reference_images=[root / "reference.png"],
+            )
+
+        self.assertEqual(metrics["good_predicted_normal"], 1)
+        self.assertEqual(metrics["good_predicted_anomaly"], 1)
+        self.assertEqual(metrics["defect_predicted_anomaly"], 1)
+        self.assertEqual(metrics["defect_predicted_normal"], 1)
+        self.assertEqual(metrics["good_accuracy"], 0.5)
+        self.assertEqual(metrics["defect_recall"], 0.5)
+        self.assertEqual(metrics["balanced_accuracy"], 0.5)
+        self.assertEqual(metrics["decision_accuracy"], 0.5)
 
     def test_evaluation_writes_json_array_not_jsonl(self):
         class Fusion:

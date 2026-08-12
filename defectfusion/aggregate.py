@@ -12,7 +12,8 @@ METRIC_FIELDS = (
     "pixel_auroc", "pixel_aupr", "pixel_aupro", "pixel_f1_max",
     "defect_type_accuracy", "defect_type_macro_precision",
     "defect_type_macro_recall", "defect_type_macro_f1",
-    "defect_type_weighted_f1", "good_accuracy",
+    "defect_type_weighted_f1", "good_accuracy", "defect_recall",
+    "balanced_accuracy", "decision_accuracy",
 )
 
 MACRO_FIELDS = (
@@ -26,9 +27,12 @@ CATEGORY_LEADING_FIELDS = (
     "experiment", "dataset", "normal_shots", "defect_shots", "seed",
     "category", "images", "good_images", "good_decision_images",
     "good_predicted_normal", "good_predicted_anomaly", "good_accuracy",
-    "defect_images", "pixel_metric_images",
+    "defect_images", "defect_decision_images", "defect_predicted_anomaly",
+    "defect_predicted_normal", "defect_recall", "balanced_accuracy", "decision_accuracy",
+    "pixel_metric_images",
     "good_decision_threshold", "good_decision_threshold_source", "good_decision_quantile",
-    "good_decision_reference_images", *METRIC_FIELDS, "total_seconds",
+    "good_decision_reference_images", "normal_decision_augment_count", "normal_decision_seed",
+    *METRIC_FIELDS, "total_seconds",
     "timing_threshold_calibration_seconds", "timing_prediction_seconds",
     "timing_pixel_preparation_seconds",
     "timing_json_output_seconds", "timing_metrics_seconds",
@@ -121,7 +125,10 @@ def collect_results(input_root: Path) -> tuple[list[dict], list[dict], list[str]
 
 def _write_csv(path: Path, rows: list[dict], leading_fields: tuple[str, ...]) -> None:
     all_fields = {key for row in rows for key in row}
-    fields = [field for field in leading_fields if field in all_fields]
+    fields = []
+    for field in leading_fields:
+        if field in all_fields and field not in fields:
+            fields.append(field)
     fields.extend(sorted(all_fields - set(fields)))
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as stream:
@@ -161,13 +168,15 @@ def main(argv=None) -> int:
         print(f"[summary] warning: {warning}", file=sys.stderr)
 
     macro_rows, _, _ = collect_results(Path(args.input))
-    print("experiment\tnormal\tdefect\tI-AUROC\tP-AUROC\tPRO\tP-F1\tType-F1\tGood-Acc")
+    print("experiment\tnormal\tdefect\tI-AUROC\tP-AUROC\tPRO\tP-F1\tType-F1\tGood-Acc\tDefect-Recall\tBalanced-Acc\tDecision-Acc")
     for row in macro_rows:
         print(
             f"{row['experiment']}\t{row['normal_shots']}\t{row['defect_shots']}\t"
             f"{_format_metric(row['image_auroc'])}\t{_format_metric(row['pixel_auroc'])}\t"
             f"{_format_metric(row['pixel_aupro'])}\t{_format_metric(row['pixel_f1_max'])}\t"
-            f"{_format_metric(row['defect_type_macro_f1'])}\t{_format_metric(row['good_accuracy'])}"
+            f"{_format_metric(row['defect_type_macro_f1'])}\t{_format_metric(row['good_accuracy'])}\t"
+            f"{_format_metric(row['defect_recall'])}\t{_format_metric(row['balanced_accuracy'])}\t"
+            f"{_format_metric(row['decision_accuracy'])}"
         )
     print(f"[summary] {count} experiments -> {macro_path}")
     print(f"[summary] category details -> {category_path}")

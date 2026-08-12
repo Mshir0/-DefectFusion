@@ -105,15 +105,16 @@ def _feature_layers(args, cfg) -> tuple[tuple[int, ...], str | None]:
     return FEATURE_LAYER_PRESETS["cross4"], "cross4"
 
 
-def _augment_normal_images(paths, count, augmentations, seed):
+def _augment_normal_images(paths, count, augmentations, seed, *, include_original=True):
     if count <= 0:
-        return paths
+        return list(paths) if include_original else []
     from torchvision.transforms import functional as TF
     rng = random.Random(seed)
     result = []
     for path in paths:
         image = Image.open(path).convert("RGB")
-        result.append(NormalTrainingView(image))
+        if include_original:
+            result.append(NormalTrainingView(image))
         for _ in range(count):
             augmented = image.copy()
             inverse_position_matrix = np.eye(3, dtype=np.float64)
@@ -194,7 +195,9 @@ def main(argv=None):
     e.add_argument("--prototype-dir", help="optional defect prototypes; subdirectories are defect labels")
     e.add_argument("--normal-shots", type=int, default=-1, help="normal train/good references per category; -1 uses all")
     e.add_argument("--normal-validation-dir", help="independent normal calibration root; use ROOT/<category>/ for multi-category evaluation")
-    e.add_argument("--normal-decision-quantile", type=float, default=None, help="normal-score quantile for good/anomaly decisions; explicit use calibrates from normal training views when no validation directory is supplied")
+    e.add_argument("--normal-decision-quantile", type=float, default=None, help="normal-score quantile for good/anomaly decisions; explicit use calibrates from held-out augmented views when no validation directory is supplied")
+    e.add_argument("--normal-decision-augment-count", type=int, default=None, help="held-out augmented calibration views per normal shot; defaults to --normal-augment-count")
+    e.add_argument("--normal-decision-seed", type=int, default=None, help="seed for held-out threshold augmentations; defaults to --seed + 100")
     e.add_argument("--defect-shots", "--few-shot", dest="defect_shots", type=int, default=0, help="labeled defect exemplars per defect type")
     e.add_argument("--seed", type=int, default=42, help="seed used for reproducible normal and defect sampling")
     e.add_argument("--normal-augment-count", type=int, default=None, help="augmented views per normal shot; defaults to 30 in few-shot mode")
@@ -360,8 +363,25 @@ def main(argv=None):
             if decision_quantile_argument is not None
             else cfg.get("normal_decision_quantile", 1.0)
         )
+        decision_augment_count_argument = getattr(a, "normal_decision_augment_count", None)
+        configured_decision_augment_count = (
+            decision_augment_count_argument
+            if decision_augment_count_argument is not None
+            else cfg.get("normal_decision_augment_count")
+        )
+        normal_decision_augment_count = (
+            None if configured_decision_augment_count is None else int(configured_decision_augment_count)
+        )
+        decision_seed_argument = getattr(a, "normal_decision_seed", None)
+        normal_decision_seed = int(
+            decision_seed_argument
+            if decision_seed_argument is not None
+            else cfg.get("normal_decision_seed", a.seed + 100)
+        )
         if not 0 < normal_decision_quantile <= 1:
             p.error("--normal-decision-quantile must be in (0, 1]")
+        if normal_decision_augment_count is not None and normal_decision_augment_count < 0:
+            p.error("--normal-decision-augment-count must be non-negative")
         if a.normal_shots == 0 or a.normal_shots < -1: p.error("--normal-shots must be -1 or a positive integer")
         if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
         if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
@@ -465,24 +485,52 @@ def main(argv=None):
             category_knn_spatial_radius = knn_spatial_radius if category_spatial_enabled else -1.0
             category_align_training_positions = align_training_positions or (category_name in knn_spatial_categories)
             normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
-            print(f"[normal-augment] {category_name}: {len(normal_training_images)} views", flush=True)
+            normal_training_view_count = len(normal_training_images)
+            print(f"[normal-augment] {category_name}: {normal_training_view_count} fitting views, seed={a.seed}", flush=True)
+            category_decision_augment_count = 0
+            category_decision_seed = None
             if validation_images:
                 decision_reference_images = validation_images
                 decision_threshold_source = "normal_validation_max" if normal_decision_quantile == 1 else "normal_validation_quantile"
                 print(f"[normal-validation] {category_name}: {len(validation_images)} independent images, quantile={normal_decision_quantile:.4g}", flush=True)
             elif decision_quantile_configured:
-                decision_reference_images = normal_training_images
-                decision_threshold_source = (
-                    "normal_training_augmented_quantile"
-                    if augment_count > 0 else "normal_training_quantile"
+                category_decision_augment_count = (
+                    augment_count
+                    if normal_decision_augment_count is None
+                    else normal_decision_augment_count
                 )
-                print(f"[normal-decision] {category_name}: {len(decision_reference_images)} training views, quantile={normal_decision_quantile:.4g}", flush=True)
+                if category_name in no_augment_categories:
+                    category_decision_augment_count = 0
+                if category_decision_augment_count > 0:
+                    if normal_decision_seed == a.seed:
+                        p.error("--normal-decision-seed must differ from --seed for held-out augmentation calibration")
+                    decision_reference_images = None
+                    decision_threshold_source = "normal_augmentation_holdout_quantile"
+                    category_decision_seed = normal_decision_seed
+                else:
+                    decision_reference_images = normal_selected
+                    decision_threshold_source = "normal_training_quantile"
+                    print(f"[normal-decision] {category_name}: {len(normal_selected)} unaugmented training references, quantile={normal_decision_quantile:.4g}", flush=True)
             else:
                 decision_reference_images = normal_selected
                 decision_threshold_source = "normal_reference_max"
                 print(f"[normal-decision] {category_name}: {len(normal_selected)} selected training normals, maximum score", flush=True)
             print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} pixel_multiscale_weight={category_pixel_multiscale_weight if category_secondary_pixel_size is not None else 0} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} fit_max_patches={normal_fit_max_patches or 'all'} spatial_radius={category_knn_spatial_radius} pixel_anoco_weight={category_pixel_anoco_weight} pixel_anoco_norm_compatibility={category_pixel_anoco_norm_compatibility}", flush=True)
             fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, pixel_anoco_weight=category_pixel_anoco_weight, pixel_anoco_norm_compatibility=category_pixel_anoco_norm_compatibility, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=category_knn_spatial_radius, image_knn_spatial_radius=-1.0 if knn_spatial_categories else None, align_training_positions=category_align_training_positions, align_image_training_positions=False if knn_spatial_categories else None, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=category_pixel_multiscale_weight).fit_normal(normal_training_images)
+            del normal_training_images
+            if decision_reference_images is None:
+                decision_reference_images = _augment_normal_images(
+                    normal_selected,
+                    category_decision_augment_count,
+                    category_augmentations,
+                    category_decision_seed,
+                    include_original=False,
+                )
+                print(
+                    f"[normal-decision] {category_name}: {len(decision_reference_images)} held-out augmentation views, "
+                    f"seed={category_decision_seed}, quantile={normal_decision_quantile:.4g}",
+                    flush=True,
+                )
             if anomaly_method != "pca":
                 print(
                     f"[knn] {category_name}: backend={fusion.normal_memory.resolved_backend} "
@@ -541,9 +589,11 @@ def main(argv=None):
             metrics["normal_validation_images"] = [str(Path(x)) for x in validation_images]
             metrics["normal_validation_image_count"] = len(validation_images)
             metrics["normal_decision_quantile"] = normal_decision_quantile
+            metrics["normal_decision_augment_count"] = category_decision_augment_count
+            metrics["normal_decision_seed"] = category_decision_seed
             metrics["normal_augment_count"] = augment_count
             metrics["normal_augmentations"] = category_augmentations
-            metrics["normal_training_views"] = len(normal_training_images)
+            metrics["normal_training_views"] = normal_training_view_count
             metrics["defect_shots"] = a.defect_shots
             metrics["seed"] = a.seed
             metrics["defect_shot_images"] = [str(Path(x)) for x in selected]
@@ -616,6 +666,7 @@ def main(argv=None):
             "pixel_aupro", "pixel_f1_max",
             "defect_type_accuracy", "defect_type_macro_precision", "defect_type_macro_recall",
             "defect_type_macro_f1", "defect_type_weighted_f1", "good_accuracy",
+            "defect_recall", "balanced_accuracy", "decision_accuracy",
         )
         macro = {}
         for name in metric_names:
