@@ -11,6 +11,41 @@ from defectfusion.pipeline import NormalTrainingView
 
 
 class AuproTest(unittest.TestCase):
+    def test_threshold_calibration_uses_score_only_prediction_when_available(self):
+        class Fusion:
+            def __init__(self):
+                self.score_calls = []
+
+            def predict_anomaly_score(self, image):
+                self.score_calls.append(Path(image).stem)
+                return {"reference-low": 0.25, "reference-high": 0.75}[Path(image).stem]
+
+            def predict(self, image):
+                if Path(image).stem.startswith("reference"):
+                    raise AssertionError("threshold calibration must not compute anomaly maps")
+                return {
+                    "image": str(image), "anomaly_score": 0.5,
+                    "anomaly_map": [[0.0, 0.0], [0.0, 0.0]],
+                    "defect_type": "unknown", "defect_type_score": 0.0,
+                }
+
+        fusion = Fusion()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            references = [root / "reference-low.png", root / "reference-high.png"]
+            metrics = evaluate_samples(
+                fusion,
+                "bottle",
+                [(root / "good.png", "good", False, None)],
+                root / "results.json",
+                progress=False,
+                normal_reference_images=references,
+                decision_threshold_quantile=1.0,
+            )
+
+        self.assertEqual(fusion.score_calls, ["reference-low", "reference-high"])
+        self.assertEqual(metrics["good_decision_threshold"], 0.75)
+
     def test_good_samples_get_a_thresholded_decision_without_pixel_metrics(self):
         class Fusion:
             scores = {"normal-reference": 0.25, "good": 0.20, "defect": 0.80}

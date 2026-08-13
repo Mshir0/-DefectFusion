@@ -576,13 +576,15 @@ class DefectFusion:
         full = np.asarray(Image.fromarray(anomaly_map.astype("float32"), mode="F").resize(image.size, Image.Resampling.BILINEAR))
         prob = (full - full.min()) / max(float(full.max() - full.min()), 1e-12)
         unary = unary_from_softmax(np.stack([1 - prob, prob]).astype("float32"))
-        rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        # PIL exposes a read-only buffer through np.asarray, while the
+        # pydensecrf Cython memoryview requires writable C-contiguous input.
+        rgb = np.array(image.convert("RGB"), dtype=np.uint8, copy=True, order="C")
         crf = dcrf.DenseCRF2D(image.width, image.height, 2); crf.setUnaryEnergy(unary)
         crf.addPairwiseGaussian(sxy=3, compat=3); crf.addPairwiseBilateral(sxy=50, srgb=10, rgbim=rgb, compat=5)
         refined = np.asarray(crf.inference(5), dtype=np.float32)[1].reshape(image.height, image.width)
         return np.asarray(Image.fromarray(refined, mode="F").resize(anomaly_map.shape[::-1], Image.Resampling.BILINEAR))
 
-    def _predict_single(self, image, image_name):
+    def _predict_single(self, image, image_name, *, score_only=False):
         patches, image_patches, image_layers, grid, image_grid = self._extract_branches(image)
         if self.reference_grid is None:
             self.reference_grid = patches.shape[1]
@@ -602,13 +604,15 @@ class DefectFusion:
         else:
             image_positions, image_grid = positions, grid
             image_score_bundle = (anomaly_scores, pca_scores, knn_scores, knn_gate)
-        anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         fused_score, spatial_consistency = self._image_anomaly_score(
             image_patches if self.dual_branch else patches,
             image_positions,
             image_grid,
             image_score_bundle,
         )
+        if score_only:
+            return {"anomaly_score": float(fused_score)}
+        anomaly_map = self._postprocess_map(anomaly_scores.reshape(grid), image).tolist()
         if not self.prototype_bank.prototypes:
             label, label_score = "unknown", 0.0
         else:
@@ -661,8 +665,8 @@ class DefectFusion:
             return np.flipud(anomaly_map)
         return anomaly_map
 
-    def predict(self, image_path):
-        """Predict from an image path or an in-memory normal training view."""
+    @staticmethod
+    def _prediction_input(image_path):
         if isinstance(image_path, NormalTrainingView):
             image = image_path.image.copy().convert("RGB")
             image_name = "<normal-training-view>"
@@ -672,6 +676,22 @@ class DefectFusion:
         else:
             image = Image.open(image_path).convert("RGB")
             image_name = image_path
+        return image, image_name
+
+    def predict_anomaly_score(self, image_path):
+        """Compute only the image score, without map post-processing or typing."""
+        image, image_name = self._prediction_input(image_path)
+        scores = [float(self._predict_single(image, image_name, score_only=True)["anomaly_score"])]
+        for augmentation in self.test_augmentations:
+            transformed = self._test_view(image, augmentation)
+            scores.append(float(self._predict_single(
+                transformed, image_name, score_only=True,
+            )["anomaly_score"]))
+        return float(np.mean(scores))
+
+    def predict(self, image_path):
+        """Predict from an image path or an in-memory normal training view."""
+        image, image_name = self._prediction_input(image_path)
         base = self._predict_single(image, image_name)
         if not self.test_augmentations:
             base["test_augmentations"] = []

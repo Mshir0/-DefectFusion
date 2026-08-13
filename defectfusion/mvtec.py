@@ -202,9 +202,12 @@ def _normal_reference_threshold(fusion, normal_reference_images, source, quantil
 
     started = time.perf_counter()
     scores = []
+    predict_score = getattr(fusion, "predict_anomaly_score", None)
     for image in references:
-        result = fusion.predict(image)
-        score = float(result["anomaly_score"])
+        if callable(predict_score):
+            score = float(predict_score(image))
+        else:
+            score = float(fusion.predict(image)["anomaly_score"])
         if not np.isfinite(score):
             raise ValueError(f"Normal reference produced a non-finite anomaly score: {image}")
         scores.append(score)

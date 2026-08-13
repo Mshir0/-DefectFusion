@@ -44,6 +44,8 @@ class MapPostprocessTest(unittest.TestCase):
 
             def addPairwiseBilateral(self, **kwargs):
                 calls["bilateral"] = kwargs
+                calls["rgb_writeable"] = kwargs["rgbim"].flags.writeable
+                calls["rgb_c_contiguous"] = kwargs["rgbim"].flags.c_contiguous
 
             def inference(self, iterations):
                 calls["iterations"] = iterations
@@ -84,6 +86,8 @@ class MapPostprocessTest(unittest.TestCase):
         self.assertEqual(calls["bilateral"]["srgb"], 10)
         self.assertEqual(calls["bilateral"]["compat"], 5)
         self.assertEqual(calls["bilateral"]["rgbim"].shape, (4, 6, 3))
+        self.assertTrue(calls["rgb_writeable"])
+        self.assertTrue(calls["rgb_c_contiguous"])
         self.assertEqual(calls["iterations"], 5)
 
 

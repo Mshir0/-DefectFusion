@@ -305,6 +305,23 @@ class NormalPatchMemoryTest(unittest.TestCase):
         self.assertEqual(result["image"], "<normal-training-view>")
         self.assertTrue(np.isfinite(result["anomaly_score"]))
 
+    def test_score_only_prediction_matches_full_score_without_postprocessing(self):
+        fusion = DefectFusion(
+            self._resolution_extractor(), anomaly_method="pca",
+            test_augmentations=["hflip"],
+        )
+        image = Image.new("RGB", (8, 8))
+        fusion.fit_normal([NormalTrainingView(image)])
+        full_score = fusion.predict(image)["anomaly_score"]
+
+        def reject_postprocessing(*args, **kwargs):
+            raise AssertionError("score-only prediction must not post-process a map")
+
+        fusion._postprocess_map = reject_postprocessing
+        score_only = fusion.predict_anomaly_score(image)
+
+        self.assertEqual(score_only, full_score)
+
     def test_tta_rejects_unknown_transforms(self):
         with self.assertRaises(ValueError):
             DefectFusion(object(), test_augmentations=["rotate45"])
