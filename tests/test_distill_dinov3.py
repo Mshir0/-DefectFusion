@@ -125,6 +125,8 @@ class DistillationTests(unittest.TestCase):
                 calls["normal_paths"] = fusion.normal_paths
                 calls["excluded"] = kwargs["excluded_images"]
                 calls["normal_reference_images"] = kwargs["normal_reference_images"]
+                calls["normal_reference_scores"] = kwargs["normal_reference_scores"]
+                calls["decision_threshold_source"] = kwargs["decision_threshold_source"]
                 Path(result_path).write_text("[]\n", encoding="utf-8")
                 return {
                     "category": Path(category_dir).name,
@@ -151,6 +153,12 @@ class DistillationTests(unittest.TestCase):
                 eval_memory_max_patches=50000, eval_normal_fit_max_patches=0,
                 eval_knn_chunk_size=256, eval_knn_backend="auto",
                 eval_knn_dtype="float32", eval_dual_branch=False,
+                eval_normal_decision_calibration="training-reference",
+                eval_normal_decision_quantile=0.995,
+                eval_normal_decision_quantile_method="linear",
+                eval_normal_decision_augment_count=0,
+                eval_normal_decision_fit_augment_count=0,
+                eval_normal_decision_seed=142,
             )
             groups = {
                 "bottle": [
@@ -168,6 +176,8 @@ class DistillationTests(unittest.TestCase):
             self.assertEqual(calls["normal_paths"], [str(normal)])
             self.assertEqual(calls["excluded"], [str(used_defect)])
             self.assertEqual(calls["normal_reference_images"], [str(normal)])
+            self.assertIsNone(calls["normal_reference_scores"])
+            self.assertEqual(calls["decision_threshold_source"], "normal_training_quantile")
             self.assertEqual(FakeExtractor.instances[0].model_name, "base-vit-s")
             load_adapter.assert_called_once_with(FakeExtractor.instances[0].model, adapter, base_model="base-vit-s")
             self.assertAlmostEqual(summary["macro_average"]["pixel_aupro"], 0.3)
@@ -195,12 +205,23 @@ class DistillationTests(unittest.TestCase):
             eval_knn_chunk_size=256, eval_knn_backend="auto",
             eval_knn_dtype="float32", eval_top_k_ratio=0.05,
             eval_image_score="mtop1p", eval_image_top_ratio=0.01,
+            eval_normal_decision_calibration="training-reference",
+            eval_normal_decision_quantile=1.0,
+            eval_normal_decision_quantile_method="linear",
+            eval_normal_decision_augment_count=0,
+            eval_normal_decision_fit_augment_count=0,
+            eval_normal_decision_seed=None,
         )
         with self.assertRaises(SystemExit):
             validate_args(parser, args)
 
         args.lora_dropout = 0.05
         validate_args(parser, args)
+
+        args.evaluate = True
+        args.eval_normal_decision_calibration = "leave-one-out"
+        with self.assertRaises(SystemExit):
+            validate_args(parser, args)
 
     def test_lora_only_targets_final_blocks(self):
         model = TinyBackbone(depth=4)

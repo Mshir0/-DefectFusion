@@ -148,8 +148,15 @@ plus training-only projection heads) and `lora_parameters` (the weights that
 are actually saved). The automatic `evaluation/` directory uses the same JSON
 and CSV layout as the existing evaluator. Its detector defaults are PCA,
 `--eval-image-size` equal to the training image size, and the same selected
-ViT-S hidden states. Override them through explicit `--eval-*` flags, for example
+ViT-S hidden states. For 2-shot and above, the image decision threshold defaults
+to source-disjoint leave-one-out calibration with a `0.995` higher quantile.
+This affects only evaluation and does not change the adapter artifact. A 1-shot
+run must explicitly use `--eval-normal-decision-calibration training-reference`,
+because source-disjoint LOO has no remaining source from which to fit a fold.
+Override detector settings through explicit `--eval-*` flags, for example
 `--eval-anomaly-method pca_knn --eval-dual-branch --eval-knn-dtype float16`.
+Non-PCA or dual-branch evaluation currently also requires
+`--eval-normal-decision-calibration training-reference`.
 Use `--no-evaluate` to skip post-training evaluation while retaining only the
 adapter artifact. The generic `defectfusion` CLI accepts complete Hugging Face
 models, so the adapter-only workflow uses `distill_dinov3.py`'s automatic

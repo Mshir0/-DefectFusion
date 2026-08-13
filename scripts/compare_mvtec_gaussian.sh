@@ -14,13 +14,16 @@ GAUSSIAN_SIGMA="${GAUSSIAN_SIGMA:-1.0}"
 NORMAL_SHOTS="${NORMAL_SHOTS:-8}"
 NORMAL_AUGMENT_COUNT="${NORMAL_AUGMENT_COUNT:-30}"
 NORMAL_DECISION_AUGMENT_COUNT="${NORMAL_DECISION_AUGMENT_COUNT:-$NORMAL_AUGMENT_COUNT}"
+NORMAL_DECISION_FIT_AUGMENT_COUNT="${NORMAL_DECISION_FIT_AUGMENT_COUNT:-4}"
+NORMAL_DECISION_CALIBRATION="${NORMAL_DECISION_CALIBRATION:-leave-one-out}"
 NORMAL_DECISION_QUANTILE="${NORMAL_DECISION_QUANTILE:-0.995}"
+NORMAL_DECISION_QUANTILE_METHOD="${NORMAL_DECISION_QUANTILE_METHOD:-higher}"
 NORMAL_FIT_MAX_PATCHES="${NORMAL_FIT_MAX_PATCHES:-0}"
 IMAGE_SIZE="${IMAGE_SIZE:-672}"
 FEATURE_LAYERS="${FEATURE_LAYERS:-1,17,21,23}"
 SEED="${SEED:-42}"
 NORMAL_DECISION_SEED="${NORMAL_DECISION_SEED:-$((SEED + 100))}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/mvtec-gaussian-ablation}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/mvtec-gaussian-ablation-loo}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
 
 if [[ ! -d "$MVTEC_DATA_ROOT" ]]; then
@@ -29,6 +32,11 @@ if [[ ! -d "$MVTEC_DATA_ROOT" ]]; then
 fi
 if [[ ! -d "$MVTEC_DATA_ROOT/$CATEGORY/train/good" ]]; then
   printf 'MVTec category does not exist: %s\n' "$MVTEC_DATA_ROOT/$CATEGORY" >&2
+  exit 2
+fi
+if [[ "$NORMAL_DECISION_CALIBRATION" == "leave-one-out" && "$NORMAL_SHOTS" == "1" ]]; then
+  printf '%s\n' 'NORMAL_SHOTS=1 cannot use source-disjoint leave-one-out calibration.' >&2
+  printf '%s\n' 'Set NORMAL_DECISION_CALIBRATION=augmentation.' >&2
   exit 2
 fi
 
@@ -52,8 +60,11 @@ common_args=(
   --normal-augmentations rotate
   --no-augment-categories transistor
   --normal-fit-max-patches "$NORMAL_FIT_MAX_PATCHES"
+  --normal-decision-calibration "$NORMAL_DECISION_CALIBRATION"
   --normal-decision-quantile "$NORMAL_DECISION_QUANTILE"
+  --normal-decision-quantile-method "$NORMAL_DECISION_QUANTILE_METHOD"
   --normal-decision-augment-count "$NORMAL_DECISION_AUGMENT_COUNT"
+  --normal-decision-fit-augment-count "$NORMAL_DECISION_FIT_AUGMENT_COUNT"
   --normal-decision-seed "$NORMAL_DECISION_SEED"
   --image-size "$IMAGE_SIZE"
   --resize-mode direct

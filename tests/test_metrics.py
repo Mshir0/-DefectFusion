@@ -147,6 +147,36 @@ class AuproTest(unittest.TestCase):
         self.assertEqual(metrics["good_decision_reference_images"], 4)
         self.assertEqual(metrics["good_accuracy"], 1.0)
 
+    def test_precomputed_scores_use_higher_quantile_and_include_calibration_time(self):
+        class Fusion:
+            def predict(self, image):
+                return {
+                    "image": str(image), "anomaly_score": 0.35,
+                    "anomaly_map": [[0.0, 0.0], [0.0, 0.0]],
+                    "defect_type": "unknown", "defect_type_score": 0.0,
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metrics = evaluate_samples(
+                Fusion(),
+                "bottle",
+                [(root / "good.png", "good", False, None)],
+                root / "results.json",
+                progress=False,
+                normal_reference_scores=[0.1, 0.2, 0.4, 0.8],
+                normal_reference_seconds=2.5,
+                decision_threshold_source="normal_leave_one_out_quantile",
+                decision_threshold_quantile=0.5,
+                decision_threshold_quantile_method="higher",
+            )
+
+        self.assertEqual(metrics["good_decision_threshold"], 0.4)
+        self.assertEqual(metrics["good_decision_quantile_method"], "higher")
+        self.assertEqual(metrics["good_decision_reference_images"], 4)
+        self.assertGreaterEqual(metrics["timing_seconds"]["threshold_calibration"], 2.5)
+        self.assertGreaterEqual(metrics["timing_seconds"]["total"], 2.5)
+
     def test_threshold_metrics_report_false_positive_and_false_negative_counts(self):
         class Fusion:
             scores = {

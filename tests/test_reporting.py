@@ -27,8 +27,12 @@ class ReportingTest(unittest.TestCase):
             "good_decision_threshold": 0.42,
             "good_decision_threshold_source": "normal_reference_max",
             "good_decision_quantile": 1.0,
+            "good_decision_quantile_method": "higher",
             "good_decision_reference_images": 8,
+            "normal_decision_calibration": "leave-one-out",
             "normal_decision_augment_count": 30,
+            "normal_decision_fit_augment_count": 4,
+            "normal_decision_folds": 8,
             "normal_decision_seed": 142,
             "defect_type_accuracy": 0.7, "defect_type_macro_precision": 0.6,
             "defect_type_macro_recall": 0.65, "defect_type_macro_f1": 0.62,
@@ -61,7 +65,11 @@ class ReportingTest(unittest.TestCase):
         self.assertEqual(rows[0]["good_decision_threshold"], "0.42")
         self.assertEqual(rows[0]["good_decision_threshold_source"], "normal_reference_max")
         self.assertEqual(rows[0]["good_decision_quantile"], "1.0")
+        self.assertEqual(rows[0]["good_decision_quantile_method"], "higher")
+        self.assertEqual(rows[0]["normal_decision_calibration"], "leave-one-out")
         self.assertEqual(rows[0]["normal_decision_augment_count"], "30")
+        self.assertEqual(rows[0]["normal_decision_fit_augment_count"], "4")
+        self.assertEqual(rows[0]["normal_decision_folds"], "8")
         self.assertEqual(rows[0]["normal_decision_seed"], "142")
         self.assertEqual(rows[0]["total_seconds"], "12.5")
         self.assertEqual(rows[0]["memory_patch_count"], "123")

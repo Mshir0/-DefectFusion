@@ -196,6 +196,12 @@ fi
 
 cd "$repo_root"
 
+eval_normal_decision_calibration="leave-one-out"
+if [[ "$normal_shots" == "1" ]]; then
+  eval_normal_decision_calibration="training-reference"
+  printf '[distill-all] 1-shot cannot use source-disjoint LOO; using training-reference calibration\n'
+fi
+
 common_args=(
   --normal-shots "$normal_shots"
   --defect-shots 0
@@ -205,6 +211,11 @@ common_args=(
   --device "$device"
   --image-size "$image_size"
   --feature-layers "$feature_layers"
+  --eval-normal-decision-calibration "$eval_normal_decision_calibration"
+  --eval-normal-decision-quantile 0.995
+  --eval-normal-decision-quantile-method higher
+  --eval-normal-decision-augment-count 30
+  --eval-normal-decision-fit-augment-count 4
   --adaptation "$adaptation"
   --last-n-blocks "$last_n_blocks"
   --lora-rank "$lora_rank"

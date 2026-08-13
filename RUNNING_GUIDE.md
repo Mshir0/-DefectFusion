@@ -30,6 +30,31 @@ outputs/<数据集>-<测试改进项目名称>
 
 注意：等号不能省略。尤其在使用负数层索引时，也必须写成 `--feature-layers=-1,-2,-3,-4`，否则 `argparse` 可能把负数识别为新的参数。
 
+### 正常/异常阈值校准
+
+主 PCA 的 2-shot 及以上实验推荐使用源图隔离的留一法：
+
+```bash
+--normal-decision-calibration leave-one-out \
+--normal-decision-quantile 0.995 \
+--normal-decision-quantile-method higher \
+--normal-decision-augment-count 30 \
+--normal-decision-fit-augment-count 4 \
+--normal-decision-seed 142
+```
+
+每一折留出一张正常源图，其余源图拟合临时 PCA；同一留出源图的原图和旋转增强只贡献一个最大分数。因此 8-shot 最终有 8 个独立校准分数，而不是把 240 个相关旋转视图当作独立样本。`0.995 + higher` 在 8 个分数上取保守最大值。`summary.csv` 中查看 `good_accuracy`、`defect_recall`、`balanced_accuracy`、TN/FP/TP/FN，并用 `normal_decision_calibration`、`good_decision_quantile_method`、`normal_decision_folds` 审计阈值来源。
+
+1-shot 无法执行源图隔离留一法，因为没有剩余源图可拟合 PCA。此时应优先提供独立的正常验证集；没有验证集时只能显式使用旧增强校准：
+
+```bash
+--normal-decision-calibration augmentation \
+--normal-decision-quantile 0.995 \
+--normal-decision-quantile-method linear
+```
+
+增强校准可用于 1-shot 的工程回退，但增强视图并非独立正常样本，论文中应与独立验证或 LOO 结果分开报告。
+
 ## 2. 当前推荐方法
 
 当前推荐配置为双分支：

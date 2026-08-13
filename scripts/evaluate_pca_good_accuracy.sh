@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Main DefectFusion PCA evaluation only. No distilled student model, kNN,
-# ANoCo, or dual branch is used. Good/anomaly decisions use the 99.5th
-# percentile of held-out rotation scores generated with a separate seed.
+# ANoCo, or dual branch is used. Good/anomaly decisions use source-disjoint
+# leave-one-out scores; augmented views from one source contribute one maximum.
 
 DATASET="${DATASET:-all}"
 PYTHON="${PYTHON:-python}"
@@ -12,13 +12,16 @@ DEVICE="${DEVICE:-cuda}"
 NORMAL_SHOTS="${NORMAL_SHOTS:-8}"
 NORMAL_AUGMENT_COUNT="${NORMAL_AUGMENT_COUNT:-}"
 NORMAL_FIT_MAX_PATCHES="${NORMAL_FIT_MAX_PATCHES:-0}"
+NORMAL_DECISION_CALIBRATION="${NORMAL_DECISION_CALIBRATION:-leave-one-out}"
 NORMAL_DECISION_QUANTILE="${NORMAL_DECISION_QUANTILE:-0.995}"
+NORMAL_DECISION_QUANTILE_METHOD="${NORMAL_DECISION_QUANTILE_METHOD:-higher}"
 NORMAL_DECISION_AUGMENT_COUNT="${NORMAL_DECISION_AUGMENT_COUNT:-}"
+NORMAL_DECISION_FIT_AUGMENT_COUNT="${NORMAL_DECISION_FIT_AUGMENT_COUNT:-4}"
 IMAGE_SIZE="${IMAGE_SIZE:-672}"
 FEATURE_LAYERS="${FEATURE_LAYERS:-1,17,21,23}"
 SEED="${SEED:-42}"
 NORMAL_DECISION_SEED="${NORMAL_DECISION_SEED:-$((SEED + 100))}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/pca-good-accuracy-heldout}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/pca-good-accuracy-loo}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
 
 MVTEC_DATA_ROOT="${MVTEC_DATA_ROOT:-/mnt/sda1/mvtec_anomaly}"
@@ -39,6 +42,11 @@ fi
 if [[ -z "$NORMAL_DECISION_AUGMENT_COUNT" ]]; then
   NORMAL_DECISION_AUGMENT_COUNT="$NORMAL_AUGMENT_COUNT"
 fi
+if [[ "$NORMAL_DECISION_CALIBRATION" == "leave-one-out" && "$NORMAL_SHOTS" == "1" ]]; then
+  printf '%s\n' 'NORMAL_SHOTS=1 cannot use source-disjoint leave-one-out calibration.' >&2
+  printf '%s\n' 'Set NORMAL_DECISION_CALIBRATION=augmentation (or use an independent validation set).' >&2
+  exit 2
+fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
@@ -53,8 +61,11 @@ common_args=(
   --normal-augment-count "$NORMAL_AUGMENT_COUNT"
   --normal-augmentations rotate
   --normal-fit-max-patches "$NORMAL_FIT_MAX_PATCHES"
+  --normal-decision-calibration "$NORMAL_DECISION_CALIBRATION"
   --normal-decision-quantile "$NORMAL_DECISION_QUANTILE"
+  --normal-decision-quantile-method "$NORMAL_DECISION_QUANTILE_METHOD"
   --normal-decision-augment-count "$NORMAL_DECISION_AUGMENT_COUNT"
+  --normal-decision-fit-augment-count "$NORMAL_DECISION_FIT_AUGMENT_COUNT"
   --normal-decision-seed "$NORMAL_DECISION_SEED"
   --image-size "$IMAGE_SIZE"
   --resize-mode direct
@@ -91,7 +102,7 @@ with open(summary_path, encoding="utf-8-sig", newline="") as stream:
     rows = list(csv.DictReader(stream))
 
 print(f"[main-pca] {dataset_name} normal-test decisions")
-print("category\tgood_accuracy\tdefect_recall\tbalanced_accuracy\tdecision_accuracy\tTN\tFP\tTP\tFN\tthreshold_source\tquantile\treferences")
+print("category\tgood_accuracy\tdefect_recall\tbalanced_accuracy\tdecision_accuracy\tTN\tFP\tTP\tFN\tcalibration\tthreshold_source\tquantile\tmethod\treferences\tfolds")
 for row in rows:
     if row.get("category") != "macro_average":
         print("\t".join([
@@ -104,9 +115,12 @@ for row in rows:
             row.get("good_predicted_anomaly", ""),
             row.get("defect_predicted_anomaly", ""),
             row.get("defect_predicted_normal", ""),
+            row.get("normal_decision_calibration", ""),
             row.get("good_decision_threshold_source", ""),
             row.get("good_decision_quantile", ""),
+            row.get("good_decision_quantile_method", ""),
             row.get("good_decision_reference_images", ""),
+            row.get("normal_decision_folds", ""),
         ]))
 
 macro = next((row for row in rows if row.get("category") == "macro_average"), None)

@@ -5,6 +5,7 @@ import glob
 import json
 import math
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -148,6 +149,107 @@ def _augment_normal_images(paths, count, augmentations, seed, *, include_origina
     return result
 
 
+def _leave_one_out_normal_scores(
+    normal_paths,
+    *,
+    build_fusion,
+    fit_augment_count,
+    decision_augment_count,
+    augmentations,
+    fit_seed,
+    decision_seed,
+    progress=None,
+):
+    """Return source-disjoint normal scores in robust PCA score units."""
+
+    from .model import NormalSubspace
+
+    normal_paths = list(normal_paths)
+    if len(normal_paths) < 2:
+        raise ValueError("leave-one-out normal calibration requires at least two normal shots")
+    detector = build_fusion()
+    if detector.dual_branch or detector.secondary_pixel_image_size is not None:
+        raise ValueError("leave-one-out normal calibration currently requires a single image branch")
+    if detector.test_augmentations:
+        raise ValueError("leave-one-out normal calibration currently requires test augmentations to be disabled")
+    detector._set_extractor_image_size(detector.pixel_image_size)
+
+    def extract_view(view):
+        if isinstance(view, NormalTrainingView):
+            return detector.extractor.extract(view.image)
+        if isinstance(view, Image.Image):
+            return detector.extractor.extract(view)
+        with Image.open(view) as image:
+            return detector.extractor.extract(image.convert("RGB"))
+
+    cached_fit_features = []
+    for source_index, source in enumerate(normal_paths):
+        views = _augment_normal_images(
+            [source], fit_augment_count, augmentations, fit_seed + source_index,
+        )
+        source_features = []
+        for view in views:
+            patches, grid = extract_view(view)
+            source_features.append((np.asarray(patches), grid))
+        cached_fit_features.append(source_features)
+
+    def fitted_subspace(fold):
+        batches = [
+            features
+            for source_index, source_batches in enumerate(cached_fit_features)
+            if source_index != fold
+            for features, _ in source_batches
+        ]
+        if detector.normal_fit_max_patches > 0:
+            if detector.normal_fit_max_patches < len(batches):
+                raise ValueError("normal_fit_max_patches must cover at least one patch per leave-one-out training view")
+            per_batch, remainder = divmod(detector.normal_fit_max_patches, len(batches))
+            sampled = []
+            for batch_index, features in enumerate(batches):
+                limit = per_batch + int(batch_index < remainder)
+                if len(features) > limit:
+                    indices = np.linspace(0, len(features) - 1, limit, dtype=np.int64)
+                    features = features[indices]
+                sampled.append(features)
+            batches = sampled
+        return NormalSubspace(residual_metric=detector.pca_residual_metric).fit(
+            np.concatenate(batches, axis=0)
+        )
+
+    def image_score(subspace, features, grid):
+        patch_scores = subspace.score(features)
+        return detector._region_rejected_score(patch_scores, grid)
+
+    standardized_scores = []
+    for fold, held_out in enumerate(normal_paths):
+        subspace = fitted_subspace(fold)
+        original_features, original_grid = cached_fit_features[fold][0]
+        fold_scores = [image_score(subspace, original_features, original_grid)]
+        held_out_views = _augment_normal_images(
+            [held_out],
+            decision_augment_count,
+            augmentations,
+            decision_seed + fold,
+            include_original=False,
+        )
+        for view in held_out_views:
+            features, grid = extract_view(view)
+            fold_scores.append(image_score(subspace, features, grid))
+        center = float(subspace.score_center)
+        scale = max(float(subspace.score_scale), 1e-12)
+        fold_scores = [(score - center) / scale for score in fold_scores]
+        if not np.isfinite(fold_scores).all():
+            raise ValueError(f"leave-one-out calibration produced a non-finite score: {held_out}")
+        # Augmented views from one source are correlated; contribute one
+        # conservative source-level value instead of treating them as IID.
+        standardized_scores.append(max(fold_scores))
+        if progress is not None:
+            progress(fold + 1, len(normal_paths), held_out, len(fold_scores))
+        del subspace, held_out_views
+    del detector, cached_fit_features
+    return np.asarray(standardized_scores, dtype=np.float64)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Few-shot / zero-shot defect detection")
     p.add_argument("--config", help="JSON config; CLI flags override it")
@@ -195,8 +297,11 @@ def main(argv=None):
     e.add_argument("--prototype-dir", help="optional defect prototypes; subdirectories are defect labels")
     e.add_argument("--normal-shots", type=int, default=-1, help="normal train/good references per category; -1 uses all")
     e.add_argument("--normal-validation-dir", help="independent normal calibration root; use ROOT/<category>/ for multi-category evaluation")
+    e.add_argument("--normal-decision-calibration", choices=["augmentation", "leave-one-out"], default=None, help="threshold calibration source when no independent validation directory is supplied")
     e.add_argument("--normal-decision-quantile", type=float, default=None, help="normal-score quantile for good/anomaly decisions; explicit use calibrates from held-out augmented views when no validation directory is supplied")
+    e.add_argument("--normal-decision-quantile-method", choices=["linear", "higher"], default=None, help="quantile interpolation; higher is conservative for small calibration sets")
     e.add_argument("--normal-decision-augment-count", type=int, default=None, help="held-out augmented calibration views per normal shot; defaults to --normal-augment-count")
+    e.add_argument("--normal-decision-fit-augment-count", type=int, default=None, help="training augmentations per source in each leave-one-out fold; defaults to min(4, normal augment count)")
     e.add_argument("--normal-decision-seed", type=int, default=None, help="seed for held-out threshold augmentations; defaults to --seed + 100")
     e.add_argument("--defect-shots", "--few-shot", dest="defect_shots", type=int, default=0, help="labeled defect exemplars per defect type")
     e.add_argument("--seed", type=int, default=42, help="seed used for reproducible normal and defect sampling")
@@ -258,6 +363,10 @@ def main(argv=None):
     e.add_argument("--layer-normalization", choices=["none", "l2"], default=None, help="normalize each hidden layer before fusion")
     e.add_argument("--map-postprocess", choices=["none", "gaussian", "crf"], default=None); e.add_argument("--gaussian-sigma", type=float, default=None)
     a = p.parse_args(argv); cfg = _config(a.config)
+    if cfg.get("normal_decision_calibration") not in {None, "augmentation", "leave-one-out"}:
+        p.error("config normal_decision_calibration must be augmentation or leave-one-out")
+    if cfg.get("normal_decision_quantile_method") not in {None, "linear", "higher"}:
+        p.error("config normal_decision_quantile_method must be linear or higher")
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     image_size = getattr(a, "image_size", None) or cfg.get("image_size", 448)
     if image_size <= 0: p.error("--image-size must be positive")
@@ -357,7 +466,17 @@ def main(argv=None):
         if normal_validation_dir and not Path(normal_validation_dir).is_dir():
             p.error(f"normal validation directory does not exist: {normal_validation_dir}")
         decision_quantile_argument = getattr(a, "normal_decision_quantile", None)
-        decision_quantile_configured = decision_quantile_argument is not None or "normal_decision_quantile" in cfg
+        decision_calibration_argument = getattr(a, "normal_decision_calibration", None)
+        decision_quantile_configured = (
+            decision_quantile_argument is not None
+            or "normal_decision_quantile" in cfg
+            or decision_calibration_argument is not None
+            or "normal_decision_calibration" in cfg
+        )
+        normal_decision_calibration = (
+            decision_calibration_argument
+            or cfg.get("normal_decision_calibration", "augmentation")
+        )
         normal_decision_quantile = (
             decision_quantile_argument
             if decision_quantile_argument is not None
@@ -372,16 +491,36 @@ def main(argv=None):
         normal_decision_augment_count = (
             None if configured_decision_augment_count is None else int(configured_decision_augment_count)
         )
+        normal_decision_quantile_method = (
+            getattr(a, "normal_decision_quantile_method", None)
+            or cfg.get("normal_decision_quantile_method")
+            or ("higher" if normal_decision_calibration == "leave-one-out" else "linear")
+        )
+        decision_fit_augment_argument = getattr(a, "normal_decision_fit_augment_count", None)
+        configured_decision_fit_augment = (
+            decision_fit_augment_argument
+            if decision_fit_augment_argument is not None
+            else cfg.get("normal_decision_fit_augment_count")
+        )
+        normal_decision_fit_augment_count = (
+            None if configured_decision_fit_augment is None else int(configured_decision_fit_augment)
+        )
         decision_seed_argument = getattr(a, "normal_decision_seed", None)
         normal_decision_seed = int(
             decision_seed_argument
             if decision_seed_argument is not None
             else cfg.get("normal_decision_seed", a.seed + 100)
         )
+        if normal_decision_calibration not in {"augmentation", "leave-one-out"}:
+            p.error("--normal-decision-calibration must be augmentation or leave-one-out")
+        if normal_decision_quantile_method not in {"linear", "higher"}:
+            p.error("--normal-decision-quantile-method must be linear or higher")
         if not 0 < normal_decision_quantile <= 1:
             p.error("--normal-decision-quantile must be in (0, 1]")
         if normal_decision_augment_count is not None and normal_decision_augment_count < 0:
             p.error("--normal-decision-augment-count must be non-negative")
+        if normal_decision_fit_augment_count is not None and normal_decision_fit_augment_count < 0:
+            p.error("--normal-decision-fit-augment-count must be non-negative")
         if a.normal_shots == 0 or a.normal_shots < -1: p.error("--normal-shots must be -1 or a positive integer")
         if a.defect_shots < 0: p.error("--defect-shots must be non-negative")
         if a.normal_augment_count is not None and a.normal_augment_count < 0: p.error("--normal-augment-count must be non-negative")
@@ -484,12 +623,21 @@ def main(argv=None):
             category_spatial_enabled = not knn_spatial_categories or category_name in knn_spatial_categories
             category_knn_spatial_radius = knn_spatial_radius if category_spatial_enabled else -1.0
             category_align_training_positions = align_training_positions or (category_name in knn_spatial_categories)
+
+            def build_category_fusion():
+                return DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, pixel_anoco_weight=category_pixel_anoco_weight, pixel_anoco_norm_compatibility=category_pixel_anoco_norm_compatibility, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=category_knn_spatial_radius, image_knn_spatial_radius=-1.0 if knn_spatial_categories else None, align_training_positions=category_align_training_positions, align_image_training_positions=False if knn_spatial_categories else None, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=category_pixel_multiscale_weight)
+
             normal_training_images = _augment_normal_images(normal_selected, augment_count, category_augmentations, a.seed)
             normal_training_view_count = len(normal_training_images)
             print(f"[normal-augment] {category_name}: {normal_training_view_count} fitting views, seed={a.seed}", flush=True)
             category_decision_augment_count = 0
             category_decision_seed = None
+            category_decision_fit_augment_count = 0
+            category_decision_folds = 0
+            decision_reference_scores = None
+            decision_reference_seconds = 0.0
             if validation_images:
+                category_decision_calibration = "validation"
                 decision_reference_images = validation_images
                 decision_threshold_source = "normal_validation_max" if normal_decision_quantile == 1 else "normal_validation_quantile"
                 print(f"[normal-validation] {category_name}: {len(validation_images)} independent images, quantile={normal_decision_quantile:.4g}", flush=True)
@@ -501,24 +649,63 @@ def main(argv=None):
                 )
                 if category_name in no_augment_categories:
                     category_decision_augment_count = 0
-                if category_decision_augment_count > 0:
+                if normal_decision_calibration == "leave-one-out":
+                    category_decision_calibration = "leave-one-out"
+                    if anomaly_method != "pca":
+                        p.error("--normal-decision-calibration leave-one-out currently requires --anomaly-method pca")
+                    if image_spatial_weight != 0:
+                        p.error("--normal-decision-calibration leave-one-out currently requires --image-spatial-weight 0")
+                    if len(normal_selected) < 2:
+                        p.error("--normal-decision-calibration leave-one-out requires at least two selected normal images")
+                    category_decision_fit_augment_count = (
+                        min(4, augment_count)
+                        if normal_decision_fit_augment_count is None
+                        else normal_decision_fit_augment_count
+                    )
+                    category_decision_seed = normal_decision_seed
+                    category_decision_folds = len(normal_selected)
+                    decision_threshold_source = "normal_leave_one_out_quantile"
+                    decision_started = time.perf_counter()
+                    try:
+                        standardized_scores = _leave_one_out_normal_scores(
+                            normal_selected,
+                            build_fusion=build_category_fusion,
+                            fit_augment_count=category_decision_fit_augment_count,
+                            decision_augment_count=category_decision_augment_count,
+                            augmentations=category_augmentations,
+                            fit_seed=a.seed,
+                            decision_seed=normal_decision_seed,
+                            progress=lambda fold, total, held_out, count: print(
+                                f"[normal-decision-loo] {category_name}: fold={fold}/{total} "
+                                f"held_out={Path(held_out).name} scores={count}",
+                                flush=True,
+                            ),
+                        )
+                    except ValueError as exc:
+                        p.error(str(exc))
+                    decision_reference_seconds = time.perf_counter() - decision_started
+                    decision_reference_images = []
+                elif category_decision_augment_count > 0:
+                    category_decision_calibration = "augmentation"
                     if normal_decision_seed == a.seed:
                         p.error("--normal-decision-seed must differ from --seed for held-out augmentation calibration")
                     decision_reference_images = None
                     decision_threshold_source = "normal_augmentation_holdout_quantile"
                     category_decision_seed = normal_decision_seed
                 else:
+                    category_decision_calibration = "training-reference"
                     decision_reference_images = normal_selected
                     decision_threshold_source = "normal_training_quantile"
                     print(f"[normal-decision] {category_name}: {len(normal_selected)} unaugmented training references, quantile={normal_decision_quantile:.4g}", flush=True)
             else:
+                category_decision_calibration = "training-reference"
                 decision_reference_images = normal_selected
                 decision_threshold_source = "normal_reference_max"
                 print(f"[normal-decision] {category_name}: {len(normal_selected)} selected training normals, maximum score", flush=True)
             print(f"[category-config] {category_name}: pixel_size={category_pixel_image_size} secondary_pixel_size={category_secondary_pixel_size or 'none'} pixel_multiscale_weight={category_pixel_multiscale_weight if category_secondary_pixel_size is not None else 0} image_head_size={category_image_head_size} augmentations={category_augmentations} component_size={category_component_size} fit_max_patches={normal_fit_max_patches or 'all'} spatial_radius={category_knn_spatial_radius} pixel_anoco_weight={category_pixel_anoco_weight} pixel_anoco_norm_compatibility={category_pixel_anoco_norm_compatibility}", flush=True)
-            fusion = DefectFusion(extractor, top_k_ratio=top_k_ratio, image_score=image_score, image_top_ratio=image_top_ratio, image_fusion_stage=image_fusion_stage, image_spatial_weight=image_spatial_weight, image_min_component_size=category_component_size, type_matching=type_matching, map_postprocess=map_postprocess, gaussian_sigma=gaussian_sigma, anomaly_method=anomaly_method, pca_residual_metric=pca_residual_metric, knn_weight=knn_weight, anoco_neighbors=anoco_neighbors, anoco_query_weight=anoco_query_weight, anoco_temperature=anoco_temperature, anoco_affinity=anoco_affinity, anoco_anchor_ranking=anoco_anchor_ranking, anoco_norm_compatibility=anoco_norm_compatibility, anoco_weight=anoco_weight, pixel_anoco_weight=category_pixel_anoco_weight, pixel_anoco_norm_compatibility=category_pixel_anoco_norm_compatibility, anoco_layer_consensus=anoco_layer_consensus, memory_max_patches=memory_max_patches, normal_fit_max_patches=normal_fit_max_patches, knn_chunk_size=knn_chunk_size, knn_backend=knn_backend, knn_dtype=knn_dtype, knn_spatial_radius=category_knn_spatial_radius, image_knn_spatial_radius=-1.0 if knn_spatial_categories else None, align_training_positions=category_align_training_positions, align_image_training_positions=False if knn_spatial_categories else None, dual_branch=dual_branch, fusion_mode=fusion_mode, gate_temperature=gate_temperature, test_augmentations=test_augmentations, pixel_image_size=category_pixel_image_size, image_head_image_size=category_image_head_size, secondary_pixel_image_size=category_secondary_pixel_size, pixel_multiscale_weight=category_pixel_multiscale_weight).fit_normal(normal_training_images)
+            fusion = build_category_fusion().fit_normal(normal_training_images)
             del normal_training_images
-            if decision_reference_images is None:
+            if decision_reference_scores is None and decision_reference_images is None:
                 decision_reference_images = _augment_normal_images(
                     normal_selected,
                     category_decision_augment_count,
@@ -529,6 +716,18 @@ def main(argv=None):
                 print(
                     f"[normal-decision] {category_name}: {len(decision_reference_images)} held-out augmentation views, "
                     f"seed={category_decision_seed}, quantile={normal_decision_quantile:.4g}",
+                    flush=True,
+                )
+            if category_decision_calibration == "leave-one-out":
+                score_subspace = fusion.image_subspace if fusion.dual_branch else fusion.subspace
+                decision_reference_scores = (
+                    standardized_scores * float(score_subspace.score_scale)
+                    + float(score_subspace.score_center)
+                )
+                print(
+                    f"[normal-decision-loo] {category_name}: folds={category_decision_folds} "
+                    f"scores={len(decision_reference_scores)} quantile={normal_decision_quantile:.4g} "
+                    f"method={normal_decision_quantile_method}",
                     flush=True,
                 )
             if anomaly_method != "pca":
@@ -569,8 +768,11 @@ def main(argv=None):
                     result_path,
                     excluded_type_images=selected,
                     normal_reference_images=decision_reference_images,
+                    normal_reference_scores=decision_reference_scores,
+                    normal_reference_seconds=decision_reference_seconds,
                     decision_threshold_source=decision_threshold_source,
                     decision_threshold_quantile=normal_decision_quantile,
+                    decision_threshold_quantile_method=normal_decision_quantile_method,
                 )
             else:
                 metrics = evaluate_mvtec(
@@ -579,8 +781,11 @@ def main(argv=None):
                     result_path,
                     excluded_type_images=selected,
                     normal_reference_images=decision_reference_images,
+                    normal_reference_scores=decision_reference_scores,
+                    normal_reference_seconds=decision_reference_seconds,
                     decision_threshold_source=decision_threshold_source,
                     decision_threshold_quantile=normal_decision_quantile,
+                    decision_threshold_quantile_method=normal_decision_quantile_method,
                 )
             metrics["dataset"] = "visa" if is_visa else "mvtec"
             metrics["normal_shots"] = a.normal_shots
@@ -588,8 +793,12 @@ def main(argv=None):
             metrics["normal_validation_dir"] = str(Path(normal_validation_dir)) if normal_validation_dir else None
             metrics["normal_validation_images"] = [str(Path(x)) for x in validation_images]
             metrics["normal_validation_image_count"] = len(validation_images)
+            metrics["normal_decision_calibration"] = category_decision_calibration
             metrics["normal_decision_quantile"] = normal_decision_quantile
+            metrics["normal_decision_quantile_method"] = normal_decision_quantile_method
             metrics["normal_decision_augment_count"] = category_decision_augment_count
+            metrics["normal_decision_fit_augment_count"] = category_decision_fit_augment_count
+            metrics["normal_decision_folds"] = category_decision_folds
             metrics["normal_decision_seed"] = category_decision_seed
             metrics["normal_augment_count"] = augment_count
             metrics["normal_augmentations"] = category_augmentations

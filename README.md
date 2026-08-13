@@ -77,20 +77,29 @@ To run the main PCA evaluator for all MVTec AD and VisA categories and print
 the threshold confusion counts and balanced decision metrics, use
 [`scripts/evaluate_pca_good_accuracy.sh`](scripts/evaluate_pca_good_accuracy.sh).
 It retains the dataset-specific preprocessing from the existing evaluation
-scripts and does not invoke distillation, kNN, ANoCo, or the dual branch. PCA
-fitting uses rotation views generated with `SEED=42`; threshold calibration
-uses a separate set of rotations generated with `NORMAL_DECISION_SEED=142`.
-Those held-out views do not participate in PCA fitting. Their 99.5th score
-percentile is the default threshold; set `NORMAL_DECISION_QUANTILE=0.99` to use
-the 99th percentile. `NORMAL_DECISION_AUGMENT_COUNT` controls the held-out views
-per normal shot and defaults to `NORMAL_AUGMENT_COUNT`.
+scripts and does not invoke distillation, kNN, ANoCo, or the dual branch. The
+default calibration is source-disjoint leave-one-out (LOO): for each selected
+normal image, a temporary PCA is fitted on the other source images. The held-out
+source is scored with its original and rotation views, but those correlated
+views contribute only one maximum score. Fold scores are normalized to robust
+PCA score units and mapped to the final detector's scale. With 8 shots,
+`NORMAL_DECISION_QUANTILE=0.995` and `NORMAL_DECISION_QUANTILE_METHOD=higher`
+conservatively select the maximum of eight independent source-level scores.
 
 ```bash
 bash scripts/evaluate_pca_good_accuracy.sh
 
 # Compare the 99th percentile without overwriting the default output.
 NORMAL_DECISION_QUANTILE=0.99 \
-OUTPUT_ROOT=outputs/pca-good-accuracy-heldout-q99 \
+OUTPUT_ROOT=outputs/pca-good-accuracy-loo-q99 \
+bash scripts/evaluate_pca_good_accuracy.sh
+
+# One normal shot cannot use source-disjoint LOO. Explicitly use the legacy
+# augmentation calibration, or preferably supply an independent validation set.
+NORMAL_SHOTS=1 \
+NORMAL_DECISION_CALIBRATION=augmentation \
+NORMAL_DECISION_QUANTILE_METHOD=linear \
+OUTPUT_ROOT=outputs/pca-good-accuracy-1shot-augmentation \
 bash scripts/evaluate_pca_good_accuracy.sh
 
 # Override the paths and run only VisA.
@@ -100,7 +109,7 @@ MODEL=/data/dinov3-vitl16-pretrain-lvd1689m \
 bash scripts/evaluate_pca_good_accuracy.sh
 ```
 
-The default output root is `outputs/pca-good-accuracy-heldout`. In addition to
+The default output root is `outputs/pca-good-accuracy-loo`. In addition to
 `good_accuracy`, `summary.csv` reports defect recall, balanced accuracy, overall
 decision accuracy, and the four confusion counts: `good_predicted_normal` (TN),
 `good_predicted_anomaly` (FP), `defect_predicted_anomaly` (TP), and
@@ -118,8 +127,8 @@ bash scripts/compare_mvtec_gaussian.sh
 CATEGORY=screw GAUSSIAN_SIGMA=0.5 bash scripts/compare_mvtec_gaussian.sh
 ```
 
-Results are written to `outputs/mvtec-gaussian-ablation/<category>/none`,
-`outputs/mvtec-gaussian-ablation/<category>/gaussian-sigma-<sigma>`, and the
+Results are written to `outputs/mvtec-gaussian-ablation-loo/<category>/none`,
+`outputs/mvtec-gaussian-ablation-loo/<category>/gaussian-sigma-<sigma>`, and the
 combined `comparison.csv`. Compare Pixel AUPR and AUPRO; image-level metrics
 should remain unchanged because map post-processing does not change image scores.
 
@@ -135,8 +144,8 @@ CATEGORY=screw bash scripts/compare_mvtec_crf.sh
 ```
 
 The default category is `leather`. Results are written to
-`outputs/mvtec-crf-ablation/<category>/none`,
-`outputs/mvtec-crf-ablation/<category>/crf`, and the combined
+`outputs/mvtec-crf-ablation-loo/<category>/none`,
+`outputs/mvtec-crf-ablation-loo/<category>/crf`, and the combined
 `comparison.csv`. DenseCRF only refines the pixel anomaly map, so image scores,
 normal/defect decisions, and image-level metrics should be identical.
 

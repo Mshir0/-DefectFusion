@@ -32,6 +32,7 @@ import json
 import math
 import random
 import re
+import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -1056,6 +1057,7 @@ def evaluate_distilled_students(
     metric definitions identical to ``evaluate-mvtec`` and ``evaluate-visa``.
     """
 
+    from defectfusion.cli import _leave_one_out_normal_scores
     from defectfusion.features import DinoFeatureExtractor
     from defectfusion.mvtec import evaluate_mvtec, evaluate_samples
     from defectfusion.pipeline import DefectFusion
@@ -1096,21 +1098,54 @@ def evaluate_distilled_students(
         )
         load_lora_adapter_into_backbone(extractor.model, adapter_path, base_model=args.student_model)
         extractor.model.eval()
-        fusion = DefectFusion(
-            extractor,
-            top_k_ratio=args.eval_top_k_ratio,
-            image_score=args.eval_image_score,
-            image_top_ratio=args.eval_image_top_ratio,
-            anomaly_method=args.eval_anomaly_method,
-            pca_residual_metric=args.eval_pca_residual_metric,
-            knn_weight=args.eval_knn_weight,
-            memory_max_patches=args.eval_memory_max_patches,
-            normal_fit_max_patches=args.eval_normal_fit_max_patches,
-            knn_chunk_size=args.eval_knn_chunk_size,
-            knn_backend=args.eval_knn_backend,
-            knn_dtype=args.eval_knn_dtype,
-            dual_branch=args.eval_dual_branch,
-        ).fit_normal(normal_paths)
+        def build_fusion():
+            return DefectFusion(
+                extractor,
+                top_k_ratio=args.eval_top_k_ratio,
+                image_score=args.eval_image_score,
+                image_top_ratio=args.eval_image_top_ratio,
+                anomaly_method=args.eval_anomaly_method,
+                pca_residual_metric=args.eval_pca_residual_metric,
+                knn_weight=args.eval_knn_weight,
+                memory_max_patches=args.eval_memory_max_patches,
+                normal_fit_max_patches=args.eval_normal_fit_max_patches,
+                knn_chunk_size=args.eval_knn_chunk_size,
+                knn_backend=args.eval_knn_backend,
+                knn_dtype=args.eval_knn_dtype,
+                dual_branch=args.eval_dual_branch,
+            )
+
+        standardized_scores = None
+        decision_reference_scores = None
+        decision_reference_images = normal_paths
+        decision_reference_seconds = 0.0
+        decision_threshold_source = "normal_reference_max"
+        decision_calibration = "training-reference"
+        if args.eval_normal_decision_calibration == "training-reference" and args.eval_normal_decision_quantile < 1:
+            decision_threshold_source = "normal_training_quantile"
+        elif args.eval_normal_decision_calibration == "leave-one-out":
+            if len(normal_paths) < 2:
+                raise ValueError("distilled leave-one-out calibration requires at least two normal shots")
+            started = time.perf_counter()
+            standardized_scores = _leave_one_out_normal_scores(
+                normal_paths,
+                build_fusion=build_fusion,
+                fit_augment_count=args.eval_normal_decision_fit_augment_count,
+                decision_augment_count=args.eval_normal_decision_augment_count,
+                augmentations=["rotate"],
+                fit_seed=args.seed,
+                decision_seed=args.eval_normal_decision_seed,
+            )
+            decision_reference_seconds = time.perf_counter() - started
+            decision_reference_images = []
+            decision_threshold_source = "normal_leave_one_out_quantile"
+            decision_calibration = "leave-one-out"
+        fusion = build_fusion().fit_normal(normal_paths)
+        if standardized_scores is not None:
+            decision_reference_scores = (
+                standardized_scores * float(fusion.subspace.score_scale)
+                + float(fusion.subspace.score_center)
+            )
         memory_stats = fusion.memory_stats()
         excluded = _selected_defect_paths(records)
         result_path = categories_dir / f"{category_name}.json"
@@ -1121,7 +1156,12 @@ def evaluate_distilled_students(
                 category_dir,
                 result_path,
                 excluded_images=excluded,
-                normal_reference_images=normal_paths,
+                normal_reference_images=decision_reference_images,
+                normal_reference_scores=decision_reference_scores,
+                normal_reference_seconds=decision_reference_seconds,
+                decision_threshold_source=decision_threshold_source,
+                decision_threshold_quantile=args.eval_normal_decision_quantile,
+                decision_threshold_quantile_method=args.eval_normal_decision_quantile_method,
             )
         else:
             samples = [(sample.image, sample.defect_type, sample.anomalous, sample.mask) for sample in category.test_samples]
@@ -1131,7 +1171,12 @@ def evaluate_distilled_students(
                 samples,
                 result_path,
                 excluded_images=excluded,
-                normal_reference_images=normal_paths,
+                normal_reference_images=decision_reference_images,
+                normal_reference_scores=decision_reference_scores,
+                normal_reference_seconds=decision_reference_seconds,
+                decision_threshold_source=decision_threshold_source,
+                decision_threshold_quantile=args.eval_normal_decision_quantile,
+                decision_threshold_quantile_method=args.eval_normal_decision_quantile_method,
             )
         metrics.update(
             {
@@ -1141,6 +1186,13 @@ def evaluate_distilled_students(
                 "defect_shots": args.defect_shots,
                 "defect_shot_images": [str(Path(path)) for path in excluded],
                 "seed": args.seed,
+                "normal_decision_calibration": decision_calibration,
+                "normal_decision_quantile": args.eval_normal_decision_quantile,
+                "normal_decision_quantile_method": args.eval_normal_decision_quantile_method,
+                "normal_decision_augment_count": args.eval_normal_decision_augment_count if decision_calibration == "leave-one-out" else 0,
+                "normal_decision_fit_augment_count": args.eval_normal_decision_fit_augment_count if decision_calibration == "leave-one-out" else 0,
+                "normal_decision_folds": len(normal_paths) if decision_calibration == "leave-one-out" else 0,
+                "normal_decision_seed": args.eval_normal_decision_seed if decision_calibration == "leave-one-out" else None,
                 "model": str(args.student_model),
                 "lora_adapter": str(adapter_path),
                 "feature_layers": list(_parse_layers(args.eval_feature_layers)),
@@ -1409,6 +1461,12 @@ def _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_target
         "eval_anomaly_method": args.eval_anomaly_method,
         "eval_pca_residual_metric": args.eval_pca_residual_metric,
         "eval_dual_branch": bool(args.eval_dual_branch),
+        "eval_normal_decision_calibration": args.eval_normal_decision_calibration,
+        "eval_normal_decision_quantile": float(args.eval_normal_decision_quantile),
+        "eval_normal_decision_quantile_method": args.eval_normal_decision_quantile_method,
+        "eval_normal_decision_augment_count": int(args.eval_normal_decision_augment_count),
+        "eval_normal_decision_fit_augment_count": int(args.eval_normal_decision_fit_augment_count),
+        "eval_normal_decision_seed": int(args.eval_normal_decision_seed),
     }
 
 
@@ -1480,6 +1538,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     evaluation.add_argument("--eval-top-k-ratio", type=float, default=0.05)
     evaluation.add_argument("--eval-image-score", choices=("mtop1p", "mean", "max", "p99"), default="mtop1p")
     evaluation.add_argument("--eval-image-top-ratio", type=float, default=0.01)
+    evaluation.add_argument("--eval-normal-decision-calibration", choices=("training-reference", "leave-one-out"), default="leave-one-out")
+    evaluation.add_argument("--eval-normal-decision-quantile", type=float, default=0.995)
+    evaluation.add_argument("--eval-normal-decision-quantile-method", choices=("linear", "higher"), default="higher")
+    evaluation.add_argument("--eval-normal-decision-augment-count", type=int, default=30)
+    evaluation.add_argument("--eval-normal-decision-fit-augment-count", type=int, default=4)
+    evaluation.add_argument("--eval-normal-decision-seed", type=int, default=None)
     return parser
 
 
@@ -1533,6 +1597,8 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         args.eval_image_size = args.image_size
     if args.eval_feature_layers is None:
         args.eval_feature_layers = args.feature_layers
+    if args.eval_normal_decision_seed is None:
+        args.eval_normal_decision_seed = args.seed + 100
     if args.eval_image_size <= 0:
         parser.error("eval-image-size must be positive")
     if not 0 <= args.eval_knn_weight <= 1:
@@ -1545,6 +1611,14 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("eval-knn-chunk-size must be positive")
     if not 0 < args.eval_top_k_ratio <= 1 or not 0 < args.eval_image_top_ratio <= 1:
         parser.error("eval-top-k-ratio and eval-image-top-ratio must be in (0, 1]")
+    if not 0 < args.eval_normal_decision_quantile <= 1:
+        parser.error("eval-normal-decision-quantile must be in (0, 1]")
+    if args.eval_normal_decision_augment_count < 0 or args.eval_normal_decision_fit_augment_count < 0:
+        parser.error("eval normal decision augmentation counts must be non-negative")
+    if args.evaluate and args.eval_normal_decision_calibration == "leave-one-out" and 0 < args.normal_shots < 2:
+        parser.error("eval leave-one-out calibration requires at least two normal shots")
+    if args.evaluate and args.eval_normal_decision_calibration == "leave-one-out" and (args.eval_anomaly_method != "pca" or args.eval_dual_branch):
+        parser.error("eval leave-one-out calibration currently requires PCA without dual branch")
     try:
         _parse_layers(args.eval_feature_layers)
     except ValueError as exc:
