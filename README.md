@@ -138,16 +138,26 @@ the optional dependency and run:
 ```bash
 python -m pip install -e '.[crf]'
 bash scripts/compare_mvtec_crf.sh
-
-# Optional category override.
-CATEGORY=screw bash scripts/compare_mvtec_crf.sh
 ```
 
-The default category is `leather`. Results are written to
+The MVTec script is intentionally fixed to `leather`. Results are written to
 `outputs/mvtec-crf-ablation-loo/<category>/none`,
 `outputs/mvtec-crf-ablation-loo/<category>/crf`, and the combined
 `comparison.csv`. DenseCRF only refines the pixel anomaly map, so image scores,
 normal/defect decisions, and image-level metrics should be identical.
+
+For the equivalent focused VisA comparison, the default category is `candle`:
+
+```bash
+bash scripts/compare_visa_crf.sh
+
+# Select another VisA category without editing the script.
+CATEGORY=macaroni2 bash scripts/compare_visa_crf.sh
+```
+
+Results are written under `outputs/visa-crf-ablation-loo/<category>/`. The
+script automatically retains the main PCA evaluator's category-specific image
+size and affine settings when the selected category requires them.
 
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSON file per
