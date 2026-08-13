@@ -35,8 +35,14 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 cd "$repo_root"
 
-if ! "$PYTHON" -c 'import pydensecrf.densecrf; import pydensecrf.utils' >/dev/null 2>&1; then
-  printf "DenseCRF dependency is unavailable. Install it with: %s -m pip install -e '.[crf]'\n" "$PYTHON" >&2
+crf_import_error=""
+if ! crf_import_error="$("$PYTHON" -c 'import pydensecrf.densecrf; import pydensecrf.utils' 2>&1)"; then
+  if [[ "$crf_import_error" == *GLIBCXX_* || "$crf_import_error" == *libstdc++* || "$crf_import_error" == *"undefined symbol"* ]]; then
+    printf "pydensecrf is installed but the active C++ runtime is too old. Run:\n  conda install -c conda-forge 'libstdcxx-ng>=13.2' 'libgcc-ng>=13.2'\n  %s -c 'import pydensecrf.densecrf'\n" "$PYTHON" >&2
+  else
+    printf "DenseCRF dependency is unavailable. Install it with: %s -m pip install -e '.[crf]'\n" "$PYTHON" >&2
+    printf '%s\n' "$crf_import_error" >&2
+  fi
   exit 2
 fi
 

@@ -10,6 +10,23 @@ from defectfusion.pipeline import DefectFusion
 
 
 class MapPostprocessTest(unittest.TestCase):
+    def test_crf_reports_old_libstdcxx_instead_of_missing_package(self):
+        fusion = object.__new__(DefectFusion)
+        fusion.map_postprocess = "crf"
+        anomaly_map = np.zeros((2, 2), dtype=np.float32)
+        image = Image.new("RGB", (2, 2))
+        original_import = __import__
+
+        def broken_import(name, *args, **kwargs):
+            if name.startswith("pydensecrf"):
+                raise ImportError("libstdc++.so.6: version `GLIBCXX_3.4.32' not found")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=broken_import), self.assertRaisesRegex(
+            RuntimeError, "C\\+\\+ runtime is incompatible"
+        ):
+            fusion._postprocess_map(anomaly_map, image)
+
     def test_crf_uses_full_resolution_rgb_and_restores_patch_grid(self):
         calls = {}
 

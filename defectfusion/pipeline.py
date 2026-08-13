@@ -550,8 +550,29 @@ class DefectFusion:
         try:
             import pydensecrf.densecrf as dcrf
             from pydensecrf.utils import unary_from_softmax
+        except ModuleNotFoundError as exc:
+            if exc.name is not None and (exc.name == "pydensecrf" or exc.name.startswith("pydensecrf.")):
+                raise RuntimeError(
+                    "CRF requires pydensecrf. Install it with: "
+                    "python -m pip install -e '.[crf]'"
+                ) from exc
+            raise
         except ImportError as exc:
-            raise RuntimeError("CRF requires: pip install 'defectfusion[crf]'") from exc
+            # A compiled extension may be installed but fail when Conda's
+            # libstdc++ does not provide the required GLIBCXX ABI symbol.
+            message = str(exc)
+            if "GLIBCXX_" in message or "libstdc++" in message or "undefined symbol" in message:
+                raise RuntimeError(
+                    "pydensecrf is installed but its C++ runtime is incompatible. "
+                    "Update the active environment with "
+                    "'conda install -c conda-forge \"libstdcxx-ng>=13.2\" "
+                    "\"libgcc-ng>=13.2\"'; then verify "
+                    "'python -c \"import pydensecrf.densecrf\"'."
+                ) from exc
+            raise RuntimeError(
+                "pydensecrf could not be loaded. Verify it with: "
+                "python -c \"import pydensecrf.densecrf\""
+            ) from exc
         full = np.asarray(Image.fromarray(anomaly_map.astype("float32"), mode="F").resize(image.size, Image.Resampling.BILINEAR))
         prob = (full - full.min()) / max(float(full.max() - full.min()), 1e-12)
         unary = unary_from_softmax(np.stack([1 - prob, prob]).astype("float32"))

@@ -539,6 +539,13 @@ Anomaly-map post-processing is isolated from image scoring and defect typing.
 Use `--map-postprocess none` for the raw-map baseline, `gaussian` for separable
 Gaussian smoothing on the patch grid, or `crf` for RGB-guided DenseCRF. CRF
 requires installing the optional dependency with `pip install -e '.[crf]'`.
+If import fails with `GLIBCXX_3.4.32 not found`, the package is installed but
+the active Conda C++ runtime is too old. Update it and verify the extension:
+
+```bash
+conda install -c conda-forge "libstdcxx-ng>=13.2" "libgcc-ng>=13.2"
+python -c "import pydensecrf.densecrf; import pydensecrf.utils; print('pydensecrf OK')"
+```
 Gaussian smoothing is disabled by default after the MVTec sigma=1.0 ablation
 reduced macro pixel AUROC; it remains available only for explicit experiments.
 
