@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-category PCA anomaly-map ablation. Both runs use identical data, model,
+# Leather-only PCA anomaly-map ablation. Both runs use identical data, model,
 # seeds, normal fitting, and source-disjoint threshold calibration; only map
 # post-processing changes between raw and RGB-guided DenseCRF refinement.
 
@@ -9,7 +9,9 @@ PYTHON="${PYTHON:-python}"
 MODEL="${MODEL:-/mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m}"
 MVTEC_DATA_ROOT="${MVTEC_DATA_ROOT:-/mnt/sda1/mvtec_anomaly}"
 DEVICE="${DEVICE:-cuda}"
-CATEGORY="${CATEGORY:-leather}"
+# Keep this focused threshold/CRF check on one category so an accidental
+# CATEGORY environment variable cannot start a different experiment.
+CATEGORY="leather"
 NORMAL_SHOTS="${NORMAL_SHOTS:-8}"
 NORMAL_AUGMENT_COUNT="${NORMAL_AUGMENT_COUNT:-30}"
 NORMAL_DECISION_AUGMENT_COUNT="${NORMAL_DECISION_AUGMENT_COUNT:-$NORMAL_AUGMENT_COUNT}"
