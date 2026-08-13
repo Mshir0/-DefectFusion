@@ -27,6 +27,11 @@ and does not depend on environment variables or a shell wrapper. MVTec/VisA
 runs automatically write the project's standard AUROC, AUPR, F1-max, and
 AUPRO evaluation results after distillation.
 
+To run the main model at 1/2/4/8 normal shots, run one 8-shot LoRA
+distillation, and automatically save macro/category/best-result tables, see
+[`BENCHMARK_GUIDE.md`](BENCHMARK_GUIDE.md). The combined entry point is
+`scripts/run_shot_distillation_benchmark.sh`.
+
 `fit` learns the anomaly detector from `--normal-dir`. The optional
 `--prototype-dir` enables the separate defect-typing head; each subdirectory
 becomes a defect label. Use `--device cuda` when available,
