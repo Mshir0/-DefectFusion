@@ -5,11 +5,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import torch
 from PIL import Image
 from torch import nn
 
 from distill_dinov3 import (
+    ImageRecord,
     LoRALinear,
     _mvtec_categories,
     _visa_categories,
@@ -23,6 +25,7 @@ from distill_dinov3 import (
     evaluate_distilled_students,
     inject_lora,
     load_lora_adapter_into_backbone,
+    main,
     masks_to_patch_weights,
     resolve_model_reference,
     resolve_layer_pairs,
@@ -172,8 +175,10 @@ class DistillationTests(unittest.TestCase):
                 eval_normal_decision_quantile=0.995,
                 eval_normal_decision_quantile_method="linear",
                 eval_normal_decision_augment_count=0,
+                eval_normal_decision_view_quantile=1.0,
                 eval_normal_decision_fit_augment_count=0,
                 eval_normal_decision_seed=142,
+                eval_output=None,
             )
             groups = {
                 "bottle": [
@@ -198,6 +203,131 @@ class DistillationTests(unittest.TestCase):
             self.assertAlmostEqual(summary["macro_average"]["pixel_aupro"], 0.3)
             self.assertTrue((output / "evaluation" / "results.json").is_file())
             self.assertTrue((output / "evaluation" / "summary.csv").is_file())
+
+    def test_robust_loo_uses_view_quantile_and_separate_output(self):
+        class FakeExtractor:
+            def __init__(self, model_name, **kwargs):
+                self.model_name = model_name
+                self.device = kwargs["device"]
+                self.model = TinyBackbone()
+
+        class FakeFusion:
+            def __init__(self, extractor, **kwargs):
+                self.extractor = extractor
+                self.subspace = SimpleNamespace(score_scale=2.0, score_center=10.0)
+
+            def fit_normal(self, paths):
+                self.normal_paths = list(paths)
+                return self
+
+            def memory_stats(self):
+                return {"patch_count": 0, "bytes": 0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            category = root / "data" / "bottle"
+            normal_dir = category / "train" / "good"
+            defect_dir = category / "test" / "crack"
+            normal_dir.mkdir(parents=True)
+            defect_dir.mkdir(parents=True)
+            normals = [normal_dir / "000.png", normal_dir / "001.png"]
+            for normal in normals:
+                Image.new("RGB", (8, 8)).save(normal)
+            Image.new("RGB", (8, 8)).save(defect_dir / "bad.png")
+            output = root / "adapters"
+            adapter = output / "bottle" / "lora_adapter.pt"
+            adapter.parent.mkdir(parents=True)
+            adapter.write_bytes(b"adapter")
+            evaluation = root / "robust" / "evaluation"
+            calls = {}
+
+            def fake_evaluate_mvtec(fusion, category_dir, result_path, **kwargs):
+                calls.update(kwargs)
+                Path(result_path).write_text("[]\n", encoding="utf-8")
+                return {
+                    "category": Path(category_dir).name,
+                    "images": 1,
+                    "image_auroc": 1.0,
+                    "image_aupr": 1.0,
+                    "image_f1_max": 1.0,
+                    "pixel_auroc": 1.0,
+                    "pixel_aupr": 1.0,
+                    "pixel_aupro": 1.0,
+                    "pixel_f1_max": 1.0,
+                    "timing_seconds": {"total": 0.1},
+                }
+
+            args = SimpleNamespace(
+                dataset="mvtec", data_root=str(root / "data"), split_csv=None,
+                categories=["bottle"], device="cpu", normal_shots=2,
+                defect_shots=0, seed=42, student_model="base-vit-s", eval_image_size=448,
+                eval_feature_layers="1,6,12", eval_resize_mode="direct",
+                eval_layer_aggregation="mean", eval_layer_normalization="none",
+                eval_top_k_ratio=0.05, eval_image_score="mtop1p",
+                eval_image_top_ratio=0.01, eval_anomaly_method="pca",
+                eval_pca_residual_metric="squared_l2", eval_knn_weight=0.5,
+                eval_memory_max_patches=50000, eval_normal_fit_max_patches=0,
+                eval_knn_chunk_size=256, eval_knn_backend="auto",
+                eval_knn_dtype="float32", eval_dual_branch=False,
+                eval_normal_decision_calibration="leave-one-out",
+                eval_normal_decision_quantile=0.95,
+                eval_normal_decision_quantile_method="linear",
+                eval_normal_decision_augment_count=30,
+                eval_normal_decision_view_quantile=0.90,
+                eval_normal_decision_fit_augment_count=4,
+                eval_normal_decision_seed=142,
+                eval_output=str(evaluation),
+            )
+            groups = {
+                "bottle": [ImageRecord(str(path), None, False) for path in normals],
+            }
+            with patch("defectfusion.features.DinoFeatureExtractor", FakeExtractor), patch(
+                "defectfusion.pipeline.DefectFusion", FakeFusion
+            ), patch("defectfusion.mvtec.evaluate_mvtec", fake_evaluate_mvtec), patch(
+                "defectfusion.cli._leave_one_out_normal_scores",
+                return_value=np.asarray([1.0, 2.0]),
+            ) as leave_one_out, patch("distill_dinov3.load_lora_adapter_into_backbone"):
+                summary = evaluate_distilled_students(args, output, groups)
+
+            self.assertEqual(leave_one_out.call_args.kwargs["decision_view_quantile"], 0.90)
+            self.assertEqual(calls["decision_threshold_source"], "normal_leave_one_out_robust_quantile")
+            np.testing.assert_allclose(calls["normal_reference_scores"], [12.0, 14.0])
+            self.assertEqual(summary["categories"][0]["normal_decision_view_quantile"], 0.90)
+            self.assertTrue((evaluation / "results.json").is_file())
+            self.assertTrue((evaluation / "summary.csv").is_file())
+            self.assertFalse((output / "evaluation").exists())
+
+    def test_evaluate_only_cli_skips_distillation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            adapter_root = root / "adapters"
+            data_root.mkdir()
+            adapter_root.mkdir()
+            evaluation = root / "robust" / "evaluation"
+            with patch("distill_dinov3.train") as train_model, patch(
+                "distill_dinov3.evaluate_existing_students",
+                return_value={"evaluation": {}},
+            ) as evaluate_existing:
+                main([
+                    "--dataset", "mvtec",
+                    "--data-root", str(data_root),
+                    "--output", str(adapter_root),
+                    "--normal-shots", "8",
+                    "--evaluate-only",
+                    "--eval-output", str(evaluation),
+                    "--eval-normal-decision-quantile", "0.95",
+                    "--eval-normal-decision-quantile-method", "linear",
+                    "--eval-normal-decision-view-quantile", "0.90",
+                ])
+
+            train_model.assert_not_called()
+            evaluate_existing.assert_called_once()
+            parsed = evaluate_existing.call_args.args[0]
+            self.assertTrue(parsed.evaluate_only)
+            self.assertEqual(parsed.eval_output, str(evaluation))
+            self.assertEqual(parsed.eval_normal_decision_quantile, 0.95)
+            self.assertEqual(parsed.eval_normal_decision_view_quantile, 0.90)
 
     def test_cli_validation_rejects_invalid_training_values(self):
         parser = ArgumentParser()
@@ -224,8 +354,10 @@ class DistillationTests(unittest.TestCase):
             eval_normal_decision_quantile=1.0,
             eval_normal_decision_quantile_method="linear",
             eval_normal_decision_augment_count=0,
+            eval_normal_decision_view_quantile=1.0,
             eval_normal_decision_fit_augment_count=0,
             eval_normal_decision_seed=None,
+            evaluate_only=False, eval_output=None,
         )
         with self.assertRaises(SystemExit):
             validate_args(parser, args)

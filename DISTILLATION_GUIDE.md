@@ -123,12 +123,100 @@ bash scripts/distill_all_mvtec_visa.sh \
 ```
 
 The default is the same 8-shot, 448-pixel, rank-8 LoRA configuration used by
-the focused example. Use `--normal-shots -1` to train each category with all
-available normal images. After a completed run, `--skip-completed` skips a
-dataset only when its `evaluation/results.json` exists. The results are stored
+the focused example. Its evaluation uses robust source-disjoint LOO calibration:
+`linear@0.95` across normal sources and `linear@0.90` within each source's
+held-out rotation views. Use `--normal-shots -1` to train each category with
+all available normal images. After a completed run, `--skip-completed` skips a
+dataset only when its selected `evaluation/results.json` exists. The results are stored
 under `./outputs/dinov3-all-8shot/mvtec/` and
 `./outputs/dinov3-all-8shot/visa/`, each with `evaluation/results.json` and
 `evaluation/summary.csv` containing the existing project's metrics.
+
+## Improve The VisA Teacher First
+
+Before retraining the student, evaluate the frozen ViT-B teacher directly on
+VisA. This separates teacher quality from student capacity, LoRA adaptation,
+and the lower default student input size. Run the current conservative
+calibration and the balanced candidate as separate experiments:
+
+```bash
+bash scripts/evaluate_visa_teacher.sh \
+  --visa-root /mnt/sda1/VisA_20220922 \
+  --teacher-model /mnt/sda1/DINOv3/dinov3-vitb16-pretrain-lvd1689m \
+  --profile baseline \
+  --output-root outputs/visa-teacher
+
+bash scripts/evaluate_visa_teacher.sh \
+  --visa-root /mnt/sda1/VisA_20220922 \
+  --teacher-model /mnt/sda1/DINOv3/dinov3-vitb16-pretrain-lvd1689m \
+  --profile visa-balanced \
+  --output-root outputs/visa-teacher
+```
+
+`visa-balanced` uses source-disjoint LOO but changes the decision calibration
+from `higher@0.995` with 30 held-out views to `linear@0.90` with 10 views.
+It is a candidate operating point, not a test-label-derived optimum. Compare
+Good Accuracy, Defect Recall, and Balanced Accuracy; use an independent normal
+validation split to choose a deployment threshold. The high-resolution VisA
+overrides and ViT-B layers `1,6,12` are retained for both profiles.
+
+Once a teacher-side configuration is validated, pass its calibration options
+to `scripts/distill_all_mvtec_visa.sh`; that script now supports
+`--eval-normal-decision-*` and explicit `--teacher-layers` /
+`--student-layers` pairs for a later stronger-teacher experiment.
+
+## Robust Threshold Evaluation For Existing ViT-S+ Adapters
+
+Threshold calibration is evaluation-only. Existing LoRA adapters do not need
+to be distilled again. For example, re-evaluate all existing VisA adapters and
+write the robust results to a separate directory:
+
+```bash
+python distill_dinov3.py \
+  --dataset visa \
+  --data-root /mnt/sda1/VisA_20220922 \
+  --student-model /mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m \
+  --output outputs/shot-distillation-benchmark/distillation/visa \
+  --evaluate-only \
+  --eval-output outputs/shot-distillation-benchmark/distillation-robust/visa/evaluation \
+  --normal-shots 8 \
+  --defect-shots 0 \
+  --seed 42 \
+  --device cuda \
+  --eval-normal-decision-calibration leave-one-out \
+  --eval-normal-decision-quantile 0.95 \
+  --eval-normal-decision-quantile-method linear \
+  --eval-normal-decision-view-quantile 0.90 \
+  --eval-normal-decision-augment-count 30 \
+  --eval-normal-decision-fit-augment-count 4
+```
+
+`--output` is the existing adapter root, not a new model destination. It must
+contain `<category>/lora_adapter.pt`. `--eval-output` is the exact directory
+for the new `results.json`, `summary.csv`, and per-category JSON files. Use the
+same `--normal-shots` and `--seed` as the distillation run so the evaluator
+reconstructs the same normal-shot selection.
+
+The calibration first takes the `0.90` quantile of the original normal image
+and its held-out rotation views within each LOO fold. It then takes the
+`0.95` linear quantile across the resulting source-disjoint fold scores. The
+reported source is `normal_leave_one_out_robust_quantile`. This changes only
+binary image decisions; LoRA files and ranking metrics are not modified.
+
+To re-evaluate both datasets in one command, point the all-category script at
+the existing adapter root. In evaluate-only mode, the result root defaults to
+`<output-root>-robust`:
+
+```bash
+bash scripts/distill_all_mvtec_visa.sh \
+  --mvtec-root /mnt/sda1/mvtec_anomaly \
+  --visa-root /mnt/sda1/VisA_20220922 \
+  --student-model /mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m \
+  --output-root outputs/shot-distillation-benchmark/distillation \
+  --eval-output-root outputs/shot-distillation-benchmark/distillation-robust \
+  --normal-shots 8 \
+  --evaluate-only
+```
 
 ## Outputs
 
@@ -158,8 +246,9 @@ plus training-only projection heads) and `lora_parameters` (the weights that
 are actually saved). The automatic `evaluation/` directory uses the same JSON
 and CSV layout as the existing evaluator. Its detector defaults are PCA,
 `--eval-image-size` equal to the training image size, and the same selected
-ViT-S+ hidden states. For 2-shot and above, the image decision threshold defaults
-to source-disjoint leave-one-out calibration with a `0.995` higher quantile.
+ViT-S+ hidden states. The Python entry point retains the historical
+`higher@0.995` / per-source maximum defaults; the all-category Bash script
+passes the robust `linear@0.95` / per-source `linear@0.90` settings explicitly.
 This affects only evaluation and does not change the adapter artifact. A 1-shot
 run must explicitly use `--eval-normal-decision-calibration training-reference`,
 because source-disjoint LOO has no remaining source from which to fit a fold.

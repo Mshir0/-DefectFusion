@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Train and evaluate one distilled ViT-S+ model for every detected MVTec AD and
-# VisA category. All data/model locations are explicit command-line arguments;
-# this script deliberately does not use environment variables or server paths.
+# Train and evaluate, or re-evaluate, one distilled ViT-S+ model for every
+# detected MVTec AD and VisA category. All locations are explicit command-line
+# arguments; this script deliberately does not use environment variables.
 
 usage() {
   cat <<'EOF'
@@ -22,8 +22,10 @@ Model and output options:
   --student-model PATH_OR_ID  DINOv3 ViT-S+ checkpoint. Defaults to the Python entry point's Hugging Face ID.
   --visa-split-csv PATH       Optional VisA 1cls.csv outside --visa-root.
   --output-root PATH          Parent directory for the MVTec and VisA experiments. Default: outputs/dinov3-all-categories.
+  --eval-output-root PATH     Optional separate parent for evaluation results.
+  --evaluate-only             Reuse LoRA adapters under --output-root; do not train or load the teacher.
   --python COMMAND            Python executable. Default: python.
-  --skip-completed            Skip a dataset when evaluation/results.json already exists.
+  --skip-completed            Skip a dataset when its selected evaluation results.json already exists.
 
 Training options:
   --normal-shots N          Normal training images per category; -1 uses all. Default: 8.
@@ -33,9 +35,18 @@ Training options:
   --device DEVICE           Torch device. Default: cuda.
   --image-size N            Training and evaluation input size. Default: 448.
   --feature-layers CSV      Hidden-state layers. Default: 1,6,12.
+  --teacher-layers CSV      Optional teacher hidden-state layers; requires --student-layers.
+  --student-layers CSV      Optional student hidden-state layers; requires --teacher-layers.
+  --eval-feature-layers CSV Student hidden states used after training; defaults to --feature-layers.
   --adaptation MODE         Must be lora; only LoRA weights are exported. Default: lora.
   --last-n-blocks N         Final transformer blocks adapted. Default: 4.
   --lora-rank N             LoRA rank when --adaptation lora. Default: 8.
+  --eval-normal-decision-calibration MODE  training-reference or leave-one-out. Defaults to LOO for 2+ shots.
+  --eval-normal-decision-quantile Q        Source-level normal-score quantile. Default: 0.95.
+  --eval-normal-decision-quantile-method M linear or higher. Default: linear.
+  --eval-normal-decision-augment-count N   Held-out views per normal source. Default: 30.
+  --eval-normal-decision-view-quantile Q   Quantile within each source's views. Default: 0.90.
+  --eval-normal-decision-fit-augment-count N  Normal fit views per LOO fold. Default: 4.
   --seed N                  Random seed. Default: 42.
   --no-amp                  Disable CUDA mixed precision.
   -h, --help                Show this help.
@@ -51,6 +62,15 @@ Examples:
   bash scripts/distill_all_mvtec_visa.sh \
     --mvtec-root /data/mvtec_anomaly --visa-root /data/VisA \
     --normal-shots -1 --output-root outputs/dinov3-all-fullshot
+
+  # Re-evaluate existing 8-shot adapters with robust LOO thresholds. Results
+  # default to outputs/dinov3-all-categories-robust/{mvtec,visa}/evaluation.
+  bash scripts/distill_all_mvtec_visa.sh \
+    --mvtec-root /mnt/sda1/mvtec_anomaly \
+    --visa-root /mnt/sda1/VisA_20220922 \
+    --student-model /mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m \
+    --output-root outputs/dinov3-all-categories \
+    --normal-shots 8 --evaluate-only
 EOF
 }
 
@@ -63,6 +83,7 @@ visa_split_csv=""
 teacher_model=""
 student_model=""
 output_root="outputs/dinov3-all-categories"
+eval_output_root=""
 python_command="python"
 normal_shots=8
 epochs=10
@@ -71,12 +92,22 @@ num_workers=4
 device="cuda"
 image_size=448
 feature_layers="1,6,12"
+teacher_layers=""
+student_layers=""
+eval_feature_layers=""
 adaptation="lora"
 last_n_blocks=4
 lora_rank=8
+eval_normal_decision_calibration=""
+eval_normal_decision_quantile=0.95
+eval_normal_decision_quantile_method="linear"
+eval_normal_decision_augment_count=30
+eval_normal_decision_view_quantile=0.90
+eval_normal_decision_fit_augment_count=4
 seed=42
 amp=true
 skip_completed=false
+evaluate_only=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -103,6 +134,14 @@ while [[ $# -gt 0 ]]; do
     --output-root)
       output_root="${2:?--output-root requires a value}"
       shift 2
+      ;;
+    --eval-output-root)
+      eval_output_root="${2:?--eval-output-root requires a value}"
+      shift 2
+      ;;
+    --evaluate-only)
+      evaluate_only=true
+      shift
       ;;
     --python)
       python_command="${2:?--python requires a value}"
@@ -136,6 +175,18 @@ while [[ $# -gt 0 ]]; do
       feature_layers="${2:?--feature-layers requires a value}"
       shift 2
       ;;
+    --teacher-layers)
+      teacher_layers="${2:?--teacher-layers requires a value}"
+      shift 2
+      ;;
+    --student-layers)
+      student_layers="${2:?--student-layers requires a value}"
+      shift 2
+      ;;
+    --eval-feature-layers)
+      eval_feature_layers="${2:?--eval-feature-layers requires a value}"
+      shift 2
+      ;;
     --adaptation)
       adaptation="${2:?--adaptation requires a value}"
       shift 2
@@ -146,6 +197,30 @@ while [[ $# -gt 0 ]]; do
       ;;
     --lora-rank)
       lora_rank="${2:?--lora-rank requires a value}"
+      shift 2
+      ;;
+    --eval-normal-decision-calibration)
+      eval_normal_decision_calibration="${2:?--eval-normal-decision-calibration requires a value}"
+      shift 2
+      ;;
+    --eval-normal-decision-quantile)
+      eval_normal_decision_quantile="${2:?--eval-normal-decision-quantile requires a value}"
+      shift 2
+      ;;
+    --eval-normal-decision-quantile-method)
+      eval_normal_decision_quantile_method="${2:?--eval-normal-decision-quantile-method requires a value}"
+      shift 2
+      ;;
+    --eval-normal-decision-augment-count)
+      eval_normal_decision_augment_count="${2:?--eval-normal-decision-augment-count requires a value}"
+      shift 2
+      ;;
+    --eval-normal-decision-view-quantile)
+      eval_normal_decision_view_quantile="${2:?--eval-normal-decision-view-quantile requires a value}"
+      shift 2
+      ;;
+    --eval-normal-decision-fit-augment-count)
+      eval_normal_decision_fit_augment_count="${2:?--eval-normal-decision-fit-augment-count requires a value}"
       shift 2
       ;;
     --seed)
@@ -193,6 +268,18 @@ if [[ "$adaptation" != "lora" ]]; then
   printf 'Only --adaptation lora is supported because outputs contain LoRA weights only.\n' >&2
   exit 2
 fi
+if [[ -n "$teacher_layers" && -z "$student_layers" || -z "$teacher_layers" && -n "$student_layers" ]]; then
+  printf '%s\n' '--teacher-layers and --student-layers must be supplied together.' >&2
+  exit 2
+fi
+if [[ -n "$eval_normal_decision_calibration" && "$eval_normal_decision_calibration" != "training-reference" && "$eval_normal_decision_calibration" != "leave-one-out" ]]; then
+  printf '%s\n' '--eval-normal-decision-calibration must be training-reference or leave-one-out.' >&2
+  exit 2
+fi
+if [[ "$eval_normal_decision_quantile_method" != "linear" && "$eval_normal_decision_quantile_method" != "higher" ]]; then
+  printf '%s\n' '--eval-normal-decision-quantile-method must be linear or higher.' >&2
+  exit 2
+fi
 
 report_model_reference() {
   local option_name="$1"
@@ -215,7 +302,7 @@ report_model_reference() {
   esac
 }
 
-if [[ -n "$teacher_model" ]]; then
+if [[ "$evaluate_only" == false && -n "$teacher_model" ]]; then
   report_model_reference --teacher-model "$teacher_model"
 fi
 if [[ -n "$student_model" ]]; then
@@ -224,8 +311,13 @@ fi
 
 cd "$repo_root"
 
-eval_normal_decision_calibration="leave-one-out"
-if [[ "$normal_shots" == "1" ]]; then
+if [[ -z "$eval_normal_decision_calibration" ]]; then
+  eval_normal_decision_calibration="leave-one-out"
+fi
+if [[ "$evaluate_only" == true && -z "$eval_output_root" ]]; then
+  eval_output_root="${output_root%/}-robust"
+fi
+if [[ "$normal_shots" == "1" && "$eval_normal_decision_calibration" == "leave-one-out" ]]; then
   eval_normal_decision_calibration="training-reference"
   printf '[distill-all] 1-shot cannot use source-disjoint LOO; using training-reference calibration\n'
 fi
@@ -240,19 +332,29 @@ common_args=(
   --image-size "$image_size"
   --feature-layers "$feature_layers"
   --eval-normal-decision-calibration "$eval_normal_decision_calibration"
-  --eval-normal-decision-quantile 0.995
-  --eval-normal-decision-quantile-method higher
-  --eval-normal-decision-augment-count 30
-  --eval-normal-decision-fit-augment-count 4
+  --eval-normal-decision-quantile "$eval_normal_decision_quantile"
+  --eval-normal-decision-quantile-method "$eval_normal_decision_quantile_method"
+  --eval-normal-decision-augment-count "$eval_normal_decision_augment_count"
+  --eval-normal-decision-view-quantile "$eval_normal_decision_view_quantile"
+  --eval-normal-decision-fit-augment-count "$eval_normal_decision_fit_augment_count"
   --adaptation "$adaptation"
   --last-n-blocks "$last_n_blocks"
   --lora-rank "$lora_rank"
   --seed "$seed"
 )
+if [[ -n "$teacher_layers" ]]; then
+  common_args+=(--teacher-layers "$teacher_layers" --student-layers "$student_layers")
+fi
+if [[ -n "$eval_feature_layers" ]]; then
+  common_args+=(--eval-feature-layers "$eval_feature_layers")
+fi
 if [[ "$amp" == false ]]; then
   common_args+=(--no-amp)
 fi
-if [[ -n "$teacher_model" ]]; then
+if [[ "$evaluate_only" == true ]]; then
+  common_args+=(--evaluate-only)
+fi
+if [[ "$evaluate_only" == false && -n "$teacher_model" ]]; then
   common_args+=(--teacher-model "$teacher_model")
 fi
 if [[ -n "$student_model" ]]; then
@@ -265,24 +367,31 @@ run_dataset() {
   local destination="$3"
   shift 3
   local -a dataset_args=("$@")
+  local evaluation_destination="$destination/evaluation"
+  local -a evaluation_args=()
+  if [[ -n "$eval_output_root" ]]; then
+    evaluation_destination="$eval_output_root/$dataset/evaluation"
+    evaluation_args=(--eval-output "$evaluation_destination")
+  fi
 
-  if [[ "$skip_completed" == true && -f "$destination/evaluation/results.json" ]]; then
-    printf '[distill-all] skipping %s; completed evaluation found at %s\n' "$dataset" "$destination/evaluation/results.json"
+  if [[ "$skip_completed" == true && -f "$evaluation_destination/results.json" ]]; then
+    printf '[distill-all] skipping %s; completed evaluation found at %s\n' "$dataset" "$evaluation_destination/results.json"
     return
   fi
 
-  printf '[distill-all] starting %s for every discovered category\n' "$dataset"
+  printf '[distill-all] starting %s for every discovered category; evaluation=%s\n' "$dataset" "$evaluation_destination"
   "$python_command" "$repo_root/distill_dinov3.py" \
     --dataset "$dataset" \
     --data-root "$data_root" \
     --output "$destination" \
+    "${evaluation_args[@]}" \
     "${common_args[@]}" \
     "${dataset_args[@]}"
-  printf '[distill-all] completed %s; metrics: %s\n' "$dataset" "$destination/evaluation/results.json"
+  printf '[distill-all] completed %s; metrics: %s\n' "$dataset" "$evaluation_destination/results.json"
 }
 
 # Omitting --categories intentionally makes distill_dinov3.py discover all
-# classes in each dataset and trains them sequentially under one result root.
+# classes in each dataset and processes them sequentially under one result root.
 run_dataset mvtec "$mvtec_root" "$output_root/mvtec"
 
 visa_args=()

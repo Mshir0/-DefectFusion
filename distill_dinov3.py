@@ -1113,7 +1113,7 @@ def evaluate_distilled_students(
     from defectfusion.reporting import write_metrics_csv
 
     output_root = Path(output_root)
-    evaluation_root = output_root / "evaluation"
+    evaluation_root = Path(args.eval_output) if args.eval_output else output_root / "evaluation"
     categories_dir = evaluation_root / "categories"
     categories_dir.mkdir(parents=True, exist_ok=True)
     categories = _selected_category_records(_evaluation_categories(args), args.categories)
@@ -1181,13 +1181,24 @@ def evaluate_distilled_students(
                 build_fusion=build_fusion,
                 fit_augment_count=args.eval_normal_decision_fit_augment_count,
                 decision_augment_count=args.eval_normal_decision_augment_count,
+                decision_view_quantile=args.eval_normal_decision_view_quantile,
                 augmentations=["rotate"],
                 fit_seed=args.seed,
                 decision_seed=args.eval_normal_decision_seed,
+                progress=lambda fold, total, held_out, count: print(
+                    f"[evaluate-loo] {category_name}: fold={fold}/{total} "
+                    f"held_out={Path(held_out).name} scores={count}",
+                    flush=True,
+                ),
             )
             decision_reference_seconds = time.perf_counter() - started
             decision_reference_images = []
-            decision_threshold_source = "normal_leave_one_out_quantile"
+            decision_threshold_source = (
+                "normal_leave_one_out_robust_quantile"
+                if args.eval_normal_decision_view_quantile < 1
+                and args.eval_normal_decision_augment_count > 0
+                else "normal_leave_one_out_quantile"
+            )
             decision_calibration = "leave-one-out"
         fusion = build_fusion().fit_normal(normal_paths)
         if standardized_scores is not None:
@@ -1239,6 +1250,7 @@ def evaluate_distilled_students(
                 "normal_decision_quantile": args.eval_normal_decision_quantile,
                 "normal_decision_quantile_method": args.eval_normal_decision_quantile_method,
                 "normal_decision_augment_count": args.eval_normal_decision_augment_count if decision_calibration == "leave-one-out" else 0,
+                "normal_decision_view_quantile": args.eval_normal_decision_view_quantile if decision_calibration == "leave-one-out" else None,
                 "normal_decision_fit_augment_count": args.eval_normal_decision_fit_augment_count if decision_calibration == "leave-one-out" else 0,
                 "normal_decision_folds": len(normal_paths) if decision_calibration == "leave-one-out" else 0,
                 "normal_decision_seed": args.eval_normal_decision_seed if decision_calibration == "leave-one-out" else None,
@@ -1479,6 +1491,24 @@ def train(args: argparse.Namespace) -> dict:
     return summary
 
 
+def evaluate_existing_students(args: argparse.Namespace) -> dict:
+    """Evaluate existing per-category LoRA adapters without loading the teacher."""
+
+    set_seed(int(args.seed))
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+    groups, counts = dataset_record_groups(args)
+    adapter_root = Path(args.output)
+    evaluation = evaluate_distilled_students(args, adapter_root, groups)
+    return {
+        "dataset": args.dataset,
+        "data_root": args.data_root,
+        "categories": counts,
+        "adapter_root": str(adapter_root),
+        "evaluation": evaluation,
+    }
+
+
 def _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_targets):
     return {
         "dataset": args.dataset,
@@ -1516,6 +1546,7 @@ def _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_target
         "eval_normal_decision_quantile": float(args.eval_normal_decision_quantile),
         "eval_normal_decision_quantile_method": args.eval_normal_decision_quantile_method,
         "eval_normal_decision_augment_count": int(args.eval_normal_decision_augment_count),
+        "eval_normal_decision_view_quantile": float(args.eval_normal_decision_view_quantile),
         "eval_normal_decision_fit_augment_count": int(args.eval_normal_decision_fit_augment_count),
         "eval_normal_decision_seed": int(args.eval_normal_decision_seed),
     }
@@ -1542,7 +1573,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     model = parser.add_argument_group("models and output")
     model.add_argument("--teacher-model", default=DEFAULT_TEACHER, help="Hugging Face identifier or local model directory")
     model.add_argument("--student-model", default=DEFAULT_STUDENT, help="Hugging Face identifier or local model directory")
-    model.add_argument("--output", required=True)
+    model.add_argument("--output", required=True, help="adapter root; contains <category>/lora_adapter.pt")
     parser.add_argument("--image-size", type=int, default=448)
     parser.add_argument("--feature-layers", default=",".join(str(x) for x in DEFAULT_FEATURE_LAYERS))
     parser.add_argument("--teacher-layers")
@@ -1572,6 +1603,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     evaluation = parser.add_argument_group("post-training evaluation")
     evaluation.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True, help="evaluate each LoRA-adapted student with DefectFusion after training")
+    evaluation.add_argument("--evaluate-only", action="store_true", help="skip distillation and evaluate existing LoRA adapters under --output")
+    evaluation.add_argument("--eval-output", help="evaluation directory; defaults to <output>/evaluation")
     evaluation.add_argument("--eval-image-size", type=int, default=None, help="detector input size; defaults to --image-size")
     evaluation.add_argument("--eval-feature-layers", default=None, help="student hidden states used by the detector; defaults to --feature-layers")
     evaluation.add_argument("--eval-resize-mode", choices=("direct", "longest_pad"), default="direct")
@@ -1593,6 +1626,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     evaluation.add_argument("--eval-normal-decision-quantile", type=float, default=0.995)
     evaluation.add_argument("--eval-normal-decision-quantile-method", choices=("linear", "higher"), default="higher")
     evaluation.add_argument("--eval-normal-decision-augment-count", type=int, default=30)
+    evaluation.add_argument("--eval-normal-decision-view-quantile", type=float, default=1.0, help="source-level quantile over each LOO normal image and its held-out views")
     evaluation.add_argument("--eval-normal-decision-fit-augment-count", type=int, default=4)
     evaluation.add_argument("--eval-normal-decision-seed", type=int, default=None)
     return parser
@@ -1601,7 +1635,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Reject invalid combinations before loading either DINOv3 model."""
 
-    for attribute, option_name in (("teacher_model", "--teacher-model"), ("student_model", "--student-model")):
+    evaluate_only = bool(getattr(args, "evaluate_only", False))
+    model_references = [("student_model", "--student-model")]
+    if not evaluate_only:
+        model_references.insert(0, ("teacher_model", "--teacher-model"))
+    for attribute, option_name in model_references:
         reference = getattr(args, attribute, None)
         if reference is None:
             continue
@@ -1658,6 +1696,8 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         args.eval_feature_layers = args.feature_layers
     if args.eval_normal_decision_seed is None:
         args.eval_normal_decision_seed = args.seed + 100
+    if not hasattr(args, "eval_output"):
+        args.eval_output = None
     if args.eval_image_size <= 0:
         parser.error("eval-image-size must be positive")
     if not 0 <= args.eval_knn_weight <= 1:
@@ -1672,6 +1712,8 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("eval-top-k-ratio and eval-image-top-ratio must be in (0, 1]")
     if not 0 < args.eval_normal_decision_quantile <= 1:
         parser.error("eval-normal-decision-quantile must be in (0, 1]")
+    if not 0 < args.eval_normal_decision_view_quantile <= 1:
+        parser.error("eval-normal-decision-view-quantile must be in (0, 1]")
     if args.eval_normal_decision_augment_count < 0 or args.eval_normal_decision_fit_augment_count < 0:
         parser.error("eval normal decision augmentation counts must be non-negative")
     if args.evaluate and args.eval_normal_decision_calibration == "leave-one-out" and 0 < args.normal_shots < 2:
@@ -1684,13 +1726,17 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error(str(exc))
     if args.evaluate and args.dataset == "folder":
         parser.error("automatic evaluation requires --dataset mvtec or visa; use --no-evaluate for --dataset folder")
+    if evaluate_only and not args.evaluate:
+        parser.error("--evaluate-only cannot be combined with --no-evaluate")
+    if evaluate_only and not Path(args.output).is_dir():
+        parser.error(f"adapter root does not exist: {args.output}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     validate_args(parser, args)
-    summary = train(args)
+    summary = evaluate_existing_students(args) if args.evaluate_only else train(args)
     print(json.dumps(summary, ensure_ascii=True, indent=2, default=_json_default))
 
 
