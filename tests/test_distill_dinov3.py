@@ -24,6 +24,7 @@ from distill_dinov3 import (
     inject_lora,
     load_lora_adapter_into_backbone,
     masks_to_patch_weights,
+    resolve_model_reference,
     resolve_layer_pairs,
     save_lora_adapter,
     validate_args,
@@ -61,6 +62,20 @@ class TinyBackbone(nn.Module):
 
 
 class DistillationTests(unittest.TestCase):
+    def test_local_model_reference_is_resolved_and_requires_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "student"
+            model.mkdir()
+            (model / "config.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(resolve_model_reference(str(model), "--student-model"), str(model.resolve()))
+            self.assertEqual(
+                resolve_model_reference("facebook/dinov3-vits16-pretrain-lvd1689m", "--student-model"),
+                "facebook/dinov3-vits16-pretrain-lvd1689m",
+            )
+            with self.assertRaisesRegex(ValueError, "does not exist"):
+                resolve_model_reference(str(root / "missing"), "--student-model")
+
     def test_engine_metric_summary_matches_cli_macro_convention(self):
         summary = _engine_metric_summary([
             {"image_auroc": 0.8, "pixel_auroc": 0.6},

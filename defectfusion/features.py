@@ -1,4 +1,6 @@
 from __future__ import annotations
+from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -10,8 +12,14 @@ class DinoFeatureExtractor:
     def __init__(self, model_name="facebook/dinov3-vit7b16-pretrain-lvd1689m", image_size=448, resize_mode="direct", device=None, debias=False, svd_components=20, feature_layers=(1, 17, 21, 23), layer_aggregation="mean", layer_normalization="none"):
         from transformers import AutoImageProcessor, AutoModel
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.processor = AutoImageProcessor.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name).eval().to(self.device)
+        model_path = Path(str(model_name)).expanduser()
+        if model_path.is_dir():
+            model_name = str(model_path.resolve())
+            load_kwargs = {"local_files_only": True}
+        else:
+            load_kwargs = {}
+        self.processor = AutoImageProcessor.from_pretrained(model_name, **load_kwargs)
+        self.model = AutoModel.from_pretrained(model_name, **load_kwargs).eval().to(self.device)
         self.image_size = image_size
         if resize_mode not in {"direct", "longest_pad"}:
             raise ValueError("resize_mode must be direct or longest_pad")

@@ -38,6 +38,16 @@ pip install -e .
 
 The default teacher and student are Hugging Face checkpoints. Pass local model
 directories to `--teacher-model` and `--student-model` for offline execution.
+A local reference must point at the actual Hugging Face snapshot directory,
+including its `config.json`, rather than the parent `DINOv3/` directory. The
+trainer resolves an existing local directory to its physical absolute path and
+loads it with `local_files_only=True`; no Hub lookup is attempted for it. If a
+path that appears to exist still fails, verify it from the same Python
+environment that launches training:
+
+```bash
+python -c 'from pathlib import Path; p = Path("/mnt/sda1/DINOv3/dinov3-vits16-pretrain-lvd1689m"); print(repr(str(p)), p.exists(), p.is_dir(), (p / "config.json").is_file(), p.resolve())'
+```
 
 ## MVTec AD
 

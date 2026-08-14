@@ -109,6 +109,31 @@ if [[ "$distill_shots" == "1" ]]; then
   exit 2
 fi
 
+report_model_reference() {
+  local option_name="$1"
+  local reference="$2"
+  case "$reference" in
+    /*|./*|../*)
+      if [[ ! -d "$reference" ]]; then
+        printf '%s local model directory does not exist: %s\n' "$option_name" "$reference" >&2
+        exit 2
+      fi
+      if [[ ! -f "$reference/config.json" ]]; then
+        printf '%s local model directory is missing config.json: %s\n' "$option_name" "$reference" >&2
+        exit 2
+      fi
+      printf '[models] %s local directory: %s\n' "$option_name" "$(cd -- "$reference" && pwd -P)"
+      ;;
+    *)
+      printf '[models] %s Hugging Face ID: %s\n' "$option_name" "$reference"
+      ;;
+  esac
+}
+
+report_model_reference --base-model "$base_model"
+report_model_reference --teacher-model "$teacher_model"
+report_model_reference --student-model "$student_model"
+
 cd "$repo_root"
 mkdir -p "$output_root/logs" "$output_root/tables"
 

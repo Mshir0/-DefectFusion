@@ -75,6 +75,11 @@ bash scripts/run_shot_distillation_benchmark.sh \
   --output-root outputs/shot-distillation-benchmark
 ```
 
+For a local model argument, the script prints a `[models]` line with the
+physical directory before work starts and requires `config.json` in that
+directory. This distinguishes a mounted model snapshot from a parent directory
+or a path that is not visible to the selected Python environment.
+
 Resume a partially completed run without repeating final result directories:
 
 ```bash

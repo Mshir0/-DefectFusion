@@ -68,6 +68,55 @@ ENGINE_METRIC_FIELDS = (
 )
 
 
+def _looks_like_explicit_local_path(reference: str) -> bool:
+    """Return whether a model reference is explicitly intended as a local path."""
+
+    return Path(reference).is_absolute() or reference.startswith(("./", "../", "~/", "~\\"))
+
+
+def resolve_model_reference(reference: str, option_name: str) -> str:
+    """Canonicalize usable local model directories and preserve Hub identifiers.
+
+    ``transformers`` falls back to Hugging Face Hub parsing when a path is not
+    recognized as a directory. For an absolute local path this produces a
+    misleading repo-id error. Resolve valid directories before loading and
+    reject inaccessible path-like references with an actionable message.
+    """
+
+    raw_reference = str(reference)
+    if raw_reference != raw_reference.strip():
+        raise ValueError(
+            f"{option_name} contains leading or trailing whitespace: {raw_reference!r}. "
+            "Remove the extra characters and pass the model directory again."
+        )
+    if not raw_reference:
+        raise ValueError(f"{option_name} must be a Hugging Face identifier or local model directory")
+
+    candidate = Path(raw_reference).expanduser()
+    if candidate.is_dir():
+        config = candidate / "config.json"
+        if not config.is_file():
+            raise ValueError(
+                f"{option_name} local directory is missing config.json: {candidate}. "
+                "Pass the Hugging Face model snapshot directory, not its parent directory."
+            )
+        return str(candidate.resolve())
+    if _looks_like_explicit_local_path(raw_reference):
+        state = "is not a directory" if candidate.exists() else "does not exist"
+        raise ValueError(
+            f"{option_name} local path {raw_reference!r} {state} from this Python process. "
+            "Run `python -c \"from pathlib import Path; p = Path(...); print(p.exists(), p.is_dir())\"` "
+            "with the same interpreter and environment."
+        )
+    return raw_reference
+
+
+def _pretrained_load_kwargs(model_reference: str) -> dict[str, bool]:
+    """Prevent local model directories from ever being interpreted as Hub IDs."""
+
+    return {"local_files_only": True} if Path(model_reference).expanduser().is_dir() else {}
+
+
 @dataclass(frozen=True)
 class ImageRecord:
     """One image and its optional pixel mask."""
@@ -1257,8 +1306,9 @@ def _train_records(
     if not normal_paths:
         raise ValueError("Each category must contain at least one normal image")
 
-    student_backbone = AutoModel.from_pretrained(args.student_model)
-    student_processor = AutoImageProcessor.from_pretrained(args.student_model)
+    student_load_kwargs = _pretrained_load_kwargs(args.student_model)
+    student_backbone = AutoModel.from_pretrained(args.student_model, **student_load_kwargs)
+    student_processor = AutoImageProcessor.from_pretrained(args.student_model, **student_load_kwargs)
     for name, backbone in (("teacher", teacher), ("student", student_backbone)):
         patch_size = _patch_size(backbone)
         if args.image_size % patch_size:
@@ -1401,9 +1451,10 @@ def train(args: argparse.Namespace) -> dict:
     if hasattr(torch, "set_float32_matmul_precision"):
         torch.set_float32_matmul_precision("high")
     groups, counts = dataset_record_groups(args)
-    teacher = AutoModel.from_pretrained(args.teacher_model).to(device).eval()
+    teacher_load_kwargs = _pretrained_load_kwargs(args.teacher_model)
+    teacher = AutoModel.from_pretrained(args.teacher_model, **teacher_load_kwargs).to(device).eval()
     teacher.requires_grad_(False)
-    teacher_processor = AutoImageProcessor.from_pretrained(args.teacher_model)
+    teacher_processor = AutoImageProcessor.from_pretrained(args.teacher_model, **teacher_load_kwargs)
     root = Path(args.output)
     root.mkdir(parents=True, exist_ok=True)
     summaries = {}
@@ -1550,6 +1601,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Reject invalid combinations before loading either DINOv3 model."""
 
+    for attribute, option_name in (("teacher_model", "--teacher-model"), ("student_model", "--student-model")):
+        reference = getattr(args, attribute, None)
+        if reference is None:
+            continue
+        try:
+            setattr(args, attribute, resolve_model_reference(reference, option_name))
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.image_size <= 0 or args.epochs <= 0 or args.batch_size <= 0 or args.centroid_batch_size <= 0:
         parser.error("image-size, epochs, batch-size and centroid-batch-size must be positive")
     if args.normal_shots == 0 or args.normal_shots < -1:

@@ -194,6 +194,34 @@ if [[ "$adaptation" != "lora" ]]; then
   exit 2
 fi
 
+report_model_reference() {
+  local option_name="$1"
+  local reference="$2"
+  case "$reference" in
+    /*|./*|../*)
+      if [[ ! -d "$reference" ]]; then
+        printf '%s local model directory does not exist: %s\n' "$option_name" "$reference" >&2
+        exit 2
+      fi
+      if [[ ! -f "$reference/config.json" ]]; then
+        printf '%s local model directory is missing config.json: %s\n' "$option_name" "$reference" >&2
+        exit 2
+      fi
+      printf '[models] %s local directory: %s\n' "$option_name" "$(cd -- "$reference" && pwd -P)"
+      ;;
+    *)
+      printf '[models] %s Hugging Face ID: %s\n' "$option_name" "$reference"
+      ;;
+  esac
+}
+
+if [[ -n "$teacher_model" ]]; then
+  report_model_reference --teacher-model "$teacher_model"
+fi
+if [[ -n "$student_model" ]]; then
+  report_model_reference --student-model "$student_model"
+fi
+
 cd "$repo_root"
 
 eval_normal_decision_calibration="leave-one-out"
