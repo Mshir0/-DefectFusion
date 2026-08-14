@@ -125,7 +125,7 @@ def _dataset(categories: list[dict], relative: Path) -> str:
 def _method(relative: Path) -> tuple[str, str]:
     lowered = relative.as_posix().lower()
     if "distill" in lowered:
-        return "distilled_lora", "Distilled ViT-S LoRA"
+        return "distilled_lora", "Distilled ViT-S+ LoRA"
     return "main_pca", "Main DINOv3 PCA"
 
 

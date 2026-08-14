@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Run the main PCA detector at 1/2/4/8 normal shots for MVTec AD and VisA,
-# then run one 8-shot ViT-B -> ViT-S LoRA distillation for both datasets.
+# then run one 8-shot ViT-B -> ViT-S+ LoRA distillation for both datasets.
 # Every completed result is retained and converted into CSV/Markdown tables.
 
 usage() {
@@ -21,7 +21,7 @@ Required paths:
   --visa-root PATH        VisA dataset root.
   --base-model PATH_OR_ID Backbone used by the main PCA 1/2/4/8-shot runs.
   --teacher-model PATH_OR_ID Frozen ViT-B distillation teacher.
-  --student-model PATH_OR_ID ViT-S base checkpoint used with saved LoRA adapters.
+  --student-model PATH_OR_ID ViT-S+ base checkpoint used with saved LoRA adapters.
 
 Options:
   --visa-split-csv PATH   Optional VisA 1cls.csv outside --visa-root.
@@ -201,7 +201,7 @@ if [[ "$amp" == "0" ]]; then
   distill_args+=(--no-amp)
 fi
 
-printf '[benchmark] distilled ViT-S LoRA: shots=%s\n' "$distill_shots"
+printf '[benchmark] distilled ViT-S+ LoRA: shots=%s\n' "$distill_shots"
 bash "$repo_root/scripts/distill_all_mvtec_visa.sh" "${distill_args[@]}" \
   2>&1 | tee "$output_root/logs/distillation-${distill_shots}shot.log"
 

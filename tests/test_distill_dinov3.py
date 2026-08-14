@@ -70,8 +70,8 @@ class DistillationTests(unittest.TestCase):
             (model / "config.json").write_text("{}", encoding="utf-8")
             self.assertEqual(resolve_model_reference(str(model), "--student-model"), str(model.resolve()))
             self.assertEqual(
-                resolve_model_reference("facebook/dinov3-vits16-pretrain-lvd1689m", "--student-model"),
-                "facebook/dinov3-vits16-pretrain-lvd1689m",
+                resolve_model_reference("facebook/dinov3-vits16plus-pretrain-lvd1689m", "--student-model"),
+                "facebook/dinov3-vits16plus-pretrain-lvd1689m",
             )
             with self.assertRaisesRegex(ValueError, "does not exist"):
                 resolve_model_reference(str(root / "missing"), "--student-model")

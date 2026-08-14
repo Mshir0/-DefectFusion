@@ -2,7 +2,7 @@
 
 The combined benchmark runs the main DINOv3 PCA detector once at each of
 1, 2, 4, and 8 normal shots on both MVTec AD and VisA. It then runs one
-8-shot DINOv3 ViT-B to ViT-S LoRA distillation on both datasets and builds
+8-shot DINOv3 ViT-B to ViT-S+ LoRA distillation on both datasets and builds
 reproducible result tables.
 
 ## Script Summary
@@ -13,7 +13,7 @@ reproducible result tables.
 | `compare_mvtec_crf.sh` | MVTec leather only | Compare raw and DenseCRF pixel maps with the same LOO threshold | `outputs/mvtec-crf-ablation-loo/leather` |
 | `compare_visa_crf.sh` | One VisA category (`candle` by default) | Compare raw and DenseCRF pixel maps with the same LOO threshold | `outputs/visa-crf-ablation-loo/<category>` |
 | `compare_mvtec_gaussian.sh` | One MVTec category | Compare raw and Gaussian-smoothed pixel maps | `outputs/mvtec-gaussian-ablation-loo/<category>` |
-| `distill_all_mvtec_visa.sh` | All MVTec/VisA categories | Train and evaluate one LoRA-only ViT-S adapter per category | `outputs/dinov3-all-categories` |
+| `distill_all_mvtec_visa.sh` | All MVTec/VisA categories | Train and evaluate one LoRA-only ViT-S+ adapter per category | `outputs/dinov3-all-categories` |
 | `run_shot_distillation_benchmark.sh` | Both complete datasets | Run main 1/2/4/8-shot experiments, one distillation, and result tables | `outputs/shot-distillation-benchmark` |
 | `build_benchmark_tables.py` | Completed results under one root | Rebuild macro, category, and best-result tables without rerunning models | `<input-root>/tables` |
 
@@ -42,7 +42,7 @@ good/anomaly threshold result.
 | 2 | Main DINOv3 PCA | 2 | Source-disjoint LOO, q=0.995 higher | None | `main/2shot/<dataset>` |
 | 3 | Main DINOv3 PCA | 4 | Source-disjoint LOO, q=0.995 higher | None | `main/4shot/<dataset>` |
 | 4 | Main DINOv3 PCA | 8 | Source-disjoint LOO, q=0.995 higher | None | `main/8shot/<dataset>` |
-| 5 | Distilled ViT-S LoRA | 8 | Source-disjoint LOO, q=0.995 higher | None | `distillation/<dataset>` |
+| 5 | Distilled ViT-S+ LoRA | 8 | Source-disjoint LOO, q=0.995 higher | None | `distillation/<dataset>` |
 
 One shot cannot use LOO because no normal source image remains to fit the
 held-out fold. DenseCRF is excluded from the full benchmark because it improved
@@ -70,7 +70,7 @@ bash scripts/run_shot_distillation_benchmark.sh \
   --visa-root /mnt/sda1/VisA_20220922 \
   --base-model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
   --teacher-model /mnt/sda1/DINOv3/dinov3-vitb16-pretrain-lvd1689m \
-  --student-model /mnt/sda1/DINOv3/dinov3-vits16-pretrain-lvd1689m \
+  --student-model /mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m \
   --seed 42 \
   --output-root outputs/shot-distillation-benchmark
 ```
@@ -88,7 +88,7 @@ bash scripts/run_shot_distillation_benchmark.sh \
   --visa-root /mnt/sda1/VisA_20220922 \
   --base-model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
   --teacher-model /mnt/sda1/DINOv3/dinov3-vitb16-pretrain-lvd1689m \
-  --student-model /mnt/sda1/DINOv3/dinov3-vits16-pretrain-lvd1689m \
+  --student-model /mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m \
   --output-root outputs/shot-distillation-benchmark \
   --skip-completed
 ```
@@ -107,7 +107,7 @@ bash scripts/run_shot_distillation_benchmark.sh \
 
 Each experiment directory also keeps the native `results.json`, `summary.csv`,
 and `categories/<category>.json`. Distillation category directories contain
-only `lora_adapter.pt` plus training metadata; the ViT-S base model is not
+only `lora_adapter.pt` plus training metadata; the ViT-S+ base model is not
 copied into the output.
 
 Balanced accuracy is used as the primary threshold-selection result because

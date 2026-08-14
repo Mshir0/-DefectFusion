@@ -1,7 +1,7 @@
 """Standalone DINOv3 teacher/student distillation for MVTec AD and VisA.
 
 This module keeps distillation and dataset parsing in one standalone file. It
-trains a deployable ViT-S backbone using a frozen ViT-B teacher, multi-layer
+trains a deployable ViT-S+ backbone using a frozen ViT-B teacher, multi-layer
 patch-token distillation, anomaly-map distillation, and a small
 normal-compactness/margin objective. MVTec AD and VisA are parsed directly by
 this file. Test defects are excluded by default; when explicitly selected,
@@ -14,12 +14,12 @@ Example::
     python distill_dinov3.py \
         --dataset mvtec --data-root ./datasets/mvtec_anomaly \
         --categories bottle \
-        --output outputs/dinov3-vit-s-distilled \
+        --output outputs/dinov3-vit-s-plus-distilled \
         --epochs 10 --adaptation lora
 
 Each selected category gets its own output directory containing a lightweight
 LoRA adapter, a JSON training configuration, and a JSON training log. Original
-ViT-S weights are never copied into the output directory. Automatic evaluation
+ViT-S+ weights are never copied into the output directory. Automatic evaluation
 reloads ``--student-model`` and attaches the saved adapter.
 """
 
@@ -50,7 +50,7 @@ from torch.utils.data import DataLoader, Dataset
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 MASK_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff")
 DEFAULT_TEACHER = "facebook/dinov3-vitb16-pretrain-lvd1689m"
-DEFAULT_STUDENT = "facebook/dinov3-vits16-pretrain-lvd1689m"
+DEFAULT_STUDENT = "facebook/dinov3-vits16plus-pretrain-lvd1689m"
 DEFAULT_FEATURE_LAYERS = (1, 6, 12)
 ENGINE_METRIC_FIELDS = (
     "image_auroc",
@@ -714,7 +714,7 @@ def configure_student_trainable(
     lora_alpha: float = 16.0,
     lora_dropout: float = 0.05,
 ) -> list[str]:
-    """Freeze ViT-S and enable only LoRA weights for adapter-only export."""
+    """Freeze ViT-S+ and enable only LoRA weights for adapter-only export."""
 
     if adaptation != "lora":
         raise ValueError("Only LoRA adaptation supports the adapter-only output format")
@@ -961,7 +961,7 @@ def _json_default(value):
 
 
 def save_lora_adapter(output_dir: str | Path, student: DistillationStudent, config: dict) -> Path:
-    """Save only LoRA tensors; ViT-S, LayerNorm, and projection weights are not exported."""
+    """Save only LoRA tensors; ViT-S+, LayerNorm, and projection weights are not exported."""
 
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -994,7 +994,7 @@ def load_lora_adapter_into_backbone(
     config: dict | None = None,
     base_model: str | Path | None = None,
 ) -> dict:
-    """Inject a saved LoRA adapter into a freshly loaded compatible ViT-S."""
+    """Inject a saved LoRA adapter into a freshly loaded compatible ViT-S+."""
 
     path = Path(adapter_path)
     if not path.is_file():
@@ -1035,7 +1035,7 @@ def load_lora_adapter_into_backbone(
             detail.append("missing=" + ", ".join(missing))
         if unexpected:
             detail.append("unexpected=" + ", ".join(unexpected))
-        raise ValueError("LoRA adapter does not match the requested ViT-S: " + "; ".join(detail))
+        raise ValueError("LoRA adapter does not match the requested ViT-S+: " + "; ".join(detail))
     backbone.load_state_dict(lora_state, strict=False)
     # LoRA modules are constructed on CPU. Keep an already-loaded CUDA model
     # on its original device before the evaluator starts feature extraction.
@@ -1523,7 +1523,7 @@ def _training_config(args, layer_pairs, teacher_dim, student_dim, adapted_target
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Standalone DINOv3 ViT-B -> ViT-S distillation for MVTec AD and VisA",
+        description="Standalone DINOv3 ViT-B -> ViT-S+ distillation for MVTec AD and VisA",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     data = parser.add_argument_group("dataset")

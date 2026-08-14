@@ -7,12 +7,12 @@ provided as normal command-line arguments. Paths may be relative to the
 repository or absolute Linux paths. Its post-training evaluation deliberately
 calls the existing DefectFusion evaluator so metric definitions stay identical.
 
-The script freezes a DINOv3 ViT-B teacher and adapts one DINOv3 ViT-S student
+The script freezes a DINOv3 ViT-B teacher and adapts one DINOv3 ViT-S+ student
 per selected category. It uses hidden states 1, 6, and 12 for patch-feature
 distillation, anomaly-map distillation, and QKV LoRA in the final four blocks.
-The ViT-S base and its LayerNorms remain frozen. Projection heads exist only
+The ViT-S+ base and its LayerNorms remain frozen. Projection heads exist only
 while computing the training loss and are discarded after training. After every
-MVTec/VisA run, the script reloads the original ViT-S checkpoint, attaches the
+MVTec/VisA run, the script reloads the original ViT-S+ checkpoint, attaches the
 saved LoRA adapter, and evaluates it with the project's existing DefectFusion
 evaluator. This reports the same image-level AUROC/AUPR/F1-max and pixel-level
 AUROC/AUPR/AUPRO/F1-max metrics as `evaluate-mvtec` and `evaluate-visa`.
@@ -46,7 +46,7 @@ path that appears to exist still fails, verify it from the same Python
 environment that launches training:
 
 ```bash
-python -c 'from pathlib import Path; p = Path("/mnt/sda1/DINOv3/dinov3-vits16-pretrain-lvd1689m"); print(repr(str(p)), p.exists(), p.is_dir(), (p / "config.json").is_file(), p.resolve())'
+python -c 'from pathlib import Path; p = Path("/mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m"); print(repr(str(p)), p.exists(), p.is_dir(), (p / "config.json").is_file(), p.resolve())'
 ```
 
 ## MVTec AD
@@ -71,7 +71,7 @@ python distill_dinov3.py \
   --normal-shots 8 \
   --defect-shots 0 \
   --teacher-model ./models/dinov3-vitb16-pretrain-lvd1689m \
-  --student-model ./models/dinov3-vits16-pretrain-lvd1689m \
+  --student-model ./models/dinov3-vits16plus-pretrain-lvd1689m \
   --output ./outputs/mvtec-distilled \
   --epochs 10 --batch-size 2 --device cuda
 ```
@@ -94,7 +94,7 @@ python distill_dinov3.py \
   --normal-shots 8 \
   --defect-shots 0 \
   --teacher-model ./models/dinov3-vitb16-pretrain-lvd1689m \
-  --student-model ./models/dinov3-vits16-pretrain-lvd1689m \
+  --student-model ./models/dinov3-vits16plus-pretrain-lvd1689m \
   --output ./outputs/visa-distilled \
   --epochs 10 --batch-size 2 --device cuda
 ```
@@ -118,7 +118,7 @@ bash scripts/distill_all_mvtec_visa.sh \
   --mvtec-root /mnt/sda1/mvtec_anomaly \
   --visa-root /mnt/sda1/VisA_20220922 \
   --teacher-model /mnt/sda1/DINOv3/dinov3-vitb16-pretrain-lvd1689m \
-  --student-model /mnt/sda1/DINOv3/dinov3-vits16-pretrain-lvd1689m \
+  --student-model /mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m \
   --output-root ./outputs/dinov3-all-8shot
 ```
 
@@ -150,7 +150,7 @@ outputs/mvtec-distilled/
 ```
 
 `lora_adapter.pt` contains only the trained LoRA matrices. It does not contain
-the ViT-S base weights, LayerNorm weights, projection heads, processor files,
+the ViT-S+ base weights, LayerNorm weights, projection heads, processor files,
 or teacher weights. Keep the original `--student-model` checkpoint available:
 automatic evaluation reloads that checkpoint and attaches each category's
 adapter in memory. `summary.json` records both `trainable_parameters` (LoRA
@@ -158,7 +158,7 @@ plus training-only projection heads) and `lora_parameters` (the weights that
 are actually saved). The automatic `evaluation/` directory uses the same JSON
 and CSV layout as the existing evaluator. Its detector defaults are PCA,
 `--eval-image-size` equal to the training image size, and the same selected
-ViT-S hidden states. For 2-shot and above, the image decision threshold defaults
+ViT-S+ hidden states. For 2-shot and above, the image decision threshold defaults
 to source-disjoint leave-one-out calibration with a `0.995` higher quantile.
 This affects only evaluation and does not change the adapter artifact. A 1-shot
 run must explicitly use `--eval-normal-decision-calibration training-reference`,

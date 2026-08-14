@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Train and evaluate one distilled ViT-S model for every detected MVTec AD and
+# Train and evaluate one distilled ViT-S+ model for every detected MVTec AD and
 # VisA category. All data/model locations are explicit command-line arguments;
 # this script deliberately does not use environment variables or server paths.
 
@@ -19,7 +19,7 @@ Required:
 
 Model and output options:
   --teacher-model PATH_OR_ID  Frozen DINOv3 ViT-B checkpoint. Defaults to the Python entry point's Hugging Face ID.
-  --student-model PATH_OR_ID  DINOv3 ViT-S checkpoint. Defaults to the Python entry point's Hugging Face ID.
+  --student-model PATH_OR_ID  DINOv3 ViT-S+ checkpoint. Defaults to the Python entry point's Hugging Face ID.
   --visa-split-csv PATH       Optional VisA 1cls.csv outside --visa-root.
   --output-root PATH          Parent directory for the MVTec and VisA experiments. Default: outputs/dinov3-all-categories.
   --python COMMAND            Python executable. Default: python.
@@ -45,7 +45,7 @@ Examples:
     --mvtec-root /mnt/sda1/mvtec_anomaly \
     --visa-root /mnt/sda1/VisA_20220922 \
     --teacher-model /mnt/sda1/DINOv3/dinov3-vitb16-pretrain-lvd1689m \
-    --student-model /mnt/sda1/DINOv3/dinov3-vits16-pretrain-lvd1689m
+    --student-model /mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m
 
   # Use every normal training image and write a separate experiment directory.
   bash scripts/distill_all_mvtec_visa.sh \

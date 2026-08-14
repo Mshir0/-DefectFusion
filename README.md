@@ -20,7 +20,7 @@ python -m defectfusion.cli fit --config configs/example.json
 python -m defectfusion.cli predict --model-state outputs/example-model.json --image examples/data/test.png
 ```
 
-For standalone DINOv3 ViT-B to ViT-S LoRA distillation on MVTec AD or VisA,
+For standalone DINOv3 ViT-B to ViT-S+ LoRA distillation on MVTec AD or VisA,
 see [`DISTILLATION_GUIDE.md`](DISTILLATION_GUIDE.md). The complete training and
 dataset-loading entry point is `distill_dinov3.py`; it uses explicit CLI paths
 and does not depend on environment variables or a shell wrapper. MVTec/VisA
