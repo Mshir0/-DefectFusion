@@ -155,18 +155,26 @@ def _leave_one_out_normal_scores(
     build_fusion,
     fit_augment_count,
     decision_augment_count,
+    decision_view_quantile=1.0,
     augmentations,
     fit_seed,
     decision_seed,
     progress=None,
 ):
-    """Return source-disjoint normal scores in robust PCA score units."""
+    """Return one source-disjoint normal score per LOO fold.
+
+    Augmented views from the same source are correlated, so they contribute a
+    single source-level quantile rather than being pooled as independent
+    calibration samples. A value of 1.0 preserves the historical maximum.
+    """
 
     from .model import NormalSubspace
 
     normal_paths = list(normal_paths)
     if len(normal_paths) < 2:
         raise ValueError("leave-one-out normal calibration requires at least two normal shots")
+    if not 0 < decision_view_quantile <= 1:
+        raise ValueError("leave-one-out decision view quantile must be in (0, 1]")
     detector = build_fusion()
     if detector.dual_branch or detector.secondary_pixel_image_size is not None:
         raise ValueError("leave-one-out normal calibration currently requires a single image branch")
@@ -241,8 +249,12 @@ def _leave_one_out_normal_scores(
         if not np.isfinite(fold_scores).all():
             raise ValueError(f"leave-one-out calibration produced a non-finite score: {held_out}")
         # Augmented views from one source are correlated; contribute one
-        # conservative source-level value instead of treating them as IID.
-        standardized_scores.append(max(fold_scores))
+        # robust source-level value instead of treating them as IID. Taking a
+        # high quantile prevents one extreme transform from setting the final
+        # threshold while retaining sensitivity to normal variation.
+        standardized_scores.append(float(np.quantile(
+            fold_scores, decision_view_quantile, method="linear",
+        )))
         if progress is not None:
             progress(fold + 1, len(normal_paths), held_out, len(fold_scores))
         del subspace, held_out_views
@@ -301,6 +313,7 @@ def main(argv=None):
     e.add_argument("--normal-decision-quantile", type=float, default=None, help="normal-score quantile for good/anomaly decisions; explicit use calibrates from held-out augmented views when no validation directory is supplied")
     e.add_argument("--normal-decision-quantile-method", choices=["linear", "higher"], default=None, help="quantile interpolation; higher is conservative for small calibration sets")
     e.add_argument("--normal-decision-augment-count", type=int, default=None, help="held-out augmented calibration views per normal shot; defaults to --normal-augment-count")
+    e.add_argument("--normal-decision-view-quantile", type=float, default=None, help="within-source LOO quantile over the original and held-out augmented views; 1.0 reproduces the historical maximum")
     e.add_argument("--normal-decision-fit-augment-count", type=int, default=None, help="training augmentations per source in each leave-one-out fold; defaults to min(4, normal augment count)")
     e.add_argument("--normal-decision-seed", type=int, default=None, help="seed for held-out threshold augmentations; defaults to --seed + 100")
     e.add_argument("--defect-shots", "--few-shot", dest="defect_shots", type=int, default=0, help="labeled defect exemplars per defect type")
@@ -367,6 +380,16 @@ def main(argv=None):
         p.error("config normal_decision_calibration must be augmentation or leave-one-out")
     if cfg.get("normal_decision_quantile_method") not in {None, "linear", "higher"}:
         p.error("config normal_decision_quantile_method must be linear or higher")
+    configured_view_quantile = getattr(a, "normal_decision_view_quantile", None)
+    if configured_view_quantile is None:
+        configured_view_quantile = cfg.get("normal_decision_view_quantile")
+    if configured_view_quantile is not None:
+        try:
+            configured_view_quantile = float(configured_view_quantile)
+        except (TypeError, ValueError):
+            p.error("--normal-decision-view-quantile must be numeric")
+        if not 0 < configured_view_quantile <= 1:
+            p.error("--normal-decision-view-quantile must be in (0, 1]")
     model_name = getattr(a, "model", None) or cfg.get("model", "facebook/dinov3-vit7b16-pretrain-lvd1689m")
     image_size = getattr(a, "image_size", None) or cfg.get("image_size", 448)
     if image_size <= 0: p.error("--image-size must be positive")
@@ -467,11 +490,14 @@ def main(argv=None):
             p.error(f"normal validation directory does not exist: {normal_validation_dir}")
         decision_quantile_argument = getattr(a, "normal_decision_quantile", None)
         decision_calibration_argument = getattr(a, "normal_decision_calibration", None)
+        decision_view_quantile_argument = getattr(a, "normal_decision_view_quantile", None)
         decision_quantile_configured = (
             decision_quantile_argument is not None
             or "normal_decision_quantile" in cfg
             or decision_calibration_argument is not None
             or "normal_decision_calibration" in cfg
+            or decision_view_quantile_argument is not None
+            or "normal_decision_view_quantile" in cfg
         )
         normal_decision_calibration = (
             decision_calibration_argument
@@ -490,6 +516,11 @@ def main(argv=None):
         )
         normal_decision_augment_count = (
             None if configured_decision_augment_count is None else int(configured_decision_augment_count)
+        )
+        normal_decision_view_quantile = float(
+            decision_view_quantile_argument
+            if decision_view_quantile_argument is not None
+            else cfg.get("normal_decision_view_quantile", 1.0)
         )
         normal_decision_quantile_method = (
             getattr(a, "normal_decision_quantile_method", None)
@@ -519,6 +550,8 @@ def main(argv=None):
             p.error("--normal-decision-quantile must be in (0, 1]")
         if normal_decision_augment_count is not None and normal_decision_augment_count < 0:
             p.error("--normal-decision-augment-count must be non-negative")
+        if not 0 < normal_decision_view_quantile <= 1:
+            p.error("--normal-decision-view-quantile must be in (0, 1]")
         if normal_decision_fit_augment_count is not None and normal_decision_fit_augment_count < 0:
             p.error("--normal-decision-fit-augment-count must be non-negative")
         if a.normal_shots == 0 or a.normal_shots < -1: p.error("--normal-shots must be -1 or a positive integer")
@@ -664,7 +697,11 @@ def main(argv=None):
                     )
                     category_decision_seed = normal_decision_seed
                     category_decision_folds = len(normal_selected)
-                    decision_threshold_source = "normal_leave_one_out_quantile"
+                    decision_threshold_source = (
+                        "normal_leave_one_out_robust_quantile"
+                        if normal_decision_view_quantile < 1 and category_decision_augment_count > 0
+                        else "normal_leave_one_out_quantile"
+                    )
                     decision_started = time.perf_counter()
                     try:
                         standardized_scores = _leave_one_out_normal_scores(
@@ -672,6 +709,7 @@ def main(argv=None):
                             build_fusion=build_category_fusion,
                             fit_augment_count=category_decision_fit_augment_count,
                             decision_augment_count=category_decision_augment_count,
+                            decision_view_quantile=normal_decision_view_quantile,
                             augmentations=category_augmentations,
                             fit_seed=a.seed,
                             decision_seed=normal_decision_seed,
@@ -727,7 +765,8 @@ def main(argv=None):
                 print(
                     f"[normal-decision-loo] {category_name}: folds={category_decision_folds} "
                     f"scores={len(decision_reference_scores)} quantile={normal_decision_quantile:.4g} "
-                    f"method={normal_decision_quantile_method}",
+                    f"method={normal_decision_quantile_method} "
+                    f"view_quantile={normal_decision_view_quantile:.4g}",
                     flush=True,
                 )
             if anomaly_method != "pca":
@@ -797,6 +836,11 @@ def main(argv=None):
             metrics["normal_decision_quantile"] = normal_decision_quantile
             metrics["normal_decision_quantile_method"] = normal_decision_quantile_method
             metrics["normal_decision_augment_count"] = category_decision_augment_count
+            metrics["normal_decision_view_quantile"] = (
+                normal_decision_view_quantile
+                if category_decision_calibration == "leave-one-out"
+                else None
+            )
             metrics["normal_decision_fit_augment_count"] = category_decision_fit_augment_count
             metrics["normal_decision_folds"] = category_decision_folds
             metrics["normal_decision_seed"] = category_decision_seed

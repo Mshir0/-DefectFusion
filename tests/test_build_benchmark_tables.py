@@ -28,6 +28,7 @@ class BenchmarkTablesTest(unittest.TestCase):
             "normal_decision_calibration": "leave-one-out",
             "good_decision_quantile": 0.995,
             "good_decision_quantile_method": "higher",
+            "normal_decision_view_quantile": 0.9,
             "map_postprocess": "none",
             "timing_seconds": {"total": 10.0},
         }
@@ -55,6 +56,7 @@ class BenchmarkTablesTest(unittest.TestCase):
         self.assertEqual(len(categories), 2)
         self.assertEqual(experiments[0]["method"], "main_pca")
         self.assertEqual(experiments[1]["method"], "distilled_lora")
+        self.assertEqual(experiments[0]["normal_decision_view_quantile"], 0.9)
         self.assertFalse(experiments[0]["best_balanced_accuracy"])
         self.assertTrue(experiments[1]["best_balanced_accuracy"])
 

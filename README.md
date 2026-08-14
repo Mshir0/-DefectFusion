@@ -85,18 +85,23 @@ It retains the dataset-specific preprocessing from the existing evaluation
 scripts and does not invoke distillation, kNN, ANoCo, or the dual branch. The
 default calibration is source-disjoint leave-one-out (LOO): for each selected
 normal image, a temporary PCA is fitted on the other source images. The held-out
-source is scored with its original and rotation views, but those correlated
-views contribute only one maximum score. Fold scores are normalized to robust
-PCA score units and mapped to the final detector's scale. With 8 shots,
-`NORMAL_DECISION_QUANTILE=0.995` and `NORMAL_DECISION_QUANTILE_METHOD=higher`
-conservatively select the maximum of eight independent source-level scores.
+source is scored with its original and rotation views. Those correlated views
+contribute one robust source-level score at
+`NORMAL_DECISION_VIEW_QUANTILE=0.90`; they are never pooled as independent
+samples. Fold scores are normalized to robust PCA score units and mapped to the
+final detector's scale. The final threshold uses
+`NORMAL_DECISION_QUANTILE=0.95` with `NORMAL_DECISION_QUANTILE_METHOD=linear`
+across the independent sources. This avoids the former maximum-of-maxima
+threshold that produced high normal accuracy but poor defect recall.
 
 ```bash
 bash scripts/evaluate_pca_good_accuracy.sh
 
-# Compare the 99th percentile without overwriting the default output.
-NORMAL_DECISION_QUANTILE=0.99 \
-OUTPUT_ROOT=outputs/pca-good-accuracy-loo-q99 \
+# Reproduce the former conservative maximum-of-maxima baseline.
+NORMAL_DECISION_VIEW_QUANTILE=1.0 \
+NORMAL_DECISION_QUANTILE=0.995 \
+NORMAL_DECISION_QUANTILE_METHOD=higher \
+OUTPUT_ROOT=outputs/pca-good-accuracy-loo-legacy \
 bash scripts/evaluate_pca_good_accuracy.sh
 
 # One normal shot cannot use source-disjoint LOO. Explicitly use the legacy
@@ -114,12 +119,14 @@ MODEL=/data/dinov3-vitl16-pretrain-lvd1689m \
 bash scripts/evaluate_pca_good_accuracy.sh
 ```
 
-The default output root is `outputs/pca-good-accuracy-loo`. In addition to
+The default output root is `outputs/pca-good-accuracy-robust-loo`. In addition to
 `good_accuracy`, `summary.csv` reports defect recall, balanced accuracy, overall
 decision accuracy, and the four confusion counts: `good_predicted_normal` (TN),
 `good_predicted_anomaly` (FP), `defect_predicted_anomaly` (TP), and
-`defect_predicted_normal` (FN). Use balanced accuracy to compare thresholds so
-that a higher normal accuracy cannot hide a loss of defect recall.
+`defect_predicted_normal` (FN). It also records the within-source view quantile.
+Use balanced accuracy to compare thresholds so that a higher normal accuracy
+cannot hide a loss of defect recall. Threshold calibration changes these
+decisions only; AUROC, AUPR, and F1-max remain threshold-independent.
 
 To compare the raw anomaly map against Gaussian smoothing on one MVTec class,
 run the focused ablation below. It defaults to `leather` and `sigma=1.0`; both

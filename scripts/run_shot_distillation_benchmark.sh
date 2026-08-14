@@ -38,7 +38,8 @@ Options:
   -h, --help              Show this help.
 
 The main 1-shot run uses augmentation calibration because leave-one-out is not
-defined for one source image. The 2/4/8-shot runs use source-disjoint LOO.
+defined for one source image. The 2/4/8-shot runs use robust source-disjoint
+LOO (`linear@0.95` across sources and `0.90` within each source's views).
 DenseCRF is intentionally excluded from this full benchmark because its effect
 is category-dependent; use compare_mvtec_crf.sh or compare_visa_crf.sh for it.
 EOF
@@ -146,11 +147,15 @@ refresh_tables() {
 run_main_shot() {
   local shots="$1"
   local calibration="leave-one-out"
-  local quantile_method="higher"
+  local quantile_method="linear"
+  local quantile="0.95"
+  local view_quantile="0.90"
   local destination="$output_root/main/${shots}shot"
   if [[ "$shots" == "1" ]]; then
     calibration="augmentation"
     quantile_method="linear"
+    quantile="0.995"
+    view_quantile="1.0"
   fi
 
   printf '[benchmark] main PCA: shots=%s calibration=%s\n' "$shots" "$calibration"
@@ -164,8 +169,9 @@ run_main_shot() {
   NORMAL_SHOTS="$shots" \
   SEED="$seed" \
   NORMAL_DECISION_CALIBRATION="$calibration" \
-  NORMAL_DECISION_QUANTILE=0.995 \
+  NORMAL_DECISION_QUANTILE="$quantile" \
   NORMAL_DECISION_QUANTILE_METHOD="$quantile_method" \
+  NORMAL_DECISION_VIEW_QUANTILE="$view_quantile" \
   OUTPUT_ROOT="$destination" \
   SKIP_COMPLETED="$skip_completed" \
   bash "$repo_root/scripts/evaluate_pca_good_accuracy.sh" \

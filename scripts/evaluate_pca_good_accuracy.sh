@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Main DefectFusion PCA evaluation only. No distilled student model, kNN,
 # ANoCo, or dual branch is used. Good/anomaly decisions use source-disjoint
-# leave-one-out scores; augmented views from one source contribute one maximum.
+# leave-one-out scores with robust within-source augmentation aggregation.
 
 DATASET="${DATASET:-all}"
 PYTHON="${PYTHON:-python}"
@@ -13,15 +13,16 @@ NORMAL_SHOTS="${NORMAL_SHOTS:-8}"
 NORMAL_AUGMENT_COUNT="${NORMAL_AUGMENT_COUNT:-}"
 NORMAL_FIT_MAX_PATCHES="${NORMAL_FIT_MAX_PATCHES:-0}"
 NORMAL_DECISION_CALIBRATION="${NORMAL_DECISION_CALIBRATION:-leave-one-out}"
-NORMAL_DECISION_QUANTILE="${NORMAL_DECISION_QUANTILE:-0.995}"
-NORMAL_DECISION_QUANTILE_METHOD="${NORMAL_DECISION_QUANTILE_METHOD:-higher}"
+NORMAL_DECISION_QUANTILE="${NORMAL_DECISION_QUANTILE:-0.95}"
+NORMAL_DECISION_QUANTILE_METHOD="${NORMAL_DECISION_QUANTILE_METHOD:-linear}"
 NORMAL_DECISION_AUGMENT_COUNT="${NORMAL_DECISION_AUGMENT_COUNT:-}"
+NORMAL_DECISION_VIEW_QUANTILE="${NORMAL_DECISION_VIEW_QUANTILE:-0.90}"
 NORMAL_DECISION_FIT_AUGMENT_COUNT="${NORMAL_DECISION_FIT_AUGMENT_COUNT:-4}"
 IMAGE_SIZE="${IMAGE_SIZE:-672}"
 FEATURE_LAYERS="${FEATURE_LAYERS:-1,17,21,23}"
 SEED="${SEED:-42}"
 NORMAL_DECISION_SEED="${NORMAL_DECISION_SEED:-$((SEED + 100))}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/pca-good-accuracy-loo}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/pca-good-accuracy-robust-loo}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
 
 MVTEC_DATA_ROOT="${MVTEC_DATA_ROOT:-/mnt/sda1/mvtec_anomaly}"
@@ -65,6 +66,7 @@ common_args=(
   --normal-decision-quantile "$NORMAL_DECISION_QUANTILE"
   --normal-decision-quantile-method "$NORMAL_DECISION_QUANTILE_METHOD"
   --normal-decision-augment-count "$NORMAL_DECISION_AUGMENT_COUNT"
+  --normal-decision-view-quantile "$NORMAL_DECISION_VIEW_QUANTILE"
   --normal-decision-fit-augment-count "$NORMAL_DECISION_FIT_AUGMENT_COUNT"
   --normal-decision-seed "$NORMAL_DECISION_SEED"
   --image-size "$IMAGE_SIZE"
@@ -102,7 +104,7 @@ with open(summary_path, encoding="utf-8-sig", newline="") as stream:
     rows = list(csv.DictReader(stream))
 
 print(f"[main-pca] {dataset_name} normal-test decisions")
-print("category\tgood_accuracy\tdefect_recall\tbalanced_accuracy\tdecision_accuracy\tTN\tFP\tTP\tFN\tcalibration\tthreshold_source\tquantile\tmethod\treferences\tfolds")
+print("category\tgood_accuracy\tdefect_recall\tbalanced_accuracy\tdecision_accuracy\tTN\tFP\tTP\tFN\tcalibration\tthreshold_source\tquantile\tmethod\tview_quantile\treferences\tfolds")
 for row in rows:
     if row.get("category") != "macro_average":
         print("\t".join([
@@ -119,6 +121,7 @@ for row in rows:
             row.get("good_decision_threshold_source", ""),
             row.get("good_decision_quantile", ""),
             row.get("good_decision_quantile_method", ""),
+            row.get("normal_decision_view_quantile", ""),
             row.get("good_decision_reference_images", ""),
             row.get("normal_decision_folds", ""),
         ]))

@@ -31,6 +31,7 @@ class ReportingTest(unittest.TestCase):
             "good_decision_reference_images": 8,
             "normal_decision_calibration": "leave-one-out",
             "normal_decision_augment_count": 30,
+            "normal_decision_view_quantile": 0.9,
             "normal_decision_fit_augment_count": 4,
             "normal_decision_folds": 8,
             "normal_decision_seed": 142,
@@ -68,6 +69,7 @@ class ReportingTest(unittest.TestCase):
         self.assertEqual(rows[0]["good_decision_quantile_method"], "higher")
         self.assertEqual(rows[0]["normal_decision_calibration"], "leave-one-out")
         self.assertEqual(rows[0]["normal_decision_augment_count"], "30")
+        self.assertEqual(rows[0]["normal_decision_view_quantile"], "0.9")
         self.assertEqual(rows[0]["normal_decision_fit_augment_count"], "4")
         self.assertEqual(rows[0]["normal_decision_folds"], "8")
         self.assertEqual(rows[0]["normal_decision_seed"], "142")

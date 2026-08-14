@@ -9,7 +9,7 @@ reproducible result tables.
 
 | Script | Scope | Main purpose | Default output |
 | --- | --- | --- | --- |
-| `evaluate_pca_good_accuracy.sh` | All MVTec/VisA categories | Main PCA evaluation and normal/defect threshold metrics | `outputs/pca-good-accuracy-loo` |
+| `evaluate_pca_good_accuracy.sh` | All MVTec/VisA categories | Main PCA evaluation and robust normal/defect threshold metrics | `outputs/pca-good-accuracy-robust-loo` |
 | `compare_mvtec_crf.sh` | MVTec leather only | Compare raw and DenseCRF pixel maps with the same LOO threshold | `outputs/mvtec-crf-ablation-loo/leather` |
 | `compare_visa_crf.sh` | One VisA category (`candle` by default) | Compare raw and DenseCRF pixel maps with the same LOO threshold | `outputs/visa-crf-ablation-loo/<category>` |
 | `compare_mvtec_gaussian.sh` | One MVTec category | Compare raw and Gaussian-smoothed pixel maps | `outputs/mvtec-gaussian-ablation-loo/<category>` |
@@ -39,13 +39,15 @@ good/anomaly threshold result.
 | Stage | Method | Normal shots | Threshold calibration | Map post-process | Saved result |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Main DINOv3 PCA | 1 | Held-out augmentation, q=0.995 linear | None | `main/1shot/<dataset>` |
-| 2 | Main DINOv3 PCA | 2 | Source-disjoint LOO, q=0.995 higher | None | `main/2shot/<dataset>` |
-| 3 | Main DINOv3 PCA | 4 | Source-disjoint LOO, q=0.995 higher | None | `main/4shot/<dataset>` |
-| 4 | Main DINOv3 PCA | 8 | Source-disjoint LOO, q=0.995 higher | None | `main/8shot/<dataset>` |
+| 2 | Main DINOv3 PCA | 2 | Robust LOO, source q=0.95 linear, view q=0.90 | None | `main/2shot/<dataset>` |
+| 3 | Main DINOv3 PCA | 4 | Robust LOO, source q=0.95 linear, view q=0.90 | None | `main/4shot/<dataset>` |
+| 4 | Main DINOv3 PCA | 8 | Robust LOO, source q=0.95 linear, view q=0.90 | None | `main/8shot/<dataset>` |
 | 5 | Distilled ViT-S+ LoRA | 8 | Source-disjoint LOO, q=0.995 higher | None | `distillation/<dataset>` |
 
 One shot cannot use LOO because no normal source image remains to fit the
-held-out fold. DenseCRF is excluded from the full benchmark because it improved
+held-out fold. In robust LOO, every source's original and augmented views are
+reduced to one high-quantile score before the final source-level quantile is
+computed. DenseCRF is excluded from the full benchmark because it improved
 MVTec leather but reduced Pixel AUPRO and Pixel F1 on VisA candle. The focused
 CRF scripts remain available as category-level ablations.
 
@@ -98,7 +100,7 @@ bash scripts/run_shot_distillation_benchmark.sh \
 | File | Contents |
 | --- | --- |
 | `tables/experiment_results.csv` | One macro-average row for every method, dataset, and shot |
-| `tables/category_results.csv` | One row per category with threshold audit fields |
+| `tables/category_results.csv` | One row per category with both source/view threshold quantiles and audit fields |
 | `tables/best_results.csv` | Every per-dataset metric winner, including ties |
 | `tables/best_balanced_results.csv` | Best threshold configuration by balanced accuracy |
 | `tables/results.md` | Human-readable tables with best values in bold |

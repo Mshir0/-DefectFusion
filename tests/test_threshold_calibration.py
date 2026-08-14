@@ -85,8 +85,19 @@ class LeaveOneOutThresholdCalibrationTest(unittest.TestCase):
                     decision_seed=142,
                     progress=lambda fold, total, _path, count: progress.append((fold, total, count)),
                 )
+                robust_scores = _leave_one_out_normal_scores(
+                    paths,
+                    build_fusion=lambda: self._detector(extractor),
+                    fit_augment_count=0,
+                    decision_augment_count=2,
+                    decision_view_quantile=0.5,
+                    augmentations=["rotate"],
+                    fit_seed=42,
+                    decision_seed=142,
+                )
 
         np.testing.assert_allclose(scores, [21.0, 22.0, 23.0])
+        np.testing.assert_allclose(robust_scores, [11.0, 12.0, 13.0])
         self.assertEqual(progress, [(1, 3, 3), (2, 3, 3), (3, 3, 3)])
         self.assertEqual(extractor.image_size, 16)
 
@@ -102,12 +113,25 @@ class LeaveOneOutThresholdCalibrationTest(unittest.TestCase):
                 decision_seed=142,
             )
 
+        with self.assertRaisesRegex(ValueError, "view quantile"):
+            _leave_one_out_normal_scores(
+                ["first.png", "second.png"],
+                build_fusion=lambda: None,
+                fit_augment_count=0,
+                decision_augment_count=0,
+                decision_view_quantile=0.0,
+                augmentations=[],
+                fit_seed=42,
+                decision_seed=142,
+            )
+
     def test_json_config_rejects_invalid_calibration_choices(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for key, value, expected in (
                 ("normal_decision_calibration", "invalid", "must be augmentation or leave-one-out"),
                 ("normal_decision_quantile_method", "invalid", "must be linear or higher"),
+                ("normal_decision_view_quantile", 0, "must be in (0, 1]"),
             ):
                 config = root / f"{key}.json"
                 config.write_text(json.dumps({key: value}), encoding="utf-8")

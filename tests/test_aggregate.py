@@ -19,6 +19,7 @@ class AggregateResultsTest(unittest.TestCase):
                 "image_auroc": 0.9, "pixel_auroc": 0.95,
                 "good_decision_quantile_method": "higher",
                 "normal_decision_calibration": "leave-one-out",
+                "normal_decision_view_quantile": 0.9,
                 "normal_decision_folds": 8,
                 "timing_seconds": {"prediction": 2.0, "total": 3.0},
                 "memory_patch_count": 100, "memory_bytes": 1000,
@@ -62,6 +63,7 @@ class AggregateResultsTest(unittest.TestCase):
         self.assertEqual(macro[0]["future_metric"], 0.97)
         self.assertEqual(categories[0]["timing_prediction_seconds"], 2.0)
         self.assertEqual(categories[0]["normal_decision_calibration"], "leave-one-out")
+        self.assertEqual(categories[0]["normal_decision_view_quantile"], 0.9)
 
     def test_writes_two_csv_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -84,6 +86,7 @@ class AggregateResultsTest(unittest.TestCase):
         self.assertEqual(len(macro_fields), len(set(macro_fields)))
         self.assertEqual(len(category_fields), len(set(category_fields)))
         self.assertIn("good_decision_quantile_method", category_fields)
+        self.assertIn("normal_decision_view_quantile", category_fields)
         self.assertIn("normal_decision_folds", category_fields)
 
 
