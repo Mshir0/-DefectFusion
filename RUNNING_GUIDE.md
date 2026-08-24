@@ -143,7 +143,7 @@ python -m defectfusion.cli evaluate-mvtec \
 --categories cable pill transistor
 ```
 
-标准异常检测必须保持 `--defect-shots 0`。测试缺陷类型分类时，才将其改为 `1`、`2` 或 `4`；每种缺陷类型会分别采样对应数量的带标签缺陷图像。
+标准异常检测必须保持 `--defect-shots 0`。最终缺陷类型分类实验使用 `--normal-shots 8 --defect-shots 8`，每种缺陷类型分别采样 8 张带标签缺陷图像。
 
 ## 4. VisA 单次完整命令
 
@@ -201,23 +201,24 @@ python -m defectfusion.cli evaluate-visa \
 --categories macaroni2
 ```
 
-## 5. 批量运行 MVTec shot 排列组合
+## 5. 批量运行 MVTec 最终 shot 组合
 
-脚本：`scripts/evaluate_mvtec_shot_matrix.sh`
+脚本：`scripts/evaluate_mvtec_shots.sh`
 
-它顺序执行 13 组实验，并保证 defect shots 不超过 normal shots；full normal shot 允许所有 defect shot 设置。
+它顺序执行 5 组实验：1、2、4、8 normal-shot 均不使用缺陷图，最后运行一组 8 normal-shot + 8 defect-shot。
 
 | Normal shots | Defect shots | 输出目录 |
 |---:|---|---|
-| 1 | 0、1 | `outputs/mvtec-normal-1shot-defect-*shot` |
-| 2 | 0、1、2 | `outputs/mvtec-normal-2shot-defect-*shot` |
-| 4 | 0、1、2、4 | `outputs/mvtec-normal-4shot-defect-*shot` |
-| full (`-1`) | 0、1、2、4 | `outputs/mvtec-normal-fullshot-defect-*shot` |
+| 1 | 0 | `outputs/mvtec-normal-1shot-defect-0shot` |
+| 2 | 0 | `outputs/mvtec-normal-2shot-defect-0shot` |
+| 4 | 0 | `outputs/mvtec-normal-4shot-defect-0shot` |
+| 8 | 0 | `outputs/mvtec-normal-8shot-defect-0shot` |
+| 8 | 8 | `outputs/mvtec-normal-8shot-defect-8shot` |
 
 使用脚本默认路径运行：
 
 ```bash
-bash scripts/evaluate_mvtec_shot_matrix.sh
+bash scripts/evaluate_mvtec_shots.sh
 ```
 
 覆盖数据集和模型路径后运行：
@@ -225,23 +226,24 @@ bash scripts/evaluate_mvtec_shot_matrix.sh
 ```bash
 DATA_ROOT=/mnt/sda1/mvtec_anomaly \
 MODEL=/mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
-bash scripts/evaluate_mvtec_shot_matrix.sh
+bash scripts/evaluate_mvtec_shots.sh
 ```
 
-该脚本当前会重新执行所有组合。重新运行前应检查已有输出，避免覆盖或重复长时间实验。
+设置 `SKIP_COMPLETED=1` 后，已有 `results.json` 的组合会被跳过。
 
-## 6. 批量运行 VisA normal shots
+## 6. 批量运行 VisA 最终 shot 组合
 
 脚本：`scripts/evaluate_visa_shots.sh`
 
-它依次执行 1、2、4 和 full normal-shot，固定 `defect-shots=0`：
+它使用 VisA 已验证的最佳配置运行与 MVTec 相同的 5 组组合：
 
-| Normal shots | Normal augmentation | 正常拟合 patch 上限 | 输出目录 |
-|---:|---:|---:|---|
-| 1 | 30 | 不限制 | `outputs/visa-normal-1shot` |
-| 2 | 30 | 不限制 | `outputs/visa-normal-2shot` |
-| 4 | 30 | 不限制 | `outputs/visa-normal-4shot` |
-| full (`-1`) | 0 | 50000 | `outputs/visa-normal-fullshot` |
+| Normal shots | Defect shots | 输出目录 |
+|---:|---:|---|
+| 1 | 0 | `outputs/visa-normal-1shot-defect-0shot` |
+| 2 | 0 | `outputs/visa-normal-2shot-defect-0shot` |
+| 4 | 0 | `outputs/visa-normal-4shot-defect-0shot` |
+| 8 | 0 | `outputs/visa-normal-8shot-defect-0shot` |
+| 8 | 8 | `outputs/visa-normal-8shot-defect-8shot` |
 
 使用脚本默认路径运行：
 
@@ -257,103 +259,20 @@ MODEL=/mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
 bash scripts/evaluate_visa_shots.sh
 ```
 
-脚本检测到目标目录中已经存在 `summary.csv` 时会跳过该组实验，因此中断后可以直接重新执行以继续尚未完成的组。
+设置 `SKIP_COMPLETED=1` 后，已有 `results.json` 的组合会被跳过。分离存放的官方 split CSV 可通过 `SPLIT_CSV=/path/to/1cls.csv` 指定。
 
-VisA full-shot 不再生成 900 个额外增强视图，而是使用全部正常训练图像、`normal-augment-count=0` 和 `normal-fit-max-patches=50000`。这是为了避免 Linux 显示 `Killed` 的主机内存不足问题。full-shot 与 few-shot 的结果因此不能解释为只改变了 normal shot 数量。
-
-## 7. 汇总所有实验结果
-
-运行：
-
-```bash
-python scripts/summarize_results.py \
-  --input outputs \
-  --output outputs/all-results-summary
-```
-
-生成：
-
-```text
-outputs/all-results-summary/experiment_metrics.csv
-outputs/all-results-summary/category_metrics.csv
-```
-
-- `experiment_metrics.csv`：每个完整实验一行，包含宏平均指标和实验配置。
-- `category_metrics.csv`：每个实验的每个类别一行，包含分类别指标、耗时、内存 patch 数量和配置。
-- 没有最终 `results.json` 的未完成实验不会进入汇总。
-
-每个评估输出目录本身包含：
-
-```text
-results.json
-summary.csv
-categories/<category>.json
-```
-
-其中 `summary.csv` 用于快速查看指标，类别 JSON 还保存逐图预测与 anomaly map。
-
-## 8. 生成一张推理热力图
-
-### 8.1 从已有评估结果生成
-
-指定一张图像：
-
-```bash
-python scripts/render_heatmaps.py \
-  --predictions outputs/mvtec-normal-1shot-defect-0shot/categories/bottle.json \
-  --image /mnt/sda1/mvtec_anomaly/bottle/test/broken_large/000.png \
-  --lower-percentile 1 \
-  --upper-percentile 99 \
-  --colormap turbo \
-  --output outputs/mvtec-bottle-heatmap.png
-```
-
-不提供 `--image` 时，默认从该类别 JSON 中选择图像异常分数最高的样本：
-
-```bash
-python scripts/render_heatmaps.py \
-  --predictions outputs/mvtec-normal-1shot-defect-0shot/categories/bottle.json \
-  --select highest \
-  --lower-percentile 1 \
-  --upper-percentile 99 \
-  --colormap turbo \
-  --output outputs/mvtec-bottle-highest-heatmap.png
-```
-
-脚本只生成一张纯 heatmap PNG，不生成 overlay、拼图或多张图片。可选色图为 `turbo`、`magma` 和 `jet`。
-
-### 8.2 从已保存模型直接推理
-
-```bash
-python scripts/render_heatmaps.py \
-  --model-state outputs/model.json \
-  --model /mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
-  --image /path/to/test.png \
-  --device cuda \
-  --image-size 672 \
-  --resize-mode direct \
-  --feature-layers=1,17,21,23 \
-  --layer-aggregation mean \
-  --layer-normalization none \
-  --colormap turbo \
-  --output outputs/custom-single-heatmap.png
-```
-
-若保存的检测器使用 kNN，还必须让模型状态 JSON 与其旁边的 `.normal-memory.npz` 文件保持在同一目录。
-
-## 9. Shot 参数含义
+## 7. Shot 参数含义
 
 | 参数 | 含义 |
 |---|---|
-| `--normal-shots 1/2/4` | 每个类别从正常训练集采样 1、2 或 4 张参考图 |
-| `--normal-shots -1` | 使用该类别全部正常训练图 |
+| `--normal-shots 1/2/4/8` | 每个类别从正常训练集采样 1、2、4 或 8 张参考图 |
 | `--defect-shots 0` | 标准异常检测，不使用任何带标签缺陷样本 |
-| `--defect-shots 1/2/4` | 每种缺陷类型采样 1、2 或 4 张带标签样本，用于辅助缺陷分类 |
+| `--defect-shots 8` | 在 8 normal-shot 实验中，每种缺陷类型采样 8 张带标签样本用于缺陷分类 |
 | `--seed 42` | 固定 normal/defect shot 抽样，保证可复现 |
 
 加入 defect shots 只应影响缺陷类型分类分支，不应改变 Image AUROC、Pixel AUROC、PRO 等异常检测指标。被选为 defect prototype 的样本仍参与 image/pixel 检测指标，但会从缺陷类型分类指标中排除。
 
-## 10. 常见运行问题
+## 8. 常见运行问题
 
 ### 参数被识别为命令
 
@@ -382,13 +301,11 @@ free -h
 dmesg -T | tail -n 50
 ```
 
-VisA full-shot 应使用仓库中的批量脚本，因为脚本已经关闭 full-shot 增强并限制每个拟合分支最多使用 50000 个正常 patch。不要对 900 张正常图像继续设置 `normal-augment-count=30`。
+8-shot 批量实验应使用仓库脚本，脚本会限制每个拟合分支使用的正常 patch 数量。如果仍然发生 OOM，请优先调低 `MEMORY_MAX_PATCHES`。
 
 ### 查看完整命令帮助
 
 ```bash
 python -m defectfusion.cli evaluate-mvtec --help
 python -m defectfusion.cli evaluate-visa --help
-python scripts/summarize_results.py --help
-python scripts/render_heatmaps.py --help
 ```

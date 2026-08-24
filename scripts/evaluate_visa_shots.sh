@@ -1,25 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Final VisA protocol: 1/2/4/8 normal-only shots and one 8-normal/8-defect run.
 DATA_ROOT="${DATA_ROOT:-/mnt/sda1/VisA_20220922}"
 MODEL="${MODEL:-/mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m}"
+SPLIT_CSV="${SPLIT_CSV:-}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-outputs}"
+PYTHON="${PYTHON:-python}"
+DEVICE="${DEVICE:-cuda}"
+SEED="${SEED:-42}"
+SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
 
 common_args=(
   --data-root "$DATA_ROOT"
   --model "$MODEL"
-  --device cuda
-  --defect-shots 0
-  --seed 42
+  --device "$DEVICE"
+  --seed "$SEED"
   --image-size 672
   --image-size-override macaroni2=896
   --image-size-override pcb2=896
   --image-size-override pcb3=896
   --pixel-image-size-override fryum=896
+  --pixel-image-size-override macaroni1=896
+  --pixel-image-size-override pcb4=896
   --image-head-size-override pcb4=896
+  --pixel-multiscale-size-override macaroni1=672
   --pixel-multiscale-size-override macaroni2=672
+  --pixel-multiscale-size-override fryum=672
   --pixel-multiscale-size-override pcb2=672
   --pixel-multiscale-size-override pcb3=672
+  --pixel-multiscale-size-override pcb4=672
   --pixel-multiscale-weight 0.25
+  --normal-augment-count 30
   --normal-augmentations rotate
   --affine-categories macaroni1 macaroni2
   --feature-layers=1,17,21,23
@@ -28,11 +40,15 @@ common_args=(
   --dual-branch
   --anomaly-method pca_knn_anoco
   --knn-weight 0.5
+  --pixel-anoco-weight 0.10
   --anoco-neighbors 16
-  --anoco-query-weight 1.0
+  --anoco-query-weight 2.0
   --anoco-temperature 0.07
+  --anoco-affinity softmax
+  --anoco-anchor-ranking mean
   --anoco-weight 0.25
   --anoco-layer-consensus
+  --fusion-mode fixed
   --image-score mtop1p
   --image-top-ratio 0.01
   --image-min-component-size 2
@@ -42,35 +58,43 @@ common_args=(
   --knn-chunk-size 256
   --knn-backend torch
   --knn-dtype float16
-  --knn-spatial-radius -1
+  --knn-spatial-radius 0.10
+  --knn-spatial-categories pcb2 pcb3 pcb4
   --map-postprocess none
+  --type-matching bidirectional_patch
+  --top-k-ratio 0.05
 )
+if [[ -n "$SPLIT_CSV" ]]; then
+  if [[ ! -f "$SPLIT_CSV" ]]; then
+    printf 'SPLIT_CSV does not exist: %s\n' "$SPLIT_CSV" >&2
+    exit 2
+  fi
+  common_args+=(--split-csv "$SPLIT_CSV")
+fi
 
 run_experiment() {
-  local name="$1"
-  local normal_shots="$2"
-  local augment_count="$3"
-  local fit_max_patches="$4"
-  local output="outputs/visa-normal-$name"
+  local normal_shots="$1"
+  local defect_shots="$2"
+  local name="normal-${normal_shots}shot-defect-${defect_shots}shot"
+  local output="$OUTPUT_ROOT/visa-$name"
 
-  if [[ -f "$output/summary.csv" ]]; then
-    echo "[visa-shots] skipping $name (complete: $output/summary.csv)"
+  if [[ "$SKIP_COMPLETED" == "1" && -f "$output/results.json" ]]; then
+    printf '[visa-shots] skipping %s (complete: %s)\n' "$name" "$output/results.json"
     return
   fi
 
-  echo "[visa-shots] starting $name"
-  python -m defectfusion.cli evaluate-visa \
+  printf '[visa-shots] starting %s\n' "$name"
+  "$PYTHON" -m defectfusion.cli evaluate-visa \
     "${common_args[@]}" \
     --normal-shots "$normal_shots" \
-    --normal-augment-count "$augment_count" \
-    --normal-fit-max-patches "$fit_max_patches" \
+    --defect-shots "$defect_shots" \
     --output "$output"
-  echo "[visa-shots] completed $name"
+  printf '[visa-shots] completed %s\n' "$name"
 }
 
-run_experiment 1shot 1 30 0
-run_experiment 2shot 2 30 0
-run_experiment 4shot 4 30 0
-run_experiment fullshot -1 0 50000
+for shots in 1 2 4 8; do
+  run_experiment "$shots" 0
+done
+run_experiment 8 8
 
-echo "[visa-shots] all experiments completed"
+printf '[visa-shots] all experiments completed\n'

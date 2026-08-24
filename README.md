@@ -128,49 +128,6 @@ Use balanced accuracy to compare thresholds so that a higher normal accuracy
 cannot hide a loss of defect recall. Threshold calibration changes these
 decisions only; AUROC, AUPR, and F1-max remain threshold-independent.
 
-To compare the raw anomaly map against Gaussian smoothing on one MVTec class,
-run the focused ablation below. It defaults to `leather` and `sigma=1.0`; both
-runs use exactly the same PCA and threshold settings.
-
-```bash
-bash scripts/compare_mvtec_gaussian.sh
-
-# Optional category and sigma overrides.
-CATEGORY=screw GAUSSIAN_SIGMA=0.5 bash scripts/compare_mvtec_gaussian.sh
-```
-
-Results are written to `outputs/mvtec-gaussian-ablation-loo/<category>/none`,
-`outputs/mvtec-gaussian-ablation-loo/<category>/gaussian-sigma-<sigma>`, and the
-combined `comparison.csv`. Compare Pixel AUPR and AUPRO; image-level metrics
-should remain unchanged because map post-processing does not change image scores.
-
-To make the same single-category comparison with RGB-guided DenseCRF, install
-the optional dependency and run:
-
-```bash
-python -m pip install -e '.[crf]'
-bash scripts/compare_mvtec_crf.sh
-```
-
-The MVTec script is intentionally fixed to `leather`. Results are written to
-`outputs/mvtec-crf-ablation-loo/<category>/none`,
-`outputs/mvtec-crf-ablation-loo/<category>/crf`, and the combined
-`comparison.csv`. DenseCRF only refines the pixel anomaly map, so image scores,
-normal/defect decisions, and image-level metrics should be identical.
-
-For the equivalent focused VisA comparison, the default category is `candle`:
-
-```bash
-bash scripts/compare_visa_crf.sh
-
-# Select another VisA category without editing the script.
-CATEGORY=macaroni2 bash scripts/compare_visa_crf.sh
-```
-
-Results are written under `outputs/visa-crf-ablation-loo/<category>/`. The
-script automatically retains the main PCA evaluator's category-specific image
-size and affine settings when the selected category requires them.
-
 Use `--data-root data/mvtec` to evaluate every category under the MVTec root;
 the CLI prints each image as it is processed and writes one JSON file per
 category. For a multi-category run, `--output` stores the final combined JSON
@@ -254,32 +211,15 @@ selected normal shots are excluded from the normal test pool. Output layout and
 metrics match MVTec evaluation, including the per-image `good`/`anomaly`
 decision and the exclusion of normal test images from pixel metrics.
 
-Aggregate every completed experiment under `outputs` with:
-
-```bash
-python scripts/summarize_results.py --input outputs --output outputs/all-results-summary
-```
-
-The command writes `experiment_metrics.csv` with one macro-average row per
-experiment and `category_metrics.csv` with every category's scalar metrics,
-timing, resource usage, and configuration. Incomplete runs without a final
-`results.json` are not included.
-
-Run the frozen full-category VisA configuration sequentially for normal
-1/2/4/full-shot with one command:
+Run the final VisA protocol with one command:
 
 ```bash
 bash scripts/evaluate_visa_shots.sh
 ```
 
-The four outputs are `outputs/visa-normal-1shot`,
-`outputs/visa-normal-2shot`, `outputs/visa-normal-4shot`, and
-`outputs/visa-normal-fullshot`. The few-shot runs use 30 augmented normal views;
-full-shot uses every normal training image without augmentation and evenly
-samples at most 50,000 patches per fitted branch before concatenation. This
-prevents the full normal set and four layer-consensus banks from exhausting
-host memory. The 1/2/4-shot runs remain uncapped. Override the default server
-paths with `DATA_ROOT=/path/to/visa` and `MODEL=/path/to/model`.
+It evaluates normal-only `1/2/4/8-shot` and one `8` normal + `8` defect-shot
+typing run. Override paths with `DATA_ROOT=/path/to/visa` and
+`MODEL=/path/to/model`; set `SKIP_COMPLETED=1` to resume a partial matrix.
 
 ANoCo uses temperature-softmax edge weights by default. P2 adds
 `--anoco-affinity cosine` as an experimental ablation: selected non-negative
@@ -294,24 +234,17 @@ Use `--anoco-norm-compatibility` for the P5 ablation: multiply each selected
 edge by `min(norm_q, norm_r) / max(norm_q, norm_r)` and renormalize the weights
 per query. It is disabled by default and does not alter ordinary kNN scores.
 
-`--normal-shots 1/2/4` samples that many images from the normal training
-partition (`train/good` for MVTec or normal train rows for VisA); `-1` uses
-all normal training images. Keep `--defect-shots 0` for standard anomaly
-detection comparisons with AnomalyDINO and SubspaceAD. No test anomaly is then
-used while fitting the detector.
+`--normal-shots 1/2/4/8` samples that many images from the normal training
+partition (`train/good` for MVTec or normal train rows for VisA). Keep
+`--defect-shots 0` for standard anomaly detection. The final auxiliary typing
+run uses `--normal-shots 8 --defect-shots 8`.
 
 ### MVTec shot evaluation matrix
 
-Use the following frozen MVTec configuration for comparable normal-shot and
-defect-shot experiments. The script evaluates every requested combination for
-which the defect shot count does not exceed the normal shot count. Full normal
-shot allows every defect shot count. Sampled defect exemplars are excluded from
-defect-type metrics.
-
-Run all 13 experiments sequentially with one command:
+Run the corresponding five MVTec experiments with one command:
 
 ```bash
-bash scripts/evaluate_mvtec_shot_matrix.sh
+bash scripts/evaluate_mvtec_shots.sh
 ```
 
 Override the server paths when needed with `DATA_ROOT=/path/to/mvtec` and
@@ -319,10 +252,11 @@ Override the server paths when needed with `DATA_ROOT=/path/to/mvtec` and
 
 | Normal shots | Defect shots | Output prefix |
 |---:|---:|---|
-| 1 | 0, 1 | `outputs/mvtec-normal-1shot-defect-*shot` |
-| 2 | 0, 1, 2 | `outputs/mvtec-normal-2shot-defect-*shot` |
-| 4 | 0, 1, 2, 4 | `outputs/mvtec-normal-4shot-defect-*shot` |
-| full (`-1`) | 0, 1, 2, 4 | `outputs/mvtec-normal-fullshot-defect-*shot` |
+| 1 | 0 | `outputs/mvtec-normal-1shot-defect-0shot` |
+| 2 | 0 | `outputs/mvtec-normal-2shot-defect-0shot` |
+| 4 | 0 | `outputs/mvtec-normal-4shot-defect-0shot` |
+| 8 | 0 | `outputs/mvtec-normal-8shot-defect-0shot` |
+| 8 | 8 | `outputs/mvtec-normal-8shot-defect-8shot` |
 
 ### Optional defect typing
 
@@ -640,13 +574,9 @@ with `--pixel-anoco-norm-compatibility` and scoped using
 `--pixel-anoco-norm-compatibility-categories transistor`. Use
 `--knn-spatial-categories cable transistor` with a non-negative
 `--knn-spatial-radius` to enable local matching only for selected categories;
-their rotate/flip training positions are aligned automatically. Ready-to-run
-combined experiments are provided in
-`scripts/evaluate_mvtec_pixel_improvements.sh` and
-`scripts/evaluate_visa_pixel_improvements.sh`. Subsequent MVTec pixel
-iterations keep the stable output name
-`outputs/mvtec-pixel-anoco-multiscale-spatial` so the latest result replaces
-the previous iteration.
+their rotate/flip training positions are aligned automatically. The validated
+dataset-specific settings are frozen in `scripts/evaluate_mvtec_shots.sh` and
+`scripts/evaluate_visa_shots.sh`.
 With `--knn-backend auto`, a CUDA DINO extractor automatically uses Torch
 matrix multiplication and keeps the normalized memory bank on the same GPU.
 Use `--knn-backend torch` to require that path explicitly. `--knn-dtype
