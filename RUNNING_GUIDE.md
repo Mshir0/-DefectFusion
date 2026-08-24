@@ -143,7 +143,7 @@ python -m defectfusion.cli evaluate-mvtec \
 --categories cable pill transistor
 ```
 
-标准异常检测必须保持 `--defect-shots 0`。最终缺陷类型分类实验使用 `--normal-shots 8 --defect-shots 8`，每种缺陷类型分别采样 8 张带标签缺陷图像。
+标准异常检测必须保持 `--defect-shots 0`。最终缺陷类型分类实验固定使用 `--normal-shots 8`，并依次测试 `--defect-shots 1/2/4/8`。
 
 ## 4. VisA 单次完整命令
 
@@ -205,7 +205,7 @@ python -m defectfusion.cli evaluate-visa \
 
 脚本：`scripts/evaluate_mvtec_shots.sh`
 
-它顺序执行 5 组实验：1、2、4、8 normal-shot 均不使用缺陷图，最后运行一组 8 normal-shot + 8 defect-shot。
+它顺序执行 8 组实验：1、2、4、8 normal-shot 均不使用缺陷图，然后固定 8 normal-shot，依次使用 1、2、4、8 defect-shot。
 
 | Normal shots | Defect shots | 输出目录 |
 |---:|---|---|
@@ -213,6 +213,9 @@ python -m defectfusion.cli evaluate-visa \
 | 2 | 0 | `outputs/mvtec-normal-2shot-defect-0shot` |
 | 4 | 0 | `outputs/mvtec-normal-4shot-defect-0shot` |
 | 8 | 0 | `outputs/mvtec-normal-8shot-defect-0shot` |
+| 8 | 1 | `outputs/mvtec-normal-8shot-defect-1shot` |
+| 8 | 2 | `outputs/mvtec-normal-8shot-defect-2shot` |
+| 8 | 4 | `outputs/mvtec-normal-8shot-defect-4shot` |
 | 8 | 8 | `outputs/mvtec-normal-8shot-defect-8shot` |
 
 使用脚本默认路径运行：
@@ -235,7 +238,7 @@ bash scripts/evaluate_mvtec_shots.sh
 
 脚本：`scripts/evaluate_visa_shots.sh`
 
-它使用 VisA 已验证的最佳配置运行与 MVTec 相同的 5 组组合：
+它使用 VisA 已验证的最佳配置运行与 MVTec 相同的 8 组组合：
 
 | Normal shots | Defect shots | 输出目录 |
 |---:|---:|---|
@@ -243,6 +246,9 @@ bash scripts/evaluate_mvtec_shots.sh
 | 2 | 0 | `outputs/visa-normal-2shot-defect-0shot` |
 | 4 | 0 | `outputs/visa-normal-4shot-defect-0shot` |
 | 8 | 0 | `outputs/visa-normal-8shot-defect-0shot` |
+| 8 | 1 | `outputs/visa-normal-8shot-defect-1shot` |
+| 8 | 2 | `outputs/visa-normal-8shot-defect-2shot` |
+| 8 | 4 | `outputs/visa-normal-8shot-defect-4shot` |
 | 8 | 8 | `outputs/visa-normal-8shot-defect-8shot` |
 
 使用脚本默认路径运行：
@@ -267,7 +273,7 @@ bash scripts/evaluate_visa_shots.sh
 |---|---|
 | `--normal-shots 1/2/4/8` | 每个类别从正常训练集采样 1、2、4 或 8 张参考图 |
 | `--defect-shots 0` | 标准异常检测，不使用任何带标签缺陷样本 |
-| `--defect-shots 8` | 在 8 normal-shot 实验中，每种缺陷类型采样 8 张带标签样本用于缺陷分类 |
+| `--defect-shots 1/2/4/8` | 在 8 normal-shot 实验中，每种缺陷类型采样 1、2、4 或 8 张带标签样本用于缺陷分类 |
 | `--seed 42` | 固定 normal/defect shot 抽样，保证可复现 |
 
 加入 defect shots 只应影响缺陷类型分类分支，不应改变 Image AUROC、Pixel AUROC、PRO 等异常检测指标。被选为 defect prototype 的样本仍参与 image/pixel 检测指标，但会从缺陷类型分类指标中排除。

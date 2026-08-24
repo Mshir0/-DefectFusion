@@ -217,8 +217,8 @@ Run the final VisA protocol with one command:
 bash scripts/evaluate_visa_shots.sh
 ```
 
-It evaluates normal-only `1/2/4/8-shot` and one `8` normal + `8` defect-shot
-typing run. Override paths with `DATA_ROOT=/path/to/visa` and
+It evaluates normal-only `1/2/4/8-shot`, followed by `8` normal-shot typing
+runs with `1/2/4/8` defect shots. Override paths with `DATA_ROOT=/path/to/visa` and
 `MODEL=/path/to/model`; set `SKIP_COMPLETED=1` to resume a partial matrix.
 
 ANoCo uses temperature-softmax edge weights by default. P2 adds
@@ -237,11 +237,11 @@ per query. It is disabled by default and does not alter ordinary kNN scores.
 `--normal-shots 1/2/4/8` samples that many images from the normal training
 partition (`train/good` for MVTec or normal train rows for VisA). Keep
 `--defect-shots 0` for standard anomaly detection. The final auxiliary typing
-run uses `--normal-shots 8 --defect-shots 8`.
+typing runs use `--normal-shots 8` with `--defect-shots 1/2/4/8`.
 
 ### MVTec shot evaluation matrix
 
-Run the corresponding five MVTec experiments with one command:
+Run the corresponding eight MVTec experiments with one command:
 
 ```bash
 bash scripts/evaluate_mvtec_shots.sh
@@ -256,6 +256,9 @@ Override the server paths when needed with `DATA_ROOT=/path/to/mvtec` and
 | 2 | 0 | `outputs/mvtec-normal-2shot-defect-0shot` |
 | 4 | 0 | `outputs/mvtec-normal-4shot-defect-0shot` |
 | 8 | 0 | `outputs/mvtec-normal-8shot-defect-0shot` |
+| 8 | 1 | `outputs/mvtec-normal-8shot-defect-1shot` |
+| 8 | 2 | `outputs/mvtec-normal-8shot-defect-2shot` |
+| 8 | 4 | `outputs/mvtec-normal-8shot-defect-4shot` |
 | 8 | 8 | `outputs/mvtec-normal-8shot-defect-8shot` |
 
 ### Optional defect typing

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Final MVTec protocol: 1/2/4/8 normal-only shots and one 8-normal/8-defect run.
+# Final MVTec protocol: 1/2/4/8 normal-only shots and 8-normal defect-typing runs.
 DATA_ROOT="${DATA_ROOT:-/mnt/sda1/mvtec_anomaly}"
 MODEL="${MODEL:-/mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-outputs}"
@@ -82,6 +82,8 @@ run_experiment() {
 for shots in 1 2 4 8; do
   run_experiment "$shots" 0
 done
-run_experiment 8 8
+for defect_shots in 1 2 4 8; do
+  run_experiment 8 "$defect_shots"
+done
 
 printf '[mvtec-shots] all experiments completed\n'

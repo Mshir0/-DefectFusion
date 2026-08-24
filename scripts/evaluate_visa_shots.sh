@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Final VisA protocol: 1/2/4/8 normal-only shots and one 8-normal/8-defect run.
+# Final VisA protocol: 1/2/4/8 normal-only shots and 8-normal defect-typing runs.
 DATA_ROOT="${DATA_ROOT:-/mnt/sda1/VisA_20220922}"
 MODEL="${MODEL:-/mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m}"
 SPLIT_CSV="${SPLIT_CSV:-}"
@@ -95,6 +95,8 @@ run_experiment() {
 for shots in 1 2 4 8; do
   run_experiment "$shots" 0
 done
-run_experiment 8 8
+for defect_shots in 1 2 4 8; do
+  run_experiment 8 "$defect_shots"
+done
 
 printf '[visa-shots] all experiments completed\n'
