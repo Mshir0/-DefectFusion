@@ -42,6 +42,8 @@ defined for one source image. The 2/4/8-shot runs use robust source-disjoint
 LOO (`linear@0.95` across sources and `0.90` within each source's views).
 DenseCRF is intentionally excluded from this full benchmark because its effect
 is category-dependent; use compare_mvtec_crf.sh or compare_visa_crf.sh for it.
+The distilled stage keeps the current MVTec settings and restores VisA to the
+legacy `0.995/higher` threshold with per-source maximum aggregation.
 EOF
 }
 

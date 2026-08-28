@@ -23,7 +23,8 @@ Model and output options:
   --visa-split-csv PATH       Optional VisA 1cls.csv outside --visa-root.
   --output-root PATH          Parent directory for the MVTec and VisA experiments. Default: outputs/dinov3-all-categories.
   --eval-output-root PATH     Optional separate parent for evaluation results.
-  --evaluate-only             Reuse LoRA adapters under --output-root; do not train or load the teacher.
+  --evaluate-only             Reuse LoRA adapters; missing/empty adapter roots are created and trained.
+  --visa-threshold-profile MODE  legacy or inherit. Default: legacy.
   --python COMMAND            Python executable. Default: python.
   --skip-completed            Skip a dataset when its selected evaluation results.json already exists.
 
@@ -63,11 +64,12 @@ Examples:
     --mvtec-root /data/mvtec_anomaly --visa-root /data/VisA \
     --normal-shots -1 --output-root outputs/dinov3-all-fullshot
 
-  # Re-evaluate existing 8-shot adapters with robust LOO thresholds. Results
-  # default to outputs/dinov3-all-categories-robust/{mvtec,visa}/evaluation.
+  # Re-evaluate existing 8-shot adapters with dataset-specific thresholds.
+  # MVTec inherits the global settings; VisA restores 0.995/higher/view=1.0.
   bash scripts/distill_all_mvtec_visa.sh \
     --mvtec-root /mnt/sda1/mvtec_anomaly \
     --visa-root /mnt/sda1/VisA_20220922 \
+    --teacher-model /mnt/sda1/DINOv3/dinov3-vitb16-pretrain-lvd1689m \
     --student-model /mnt/sda1/DINOv3/dinov3-vits16plus-pretrain-lvd1689m \
     --output-root outputs/dinov3-all-categories \
     --normal-shots 8 --evaluate-only
@@ -84,6 +86,7 @@ teacher_model=""
 student_model=""
 output_root="outputs/dinov3-all-categories"
 eval_output_root=""
+visa_threshold_profile="legacy"
 python_command="python"
 normal_shots=8
 epochs=10
@@ -142,6 +145,10 @@ while [[ $# -gt 0 ]]; do
     --evaluate-only)
       evaluate_only=true
       shift
+      ;;
+    --visa-threshold-profile)
+      visa_threshold_profile="${2:?--visa-threshold-profile requires a value}"
+      shift 2
       ;;
     --python)
       python_command="${2:?--python requires a value}"
@@ -280,6 +287,10 @@ if [[ "$eval_normal_decision_quantile_method" != "linear" && "$eval_normal_decis
   printf '%s\n' '--eval-normal-decision-quantile-method must be linear or higher.' >&2
   exit 2
 fi
+if [[ "$visa_threshold_profile" != "legacy" && "$visa_threshold_profile" != "inherit" ]]; then
+  printf '%s\n' '--visa-threshold-profile must be legacy or inherit.' >&2
+  exit 2
+fi
 
 report_model_reference() {
   local option_name="$1"
@@ -315,7 +326,7 @@ if [[ -z "$eval_normal_decision_calibration" ]]; then
   eval_normal_decision_calibration="leave-one-out"
 fi
 if [[ "$evaluate_only" == true && -z "$eval_output_root" ]]; then
-  eval_output_root="${output_root%/}-robust"
+  eval_output_root="${output_root%/}-thresholds"
 fi
 if [[ "$normal_shots" == "1" && "$eval_normal_decision_calibration" == "leave-one-out" ]]; then
   eval_normal_decision_calibration="training-reference"
@@ -331,12 +342,6 @@ common_args=(
   --device "$device"
   --image-size "$image_size"
   --feature-layers "$feature_layers"
-  --eval-normal-decision-calibration "$eval_normal_decision_calibration"
-  --eval-normal-decision-quantile "$eval_normal_decision_quantile"
-  --eval-normal-decision-quantile-method "$eval_normal_decision_quantile_method"
-  --eval-normal-decision-augment-count "$eval_normal_decision_augment_count"
-  --eval-normal-decision-view-quantile "$eval_normal_decision_view_quantile"
-  --eval-normal-decision-fit-augment-count "$eval_normal_decision_fit_augment_count"
   --adaptation "$adaptation"
   --last-n-blocks "$last_n_blocks"
   --lora-rank "$lora_rank"
@@ -354,7 +359,7 @@ fi
 if [[ "$evaluate_only" == true ]]; then
   common_args+=(--evaluate-only)
 fi
-if [[ "$evaluate_only" == false && -n "$teacher_model" ]]; then
+if [[ -n "$teacher_model" ]]; then
   common_args+=(--teacher-model "$teacher_model")
 fi
 if [[ -n "$student_model" ]]; then
@@ -369,6 +374,22 @@ run_dataset() {
   local -a dataset_args=("$@")
   local evaluation_destination="$destination/evaluation"
   local -a evaluation_args=()
+  local decision_quantile="$eval_normal_decision_quantile"
+  local decision_quantile_method="$eval_normal_decision_quantile_method"
+  local decision_view_quantile="$eval_normal_decision_view_quantile"
+  if [[ "$dataset" == "visa" && "$visa_threshold_profile" == "legacy" ]]; then
+    decision_quantile=0.995
+    decision_quantile_method="higher"
+    decision_view_quantile=1.0
+  fi
+  local -a decision_args=(
+    --eval-normal-decision-calibration "$eval_normal_decision_calibration"
+    --eval-normal-decision-quantile "$decision_quantile"
+    --eval-normal-decision-quantile-method "$decision_quantile_method"
+    --eval-normal-decision-augment-count "$eval_normal_decision_augment_count"
+    --eval-normal-decision-view-quantile "$decision_view_quantile"
+    --eval-normal-decision-fit-augment-count "$eval_normal_decision_fit_augment_count"
+  )
   if [[ -n "$eval_output_root" ]]; then
     evaluation_destination="$eval_output_root/$dataset/evaluation"
     evaluation_args=(--eval-output "$evaluation_destination")
@@ -379,13 +400,15 @@ run_dataset() {
     return
   fi
 
-  printf '[distill-all] starting %s for every discovered category; evaluation=%s\n' "$dataset" "$evaluation_destination"
+  printf '[distill-all] starting %s for every discovered category; evaluation=%s threshold=%s/%s view=%s\n' \
+    "$dataset" "$evaluation_destination" "$decision_quantile" "$decision_quantile_method" "$decision_view_quantile"
   "$python_command" "$repo_root/distill_dinov3.py" \
     --dataset "$dataset" \
     --data-root "$data_root" \
     --output "$destination" \
     "${evaluation_args[@]}" \
     "${common_args[@]}" \
+    "${decision_args[@]}" \
     "${dataset_args[@]}"
   printf '[distill-all] completed %s; metrics: %s\n' "$dataset" "$evaluation_destination/results.json"
 }

@@ -303,7 +303,9 @@ class DistillationTests(unittest.TestCase):
             data_root = root / "data"
             adapter_root = root / "adapters"
             data_root.mkdir()
-            adapter_root.mkdir()
+            adapter = adapter_root / "bottle" / "lora_adapter.pt"
+            adapter.parent.mkdir(parents=True)
+            adapter.write_bytes(b"adapter")
             evaluation = root / "robust" / "evaluation"
             with patch("distill_dinov3.train") as train_model, patch(
                 "distill_dinov3.evaluate_existing_students",
@@ -328,6 +330,28 @@ class DistillationTests(unittest.TestCase):
             self.assertEqual(parsed.eval_output, str(evaluation))
             self.assertEqual(parsed.eval_normal_decision_quantile, 0.95)
             self.assertEqual(parsed.eval_normal_decision_view_quantile, 0.90)
+
+    def test_evaluate_only_missing_adapter_root_creates_and_trains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            adapter_root = root / "missing" / "adapters"
+            data_root.mkdir()
+            with patch("distill_dinov3.train", return_value={"evaluation": {}}) as train_model, patch(
+                "distill_dinov3.evaluate_existing_students"
+            ) as evaluate_existing:
+                main([
+                    "--dataset", "mvtec",
+                    "--data-root", str(data_root),
+                    "--output", str(adapter_root),
+                    "--normal-shots", "8",
+                    "--evaluate-only",
+                ])
+
+            self.assertTrue(adapter_root.is_dir())
+            evaluate_existing.assert_not_called()
+            train_model.assert_called_once()
+            self.assertFalse(train_model.call_args.args[0].evaluate_only)
 
     def test_cli_validation_rejects_invalid_training_values(self):
         parser = ArgumentParser()

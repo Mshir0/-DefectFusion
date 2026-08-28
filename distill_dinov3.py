@@ -1603,7 +1603,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     evaluation = parser.add_argument_group("post-training evaluation")
     evaluation.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True, help="evaluate each LoRA-adapted student with DefectFusion after training")
-    evaluation.add_argument("--evaluate-only", action="store_true", help="skip distillation and evaluate existing LoRA adapters under --output")
+    evaluation.add_argument(
+        "--evaluate-only",
+        action="store_true",
+        help="evaluate existing LoRA adapters; if the adapter root is missing or empty, create it and train first",
+    )
     evaluation.add_argument("--eval-output", help="evaluation directory; defaults to <output>/evaluation")
     evaluation.add_argument("--eval-image-size", type=int, default=None, help="detector input size; defaults to --image-size")
     evaluation.add_argument("--eval-feature-layers", default=None, help="student hidden states used by the detector; defaults to --feature-layers")
@@ -1636,6 +1640,23 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     """Reject invalid combinations before loading either DINOv3 model."""
 
     evaluate_only = bool(getattr(args, "evaluate_only", False))
+    if evaluate_only and not args.evaluate:
+        parser.error("--evaluate-only cannot be combined with --no-evaluate")
+    if evaluate_only:
+        adapter_root = Path(args.output)
+        has_adapter = adapter_root.is_dir() and any(adapter_root.glob("*/lora_adapter.pt"))
+        if not has_adapter:
+            try:
+                adapter_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                parser.error(f"could not create adapter root {adapter_root}: {exc}")
+            print(
+                f"[evaluate-only] no LoRA adapters found under {adapter_root}; "
+                "created the directory and switching to distillation",
+                flush=True,
+            )
+            args.evaluate_only = False
+            evaluate_only = False
     model_references = [("student_model", "--student-model")]
     if not evaluate_only:
         model_references.insert(0, ("teacher_model", "--teacher-model"))
@@ -1726,10 +1747,6 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error(str(exc))
     if args.evaluate and args.dataset == "folder":
         parser.error("automatic evaluation requires --dataset mvtec or visa; use --no-evaluate for --dataset folder")
-    if evaluate_only and not args.evaluate:
-        parser.error("--evaluate-only cannot be combined with --no-evaluate")
-    if evaluate_only and not Path(args.output).is_dir():
-        parser.error(f"adapter root does not exist: {args.output}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
