@@ -304,11 +304,15 @@ class DefectFusion:
         return self
 
     def add_prototype(self, label: str, image_path):
+        self.prototype_bank.add(label, self.prototype_features(image_path))
+        return self
+
+    def prototype_features(self, image_path):
         image = Image.open(image_path)
         self._set_extractor_image_size(self.pixel_image_size)
         patches, _ = self.extractor.extract(image)
-        self.prototype_bank.add(label, self._anomaly_patches(patches))
-        return self
+        pca_scores = self.subspace.score(patches)
+        return self._anomaly_patches(patches, pca_scores)
 
     def _anomaly_patches(self, patches, scores=None):
         scores = self.subspace.score(patches) if scores is None else np.asarray(scores)

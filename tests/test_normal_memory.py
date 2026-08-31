@@ -50,6 +50,34 @@ class NormalPatchMemoryTest(unittest.TestCase):
         fusion.fit_normal([Image.new("RGB", (8, 8))])
         self.assertEqual(extractor.calls, [("extract_dual", 672)])
 
+    def test_prototype_bank_calibrates_unknown_threshold_with_loo(self):
+        bank = PrototypeBank(unknown_threshold=0.35)
+        samples = [
+            ("scratch", np.array([[1.0, 0.0]], dtype=np.float32)),
+            ("scratch", np.array([[0.9, 0.1]], dtype=np.float32)),
+            ("dent", np.array([[0.0, 1.0]], dtype=np.float32)),
+            ("dent", np.array([[0.1, 0.9]], dtype=np.float32)),
+        ]
+        for label, features in samples:
+            bank.add(label, features)
+
+        calibration = bank.calibrate_unknown_threshold_loo(samples)
+
+        self.assertEqual(calibration["method"], "leave-one-out")
+        self.assertEqual(calibration["samples"], 4)
+        self.assertAlmostEqual(calibration["macro_f1"], 1.0)
+        self.assertGreater(calibration["threshold"], 0.9)
+        self.assertEqual(bank.unknown_threshold, calibration["threshold"])
+
+    def test_prototype_bank_loo_requires_two_shots_per_type(self):
+        bank = PrototypeBank()
+        samples = [
+            ("scratch", np.array([[1.0, 0.0]], dtype=np.float32)),
+            ("dent", np.array([[0.0, 1.0]], dtype=np.float32)),
+        ]
+        with self.assertRaisesRegex(ValueError, "at least two shots"):
+            bank.calibrate_unknown_threshold_loo(samples)
+
     def test_different_head_resolutions_use_separate_grids_and_positions(self):
         extractor = self._resolution_extractor()
         fusion = DefectFusion(

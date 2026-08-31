@@ -268,6 +268,12 @@ Typing is an auxiliary experiment, separate from the anomaly-detection setup.
 those selected images are excluded only from defect-type statistics, while they
 remain in image- and pixel-level evaluation:
 
+Runs with at least two defect shots calibrate the defect-type unknown threshold
+by source-disjoint leave-one-out prediction over the sampled prototypes. The
+`2/4/8`-shot runs therefore use only their sampled defect references for
+calibration; the 1-shot run retains the configured fixed threshold. Calibration
+details are recorded in the `defect_type_calibration*` fields for every category.
+
 ```bash
 python -m defectfusion.cli evaluate-mvtec --data-root data/mvtec \
   --normal-shots 1 --defect-shots 1 --seed 42 \

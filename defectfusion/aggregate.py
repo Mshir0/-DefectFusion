@@ -35,6 +35,8 @@ CATEGORY_LEADING_FIELDS = (
     "normal_decision_calibration", "normal_decision_augment_count",
     "normal_decision_view_quantile", "normal_decision_fit_augment_count",
     "normal_decision_folds", "normal_decision_seed",
+    "defect_type_calibration", "defect_type_calibration_samples",
+    "defect_type_calibration_macro_f1", "defect_type_unknown_threshold",
     *METRIC_FIELDS, "total_seconds",
     "timing_threshold_calibration_seconds", "timing_prediction_seconds",
     "timing_pixel_preparation_seconds",

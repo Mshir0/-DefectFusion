@@ -782,6 +782,7 @@ def main(argv=None):
                         for image in _images(str(label_dir)):
                             fusion.add_prototype(label_dir.name, image)
             selected = []
+            defect_prototype_features = []
             if a.defect_shots > 0:
                 rng = random.Random(a.seed)
                 if is_visa:
@@ -794,9 +795,23 @@ def main(argv=None):
                 for defect_name, candidates in sorted(defect_groups.items()):
                     chosen = rng.sample(candidates, min(a.defect_shots, len(candidates)))
                     for image in chosen:
-                        fusion.add_prototype(defect_name, image)
+                        features = fusion.prototype_features(image)
+                        fusion.prototype_bank.add(defect_name, features)
+                        defect_prototype_features.append((defect_name, features))
                         selected.append(image)
                         print(f"[defect-shot] {category_name}/{defect_name}: {Path(image).name}", flush=True)
+            defect_type_calibration = None
+            if a.defect_shots >= 2 and defect_prototype_features:
+                try:
+                    defect_type_calibration = fusion.prototype_bank.calibrate_unknown_threshold_loo(
+                        defect_prototype_features, type_matching=type_matching,
+                    )
+                    print(
+                        f"[defect-type-loo] {category_name}: threshold={defect_type_calibration['threshold']:.6g} "
+                        f"macro_f1={defect_type_calibration['macro_f1']:.6g}", flush=True,
+                    )
+                except ValueError as exc:
+                    p.error(str(exc))
             result_path = category_output_dir / f"{category_name}.json"
             if is_visa:
                 samples = [(x.image, x.defect_type, x.anomalous, x.mask) for x in category.test_samples]
@@ -851,6 +866,17 @@ def main(argv=None):
             metrics["seed"] = a.seed
             metrics["defect_shot_images"] = [str(Path(x)) for x in selected]
             metrics["defect_type_excluded_images"] = [str(Path(x)) for x in selected]
+            metrics["defect_type_calibration"] = (
+                defect_type_calibration["method"] if defect_type_calibration else "fixed"
+            )
+            metrics["defect_type_calibration_samples"] = (
+                defect_type_calibration["samples"] if defect_type_calibration else 0
+            )
+            metrics["defect_type_calibration_macro_f1"] = (
+                defect_type_calibration["macro_f1"] if defect_type_calibration else None
+            )
+            metrics["defect_type_calibration_details"] = defect_type_calibration
+            metrics["defect_type_unknown_threshold"] = fusion.prototype_bank.unknown_threshold
             metrics["debias"] = a.debias
             metrics["svd_components"] = a.svd_components if a.debias else 0
             metrics["top_k_ratio"] = top_k_ratio

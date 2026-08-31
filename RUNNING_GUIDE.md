@@ -278,6 +278,8 @@ bash scripts/evaluate_visa_shots.sh
 
 加入 defect shots 只应影响缺陷类型分类分支，不应改变 Image AUROC、Pixel AUROC、PRO 等异常检测指标。被选为 defect prototype 的样本仍参与 image/pixel 检测指标，但会从缺陷类型分类指标中排除。
 
+`2/4/8 defect-shot` 会在已采样的 defect prototypes 内执行类内留一校准：每次留出一张缺陷图，用其余 prototype 预测该图，再以 LOO macro-F1 选择 unknown threshold。`1 defect-shot` 无法留一，因此保持固定阈值。校准不使用剩余测试图，校准方式、样本数、LOO macro-F1 和阈值会写入每个类别 JSON 及 `summary.csv`。
+
 ## 8. 常见运行问题
 
 ### 参数被识别为命令

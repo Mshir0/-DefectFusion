@@ -488,6 +488,62 @@ class PrototypeBank:
         label = str(self._svm.classes_[index])
         score = float(probabilities[index])
         return (label, score) if score >= self.unknown_threshold else ("unknown", score)
+
+    def calibrate_unknown_threshold_loo(self, samples_by_label, type_matching="bidirectional_patch"):
+        """Calibrate the unknown threshold from defect prototypes using LOO predictions.
+
+        ``samples_by_label`` contains the extracted patch matrices for each sampled
+        defect image. Each held-out image is classified against prototypes from all
+        other images, so the test set never contributes to the threshold.
+        """
+        records = [(label, np.asarray(features)) for label, features in samples_by_label]
+        if len(records) < 2 or any(sum(other_label == label for other_label, _ in records) < 2 for label, _ in records):
+            raise ValueError("defect prototype LOO calibration requires at least two shots per defect type")
+        scores = []
+        truths = []
+        raw_predictions = []
+        for held_out, (truth, _) in enumerate(records):
+            bank = PrototypeBank(unknown_threshold=0.0)
+            for index, (label, features) in enumerate(records):
+                if index != held_out:
+                    bank.add(label, features)
+            query = records[held_out][1]
+            if type_matching == "rbf_svm":
+                prediction, score = bank.predict_rbf_svm(query)
+            else:
+                typing_features = query if type_matching == "bidirectional_patch" else query.mean(axis=0)
+                prediction, score = bank.predict(typing_features)
+            raw_predictions.append(prediction)
+            scores.append(float(score))
+            truths.append(truth)
+        candidates = sorted({0.0, *scores, *(float(np.nextafter(score, np.inf)) for score in scores), 1.0})
+        best_threshold, best_f1 = self.unknown_threshold, -1.0
+        for threshold in candidates:
+            predictions = [
+                prediction if score >= threshold else "unknown"
+                for prediction, score in zip(raw_predictions, scores)
+            ]
+            labels = sorted(set(truths) | set(predictions))
+            confusion = np.zeros((len(labels), len(labels)), dtype=np.float64)
+            indices = {label: idx for idx, label in enumerate(labels)}
+            for truth, prediction in zip(truths, predictions):
+                confusion[indices[truth], indices[prediction]] += 1
+            tp = np.diag(confusion)
+            precision = np.divide(tp, confusion.sum(axis=0), out=np.zeros_like(tp), where=confusion.sum(axis=0) > 0)
+            recall = np.divide(tp, confusion.sum(axis=1), out=np.zeros_like(tp), where=confusion.sum(axis=1) > 0)
+            f1 = np.divide(2 * precision * recall, precision + recall, out=np.zeros_like(tp), where=precision + recall > 0).mean()
+            if f1 > best_f1 + 1e-12 or (abs(f1 - best_f1) <= 1e-12 and threshold > best_threshold):
+                best_threshold, best_f1 = float(threshold), float(f1)
+        self.unknown_threshold = best_threshold
+        return {
+            "method": "leave-one-out",
+            "threshold": best_threshold,
+            "macro_f1": best_f1,
+            "samples": len(records),
+            "scores": scores,
+            "predictions": raw_predictions,
+            "ground_truth": truths,
+        }
     def to_dict(self): return {"prototypes": {k: v.tolist() for k, v in self.prototypes.items()}, "patch_banks": {k: v.tolist() for k, v in self.patch_banks.items()}, "counts": self.counts}
     @classmethod
     def from_dict(cls, d):
