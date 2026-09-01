@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import glob
 import json
 import math
@@ -940,6 +941,14 @@ def main(argv=None):
             category_payload = {"metrics": metrics, "predictions": predictions}
             result_path.write_text(json.dumps(category_payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
             all_metrics.append(metrics)
+            del predictions, category_payload, fusion, defect_prototype_features
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
         metric_names = (
             "image_auroc", "image_aupr", "image_f1_max", "pixel_auroc", "pixel_aupr",
             "pixel_aupro", "pixel_f1_max",

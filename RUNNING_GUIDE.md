@@ -267,6 +267,8 @@ bash scripts/evaluate_visa_shots.sh
 
 设置 `SKIP_COMPLETED=1` 后，已有 `results.json` 的组合会被跳过。分离存放的官方 split CSV 可通过 `SPLIT_CSV=/path/to/1cls.csv` 指定。
 
+两个批量脚本默认使用 `NORMAL_FIT_MAX_PATCHES=50000`，用于限制 8-shot 多增强、多分支拟合时的主机内存峰值。如果进程仍被 OOM killer 以状态码 137 结束，脚本会自动从头以 `OOM_RETRY_FIT_MAX_PATCHES=30000` 重试当前组合。两个上限都可通过同名环境变量覆盖。
+
 ## 7. Shot 参数含义
 
 | 参数 | 含义 |
@@ -309,7 +311,7 @@ free -h
 dmesg -T | tail -n 50
 ```
 
-8-shot 批量实验应使用仓库脚本，脚本会限制每个拟合分支使用的正常 patch 数量。如果仍然发生 OOM，请优先调低 `MEMORY_MAX_PATCHES`。
+8-shot 批量实验应使用仓库脚本，脚本会限制每个拟合分支使用的正常 patch 数量。如果仍然发生 OOM，请优先将 `NORMAL_FIT_MAX_PATCHES` 从 50000 降为 30000。
 
 ### 查看完整命令帮助
 

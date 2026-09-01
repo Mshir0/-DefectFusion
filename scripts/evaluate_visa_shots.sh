@@ -10,6 +10,8 @@ PYTHON="${PYTHON:-python}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
+NORMAL_FIT_MAX_PATCHES="${NORMAL_FIT_MAX_PATCHES:-50000}"
+OOM_RETRY_FIT_MAX_PATCHES="${OOM_RETRY_FIT_MAX_PATCHES:-30000}"
 
 common_args=(
   --data-root "$DATA_ROOT"
@@ -55,6 +57,7 @@ common_args=(
   --component-reject-categories macaroni1 macaroni2
   --image-fusion-stage patch
   --memory-max-patches 50000
+  --normal-fit-max-patches "$NORMAL_FIT_MAX_PATCHES"
   --knn-chunk-size 256
   --knn-backend torch
   --knn-dtype float16
@@ -84,11 +87,28 @@ run_experiment() {
   fi
 
   printf '[visa-shots] starting %s\n' "$name"
+  set +e
   "$PYTHON" -m defectfusion.cli evaluate-visa \
-    "${common_args[@]}" \
-    --normal-shots "$normal_shots" \
-    --defect-shots "$defect_shots" \
-    --output "$output"
+      "${common_args[@]}" \
+      --normal-shots "$normal_shots" \
+      --defect-shots "$defect_shots" \
+      --output "$output"
+  local status="$?"
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    if [[ "$status" -eq 137 && "$OOM_RETRY_FIT_MAX_PATCHES" =~ ^[1-9][0-9]*$ ]]; then
+      printf '[visa-shots] %s was killed; retrying from the beginning with normal_fit_max_patches=%s\n' \
+        "$name" "$OOM_RETRY_FIT_MAX_PATCHES" >&2
+      "$PYTHON" -m defectfusion.cli evaluate-visa \
+        "${common_args[@]}" \
+        --normal-fit-max-patches "$OOM_RETRY_FIT_MAX_PATCHES" \
+        --normal-shots "$normal_shots" \
+        --defect-shots "$defect_shots" \
+        --output "$output"
+    else
+      return "$status"
+    fi
+  fi
   printf '[visa-shots] completed %s\n' "$name"
 }
 
