@@ -12,6 +12,8 @@ SEED="${SEED:-42}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
 NORMAL_FIT_MAX_PATCHES="${NORMAL_FIT_MAX_PATCHES:-50000}"
 OOM_RETRY_FIT_MAX_PATCHES="${OOM_RETRY_FIT_MAX_PATCHES:-30000}"
+MODE="${MODE:-matrix}"
+TUNING_FAMILY="${TUNING_FAMILY:-all}"
 
 common_args=(
   --data-root "$DATA_ROOT"
@@ -118,11 +120,98 @@ run_experiment() {
   printf '[visa-shots] completed %s\n' "$name"
 }
 
-for shots in 1 2 4 8; do
-  run_experiment "$shots" 0
-done
-for defect_shots in 1 2 4 8; do
-  run_experiment 8 "$defect_shots"
-done
+run_tuning_experiment() {
+  local family="$1"
+  local category="$2"
+  local variant="$3"
+  shift 3
+  local output="$OUTPUT_ROOT/visa-8shot-8defect-tuning/$family/$category/$variant"
 
-printf '[visa-shots] all experiments completed\n'
+  if [[ "$SKIP_COMPLETED" == "1" && -f "$output/results.json" ]]; then
+    printf '[visa-tuning] skipping %s/%s/%s (complete)\n' "$family" "$category" "$variant"
+    return
+  fi
+
+  printf '[visa-tuning] starting %s/%s/%s\n' "$family" "$category" "$variant"
+  set +e
+  "$PYTHON" -m defectfusion.cli evaluate-visa \
+      "${common_args[@]}" \
+      --categories "$category" \
+      --normal-shots 8 \
+      --defect-shots 8 \
+      --output "$output" \
+      "$@"
+  local status="$?"
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    if [[ "$status" -eq 137 && "$OOM_RETRY_FIT_MAX_PATCHES" =~ ^[1-9][0-9]*$ ]]; then
+      printf '[visa-tuning] %s/%s/%s was killed; retrying with normal_fit_max_patches=%s\n' \
+        "$family" "$category" "$variant" "$OOM_RETRY_FIT_MAX_PATCHES" >&2
+      "$PYTHON" -m defectfusion.cli evaluate-visa \
+        "${common_args[@]}" \
+        --normal-fit-max-patches "$OOM_RETRY_FIT_MAX_PATCHES" \
+        --categories "$category" \
+        --normal-shots 8 \
+        --defect-shots 8 \
+        --output "$output" \
+        "$@"
+    else
+      return "$status"
+    fi
+  fi
+  printf '[visa-tuning] completed %s/%s/%s\n' "$family" "$category" "$variant"
+}
+
+run_tuning_matrix() {
+  if [[ "$TUNING_FAMILY" == "all" || "$TUNING_FAMILY" == "detection" ]]; then
+    for category in candle capsules pipe_fryum; do
+      run_tuning_experiment detection "$category" augmentation-q099 \
+        --normal-decision-calibration augmentation \
+        --normal-decision-quantile 0.99 \
+        --normal-decision-quantile-method higher \
+        --normal-decision-augment-count 30 \
+        --normal-decision-seed 142
+      run_tuning_experiment detection "$category" augmentation-max \
+        --normal-decision-calibration augmentation \
+        --normal-decision-quantile 1.0 \
+        --normal-decision-quantile-method higher \
+        --normal-decision-augment-count 30 \
+        --normal-decision-seed 142
+    done
+  fi
+
+  if [[ "$TUNING_FAMILY" == "all" || "$TUNING_FAMILY" == "typing" ]]; then
+    for category in pcb3 fryum pcb2 pcb1 capsules; do
+      run_tuning_experiment typing "$category" bidirectional-top10 \
+        --type-matching bidirectional_patch --top-k-ratio 0.10
+      run_tuning_experiment typing "$category" prototype-mean \
+        --type-matching prototype_mean --top-k-ratio 0.05
+      run_tuning_experiment typing "$category" rbf-svm \
+        --type-matching rbf_svm --top-k-ratio 0.05
+    done
+  fi
+}
+
+case "$MODE" in
+  matrix)
+    for shots in 1 2 4 8; do
+      run_experiment "$shots" 0
+    done
+    for defect_shots in 1 2 4 8; do
+      run_experiment 8 "$defect_shots"
+    done
+    ;;
+  tune)
+    if [[ "$TUNING_FAMILY" != "all" && "$TUNING_FAMILY" != "detection" && "$TUNING_FAMILY" != "typing" ]]; then
+      printf 'TUNING_FAMILY must be all, detection, or typing, got: %s\n' "$TUNING_FAMILY" >&2
+      exit 2
+    fi
+    run_tuning_matrix
+    ;;
+  *)
+    printf 'MODE must be matrix or tune, got: %s\n' "$MODE" >&2
+    exit 2
+    ;;
+esac
+
+printf '[visa-shots] mode=%s completed\n' "$MODE"
