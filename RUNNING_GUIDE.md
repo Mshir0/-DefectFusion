@@ -269,20 +269,20 @@ bash scripts/evaluate_visa_shots.sh
 
 两个批量脚本默认使用 `NORMAL_FIT_MAX_PATCHES=50000`，用于限制 8-shot 多增强、多分支拟合时的主机内存峰值。如果进程仍被 OOM killer 以状态码 137 结束，脚本会自动从头以 `OOM_RETRY_FIT_MAX_PATCHES=30000` 重试当前组合。两个上限都可通过同名环境变量覆盖。
 
-VisA `8 normal-shot + 8 defect-shot` 的低表现类别可通过同一脚本单独调优，不会覆盖正式 shot 结果：
+VisA 各个 normal/defect shot 结果中的低表现类别可通过同一脚本单独调优，不会覆盖正式 shot 结果：
 
 ```bash
 MODE=tune bash scripts/evaluate_visa_shots.sh
 ```
 
-`TUNING_FAMILY=detection` 只测试 `candle/capsules/pipe_fryum` 的增强阈值校准，以 `balanced_accuracy` 选型；`TUNING_FAMILY=typing` 只测试 `pcb3/fryum/pcb2/pcb1/capsules` 的 patch 匹配方案，以 `defect_type_macro_f1` 选型。输出位于 `outputs/visa-8shot-8defect-tuning/`，已完成方案默认跳过。
+`TUNING_FAMILY=detection` 会从 1/2/4/8 normal-shot 的正式结果中自动选出 `balanced_accuracy` 低于 `DETECTION_BALANCED_THRESHOLD` 的类别，测试增强阈值校准；`TUNING_FAMILY=typing` 会从 8 normal-shot + 1/2/4/8 defect-shot 结果中自动选出 `defect_type_macro_f1` 低于 `TYPE_MACRO_F1_THRESHOLD` 的类别，测试 patch 匹配方案。输出位于 `outputs/visa-tuning/`，已完成方案默认跳过。
 
 运行完成后汇总调优结果：
 
 ```bash
 python -m defectfusion.aggregate \
-  --input outputs/visa-8shot-8defect-tuning \
-  --output outputs/visa-8shot-8defect-tuning-summary
+  --input outputs/visa-tuning \
+  --output outputs/visa-tuning-summary
 ```
 
 ## 7. Shot 参数含义

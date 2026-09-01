@@ -222,6 +222,13 @@ runs with `1/2/4/8` defect shots. Override paths with `DATA_ROOT=/path/to/visa` 
 `MODEL=/path/to/model`. Completed experiments and category files are skipped by
 default; set `SKIP_COMPLETED=0` to force a full rerun.
 
+After the formal VisA matrix is complete, run `MODE=tune` with the same script
+to tune every underperforming category independently. Detection categories are
+selected separately from each `1/2/4/8` normal-only result by balanced
+accuracy; typing categories are selected separately from each `8`-normal plus
+`1/2/4/8`-defect result by defect-type macro-F1. Override the selection cutoffs
+with `DETECTION_BALANCED_THRESHOLD` and `TYPE_MACRO_F1_THRESHOLD`.
+
 ANoCo uses temperature-softmax edge weights by default. P2 adds
 `--anoco-affinity cosine` as an experimental ablation: selected non-negative
 cosine affinities are normalized to sum to one per query patch, with a uniform

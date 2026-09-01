@@ -14,6 +14,8 @@ NORMAL_FIT_MAX_PATCHES="${NORMAL_FIT_MAX_PATCHES:-50000}"
 OOM_RETRY_FIT_MAX_PATCHES="${OOM_RETRY_FIT_MAX_PATCHES:-30000}"
 MODE="${MODE:-matrix}"
 TUNING_FAMILY="${TUNING_FAMILY:-all}"
+DETECTION_BALANCED_THRESHOLD="${DETECTION_BALANCED_THRESHOLD:-0.80}"
+TYPE_MACRO_F1_THRESHOLD="${TYPE_MACRO_F1_THRESHOLD:-0.60}"
 
 common_args=(
   --data-root "$DATA_ROOT"
@@ -122,72 +124,99 @@ run_experiment() {
 
 run_tuning_experiment() {
   local family="$1"
-  local category="$2"
-  local variant="$3"
-  shift 3
-  local output="$OUTPUT_ROOT/visa-8shot-8defect-tuning/$family/$category/$variant"
+  local source="$2"
+  local normal_shots="$3"
+  local defect_shots="$4"
+  local category="$5"
+  local variant="$6"
+  shift 6
+  local output="$OUTPUT_ROOT/visa-tuning/$family/$source/$category/$variant"
 
   if [[ "$SKIP_COMPLETED" == "1" && -f "$output/results.json" ]]; then
-    printf '[visa-tuning] skipping %s/%s/%s (complete)\n' "$family" "$category" "$variant"
+    printf '[visa-tuning] skipping %s/%s/%s/%s (complete)\n' "$family" "$source" "$category" "$variant"
     return
   fi
 
-  printf '[visa-tuning] starting %s/%s/%s\n' "$family" "$category" "$variant"
+  printf '[visa-tuning] starting %s/%s/%s/%s\n' "$family" "$source" "$category" "$variant"
   set +e
   "$PYTHON" -m defectfusion.cli evaluate-visa \
       "${common_args[@]}" \
       --categories "$category" \
-      --normal-shots 8 \
-      --defect-shots 8 \
+      --normal-shots "$normal_shots" \
+      --defect-shots "$defect_shots" \
       --output "$output" \
       "$@"
   local status="$?"
   set -e
   if [[ "$status" -ne 0 ]]; then
     if [[ "$status" -eq 137 && "$OOM_RETRY_FIT_MAX_PATCHES" =~ ^[1-9][0-9]*$ ]]; then
-      printf '[visa-tuning] %s/%s/%s was killed; retrying with normal_fit_max_patches=%s\n' \
-        "$family" "$category" "$variant" "$OOM_RETRY_FIT_MAX_PATCHES" >&2
+      printf '[visa-tuning] %s/%s/%s/%s was killed; retrying with normal_fit_max_patches=%s\n' \
+        "$family" "$source" "$category" "$variant" "$OOM_RETRY_FIT_MAX_PATCHES" >&2
       "$PYTHON" -m defectfusion.cli evaluate-visa \
         "${common_args[@]}" \
         --normal-fit-max-patches "$OOM_RETRY_FIT_MAX_PATCHES" \
         --categories "$category" \
-        --normal-shots 8 \
-        --defect-shots 8 \
+        --normal-shots "$normal_shots" \
+        --defect-shots "$defect_shots" \
         --output "$output" \
         "$@"
     else
       return "$status"
     fi
   fi
-  printf '[visa-tuning] completed %s/%s/%s\n' "$family" "$category" "$variant"
+  printf '[visa-tuning] completed %s/%s/%s/%s\n' "$family" "$source" "$category" "$variant"
 }
 
 run_tuning_matrix() {
   if [[ "$TUNING_FAMILY" == "all" || "$TUNING_FAMILY" == "detection" ]]; then
-    for category in candle capsules pipe_fryum; do
-      run_tuning_experiment detection "$category" augmentation-q099 \
-        --normal-decision-calibration augmentation \
-        --normal-decision-quantile 0.99 \
-        --normal-decision-quantile-method higher \
-        --normal-decision-augment-count 30 \
-        --normal-decision-seed 142
-      run_tuning_experiment detection "$category" augmentation-max \
-        --normal-decision-calibration augmentation \
-        --normal-decision-quantile 1.0 \
-        --normal-decision-quantile-method higher \
-        --normal-decision-augment-count 30 \
-        --normal-decision-seed 142
+    for normal_shots in 1 2 4 8; do
+      local source="normal-${normal_shots}shot-defect-0shot"
+      local results="$OUTPUT_ROOT/visa-$source/results.json"
+      if [[ ! -f "$results" ]]; then
+        printf '[visa-tuning] skipping detection/%s: missing %s\n' "$source" "$results" >&2
+        continue
+      fi
+      mapfile -t categories < <("$PYTHON" -m defectfusion.tuning \
+        --results "$results" --metric balanced_accuracy --below "$DETECTION_BALANCED_THRESHOLD")
+      printf '[visa-tuning] detection/%s selected=%s threshold=%s\n' \
+        "$source" "${categories[*]:-none}" "$DETECTION_BALANCED_THRESHOLD"
+      for category in "${categories[@]}"; do
+        run_tuning_experiment detection "$source" "$normal_shots" 0 "$category" augmentation-q099 \
+          --normal-decision-calibration augmentation \
+          --normal-decision-quantile 0.99 \
+          --normal-decision-quantile-method higher \
+          --normal-decision-augment-count 30 \
+          --normal-decision-seed 142
+        run_tuning_experiment detection "$source" "$normal_shots" 0 "$category" augmentation-max \
+          --normal-decision-calibration augmentation \
+          --normal-decision-quantile 1.0 \
+          --normal-decision-quantile-method higher \
+          --normal-decision-augment-count 30 \
+          --normal-decision-seed 142
+      done
     done
   fi
 
   if [[ "$TUNING_FAMILY" == "all" || "$TUNING_FAMILY" == "typing" ]]; then
-    for category in pcb3 fryum pcb2 pcb1 capsules; do
-      run_tuning_experiment typing "$category" bidirectional-top10 \
-        --type-matching bidirectional_patch --top-k-ratio 0.10
-      run_tuning_experiment typing "$category" prototype-mean \
-        --type-matching prototype_mean --top-k-ratio 0.05
-      run_tuning_experiment typing "$category" rbf-svm \
-        --type-matching rbf_svm --top-k-ratio 0.05
+    for defect_shots in 1 2 4 8; do
+      local source="normal-8shot-defect-${defect_shots}shot"
+      local results="$OUTPUT_ROOT/visa-$source/results.json"
+      if [[ ! -f "$results" ]]; then
+        printf '[visa-tuning] skipping typing/%s: missing %s\n' "$source" "$results" >&2
+        continue
+      fi
+      mapfile -t categories < <("$PYTHON" -m defectfusion.tuning \
+        --results "$results" --metric defect_type_macro_f1 --below "$TYPE_MACRO_F1_THRESHOLD")
+      printf '[visa-tuning] typing/%s selected=%s threshold=%s\n' \
+        "$source" "${categories[*]:-none}" "$TYPE_MACRO_F1_THRESHOLD"
+      for category in "${categories[@]}"; do
+        run_tuning_experiment typing "$source" 8 "$defect_shots" "$category" bidirectional-top10 \
+          --type-matching bidirectional_patch --top-k-ratio 0.10
+        run_tuning_experiment typing "$source" 8 "$defect_shots" "$category" prototype-mean \
+          --type-matching prototype_mean --top-k-ratio 0.05
+        run_tuning_experiment typing "$source" 8 "$defect_shots" "$category" rbf-svm \
+          --type-matching rbf_svm --top-k-ratio 0.05
+      done
     done
   fi
 }
