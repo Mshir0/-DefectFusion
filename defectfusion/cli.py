@@ -15,7 +15,7 @@ from PIL import Image
 from .features import DinoFeatureExtractor
 from .pipeline import DefectFusion, NormalTrainingView
 from .mvtec import evaluate_mvtec, evaluate_samples
-from .reporting import experiment_output_dir, write_metrics_csv
+from .reporting import completed_category_metrics, experiment_output_dir, write_metrics_csv
 from .settings import image_size_overrides as parse_image_size_overrides, unit_interval_overrides
 from .visa import load_visa_categories
 
@@ -307,6 +307,7 @@ def main(argv=None):
     e.add_argument("--data-root", help="MVTec root containing all 15 category directories")
     e.add_argument("--split-csv", help="VisA split CSV; defaults to <data-root>/split_csv/1cls.csv")
     e.add_argument("--categories", nargs="+", help="evaluate only these category names")
+    e.add_argument("--skip-completed-categories", action="store_true", help="reuse complete categories/<category>.json files in the output directory")
     e.add_argument("--prototype-dir", help="optional defect prototypes; subdirectories are defect labels")
     e.add_argument("--normal-shots", type=int, default=-1, help="normal train/good references per category; -1 uses all")
     e.add_argument("--normal-validation-dir", help="independent normal calibration root; use ROOT/<category>/ for multi-category evaluation")
@@ -623,6 +624,14 @@ def main(argv=None):
         all_metrics = []
         for category in categories:
             category_name = category.name
+            result_path = category_output_dir / f"{category_name}.json"
+            if a.skip_completed_categories and result_path.is_file():
+                completed_metrics = completed_category_metrics(result_path, category_name)
+                if completed_metrics is not None:
+                    all_metrics.append(completed_metrics)
+                    print(f"[category-skip] {category_name}: complete file {result_path}", flush=True)
+                    continue
+                print(f"[category-rerun] {category_name}: incomplete or invalid file {result_path}", flush=True)
             category_image_size = image_size_overrides.get(category_name, image_size)
             category_pixel_image_size = pixel_image_size_overrides.get(category_name, category_image_size)
             category_image_head_size = image_head_size_overrides.get(category_name, category_image_size)
@@ -813,7 +822,6 @@ def main(argv=None):
                     )
                 except ValueError as exc:
                     p.error(str(exc))
-            result_path = category_output_dir / f"{category_name}.json"
             if is_visa:
                 samples = [(x.image, x.defect_type, x.anomalous, x.mask) for x in category.test_samples]
                 metrics = evaluate_samples(

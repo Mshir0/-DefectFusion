@@ -8,7 +8,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-outputs}"
 PYTHON="${PYTHON:-python}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
-SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
+SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
 NORMAL_FIT_MAX_PATCHES="${NORMAL_FIT_MAX_PATCHES:-50000}"
 OOM_RETRY_FIT_MAX_PATCHES="${OOM_RETRY_FIT_MAX_PATCHES:-30000}"
 
@@ -61,6 +61,12 @@ common_args=(
   --type-matching bidirectional_patch
   --top-k-ratio 0.05
 )
+if [[ "$SKIP_COMPLETED" == "1" ]]; then
+  common_args+=(--skip-completed-categories)
+elif [[ "$SKIP_COMPLETED" != "0" ]]; then
+  printf 'SKIP_COMPLETED must be 0 or 1, got: %s\n' "$SKIP_COMPLETED" >&2
+  exit 2
+fi
 
 run_experiment() {
   local normal_shots="$1"

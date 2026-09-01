@@ -219,7 +219,8 @@ bash scripts/evaluate_visa_shots.sh
 
 It evaluates normal-only `1/2/4/8-shot`, followed by `8` normal-shot typing
 runs with `1/2/4/8` defect shots. Override paths with `DATA_ROOT=/path/to/visa` and
-`MODEL=/path/to/model`; set `SKIP_COMPLETED=1` to resume a partial matrix.
+`MODEL=/path/to/model`. Completed experiments and category files are skipped by
+default; set `SKIP_COMPLETED=0` to force a full rerun.
 
 ANoCo uses temperature-softmax edge weights by default. P2 adds
 `--anoco-affinity cosine` as an experimental ablation: selected non-negative

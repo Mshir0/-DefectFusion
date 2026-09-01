@@ -3,10 +3,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from defectfusion.reporting import experiment_output_dir, write_metrics_csv
+from defectfusion.reporting import completed_category_metrics, experiment_output_dir, write_metrics_csv
 
 
 class ReportingTest(unittest.TestCase):
+    def test_completed_category_requires_metrics_and_predictions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bottle.json"
+            path.write_text(
+                '{"metrics":{"category":"bottle","images":3},"predictions":[]}',
+                encoding="utf-8",
+            )
+            self.assertEqual(completed_category_metrics(path, "bottle")["images"], 3)
+            path.write_text('[{"image":"partial.png"}]', encoding="utf-8")
+            self.assertIsNone(completed_category_metrics(path, "bottle"))
+
     def test_filename_output_becomes_same_stem_directory(self):
         self.assertEqual(
             experiment_output_dir("outputs/experiment.jsonl"),

@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 
 def experiment_output_dir(output: str) -> Path:
     path = Path(output)
     return path.parent / path.stem if path.suffix else path
+
+
+def completed_category_metrics(path: Path, category: str) -> dict | None:
+    """Return metrics only when a category output is complete and reusable."""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    metrics = payload.get("metrics")
+    predictions = payload.get("predictions")
+    if not isinstance(metrics, dict) or not isinstance(predictions, list):
+        return None
+    if metrics.get("category") != category:
+        return None
+    return metrics
 
 
 def write_metrics_csv(path: Path, category_metrics: list[dict], macro: dict) -> None:

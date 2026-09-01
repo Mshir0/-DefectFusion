@@ -232,7 +232,7 @@ MODEL=/mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
 bash scripts/evaluate_mvtec_shots.sh
 ```
 
-设置 `SKIP_COMPLETED=1` 后，已有 `results.json` 的组合会被跳过。
+脚本默认使用 `SKIP_COMPLETED=1`。已有 `results.json` 的完整组合会直接跳过；组合中断时，已完整写入 `categories/<category>.json` 的类别也会跳过，只继续未完成的类别。使用 `SKIP_COMPLETED=0` 可强制全部重跑。
 
 ## 6. 批量运行 VisA 最终 shot 组合
 
@@ -265,7 +265,7 @@ MODEL=/mnt/sda1/DINOv3/dinov3-vitl16-pretrain-lvd1689m \
 bash scripts/evaluate_visa_shots.sh
 ```
 
-设置 `SKIP_COMPLETED=1` 后，已有 `results.json` 的组合会被跳过。分离存放的官方 split CSV 可通过 `SPLIT_CSV=/path/to/1cls.csv` 指定。
+默认会跳过已完成的组合和类别；使用 `SKIP_COMPLETED=0` 可强制全部重跑。分离存放的官方 split CSV 可通过 `SPLIT_CSV=/path/to/1cls.csv` 指定。
 
 两个批量脚本默认使用 `NORMAL_FIT_MAX_PATCHES=50000`，用于限制 8-shot 多增强、多分支拟合时的主机内存峰值。如果进程仍被 OOM killer 以状态码 137 结束，脚本会自动从头以 `OOM_RETRY_FIT_MAX_PATCHES=30000` 重试当前组合。两个上限都可通过同名环境变量覆盖。
 
